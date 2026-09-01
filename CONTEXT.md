@@ -61,9 +61,7 @@ TypeScript.
 10. Relatório semanal: agrupa guias por paciente, mantém só pacientes com pelo menos uma
     guia `Renovar` ou `Esgotada`. Se a lista final estiver vazia, não envia e-mail.
 
-## Decisões assumidas (o relatório de auditoria deixou como perguntas em aberto — revise se
-
-divergir do que você quer)
+## Decisões assumidas (o relatório de auditoria deixou como perguntas em aberto — revise se divergir do que você quer)
 
 - `paciente.nome`: **único case-insensitive** no banco (índice `UNIQUE` sobre
   `lower(nome)`), para eliminar duplicados por corrida — o sistema antigo não tinha isso.
@@ -73,6 +71,18 @@ divergir do que você quer)
   existentes com saldo zerado continuam caindo em `"Esgotada"` normalmente.
 - Exclusão de guia `"Regular"` bloqueada no backend (ver regra 8 acima), não só na UI.
 - Edição de atendimento para 0 créditos continua permitida (mantido do sistema original).
+
+## Decisões de implementação
+
+- **RLS (Row Level Security) no Supabase**: o RLS foi ativado nas 6 tabelas do projeto
+  (`paciente`, `usuario`, `terapia`, `requisicao`, `requisicao_terapia`, `atendimento`).
+  Em vez de escrever policies ou desativar o RLS, o role de produção usado por
+  `DATABASE_URL` (`vigia_app`) recebeu `BYPASSRLS` diretamente. É o equivalente ao
+  `service_role` do Supabase, mas aplicado ao role próprio da aplicação, já que a conexão
+  é feita via Postgres direto pelo Prisma — e não pela API REST/PostgREST, que é onde o
+  modelo de policies do Supabase faz sentido. O RLS permanece ativado como rede de
+  segurança: qualquer conexão futura que não use explicitamente esse role continua sujeita
+  às regras de RLS.
 
 ## Não fazer
 
