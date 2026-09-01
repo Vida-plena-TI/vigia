@@ -4,15 +4,9 @@ import { useActionState, useEffect, useRef, useState, useTransition } from "reac
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { cn } from "@/lib/utils";
 import {
   carregarGuiasDoPaciente,
   lancarAtendimentos,
@@ -29,7 +23,7 @@ import {
   erroSaldoInsuficiente,
 } from "@/lib/domain/atendimentos-mensagens";
 
-import { formatarData } from "../../dashboard/formato";
+import { formatarData, MARCADOR_POR_STATUS } from "../../dashboard/formato";
 import { StatusBadge } from "../../dashboard/status-badge";
 
 const ESTADO_INICIAL: EstadoDoLancamento = {};
@@ -61,6 +55,10 @@ const CLASSES_DO_CAMPO =
  * erro óbvio. Quem de fato recusa é a Server Action, que é alcançável por POST
  * direto — as duas usam as mensagens de
  * `lib/domain/atendimentos-mensagens.ts` para não divergirem.
+ *
+ * Etapas numeradas separadas por régua, como o cadastro de requisição: as duas
+ * telas de formulário do sistema têm a mesma estrutura, e nenhuma delas é uma
+ * pilha de cartões.
  */
 export function FormularioDeAtendimento({
   pacientes,
@@ -222,7 +220,7 @@ export function FormularioDeAtendimento({
       action={action}
       onSubmit={validarNoCliente}
       noValidate
-      className="flex flex-col gap-6"
+      className="flex flex-col gap-8"
     >
       {/*
         O nome viaja junto só para a mensagem de sucesso poder dizer de quem
@@ -235,17 +233,19 @@ export function FormularioDeAtendimento({
         value={pacienteEscolhido?.nome ?? ""}
       />
 
-      <Card>
-        <CardHeader>
-          <CardTitle>Paciente e data</CardTitle>
-          <CardDescription>
+      <section className="flex flex-col gap-4">
+        <div className="flex flex-col gap-1">
+          <h2 className="regua-de-secao">1. Paciente e data</h2>
+          <p className="max-w-prose text-xs text-muted-foreground">
             Só aparecem pacientes com pelo menos uma guia com saldo.
-          </CardDescription>
-        </CardHeader>
+          </p>
+        </div>
 
-        <CardContent className="grid gap-4 sm:grid-cols-2">
-          <div className="flex flex-col gap-2">
-            <Label htmlFor="pacienteId">Paciente</Label>
+        <div className="grid gap-4 sm:grid-cols-2">
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor="pacienteId" className="text-xs">
+              Paciente
+            </Label>
             {/*
               `select` nativo, não o do shadcn/ui, pelo mesmo motivo do
               formulário de requisição: o do Radix injeta um campo escondido
@@ -255,7 +255,7 @@ export function FormularioDeAtendimento({
             <select
               id="pacienteId"
               name="pacienteId"
-              className={`h-8 ${CLASSES_DO_CAMPO}`}
+              className={`h-9 ${CLASSES_DO_CAMPO}`}
               value={pacienteId}
               autoFocus
               aria-invalid={
@@ -278,12 +278,15 @@ export function FormularioDeAtendimento({
             ) : null}
           </div>
 
-          <div className="flex flex-col gap-2">
-            <Label htmlFor="dataAtendimento">Data do atendimento</Label>
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor="dataAtendimento" className="text-xs">
+              Data do atendimento
+            </Label>
             <Input
               id="dataAtendimento"
               name="dataAtendimento"
               type="date"
+              className="h-9"
               value={dataAtendimento}
               onChange={(evento) => setDataAtendimento(evento.target.value)}
             />
@@ -293,8 +296,10 @@ export function FormularioDeAtendimento({
             </p>
           </div>
 
-          <div className="flex flex-col gap-2 sm:col-span-2">
-            <Label htmlFor="observacao">Observação (opcional)</Label>
+          <div className="flex flex-col gap-1.5 sm:col-span-2">
+            <Label htmlFor="observacao" className="text-xs">
+              Observação (opcional)
+            </Label>
             {/*
               `textarea` nativo com as classes do `Input`: o projeto não tem o
               componente do shadcn/ui instalado, e um campo de texto livre não
@@ -310,42 +315,44 @@ export function FormularioDeAtendimento({
               placeholder="Vale para todos os atendimentos deste lote."
             />
           </div>
-        </CardContent>
-      </Card>
+        </div>
+      </section>
 
-      <Card>
-        <CardHeader>
-          <CardTitle>Terapias</CardTitle>
-          <CardDescription>
+      <section className="flex flex-col gap-4">
+        <div className="flex flex-col gap-1">
+          <h2 className="regua-de-secao">2. Terapias atendidas</h2>
+          <p className="max-w-prose text-xs text-muted-foreground">
             Marque as terapias atendidas e ajuste os créditos de cada uma.
-          </CardDescription>
-        </CardHeader>
+          </p>
+        </div>
 
-        <CardContent className="flex flex-col gap-3">
-          {!pacienteId ? (
-            <p className="text-sm text-muted-foreground">
-              Escolha um paciente para ver as terapias com saldo.
-            </p>
-          ) : null}
+        {!pacienteId ? (
+          <p className="folha px-4 py-6 text-center text-sm text-muted-foreground">
+            Escolha um paciente para ver as terapias com saldo.
+          </p>
+        ) : null}
 
-          {carregando ? (
-            <p className="text-sm text-muted-foreground">Carregando...</p>
-          ) : null}
+        {carregando ? (
+          <p className="folha px-4 py-6 text-center text-sm text-muted-foreground">
+            Carregando...
+          </p>
+        ) : null}
 
-          {erroDeCarga ? (
-            <p role="alert" className="text-sm text-destructive">
-              {erroDeCarga}
-            </p>
-          ) : null}
+        {erroDeCarga ? (
+          <p role="alert" className="aviso-de-erro">
+            {erroDeCarga}
+          </p>
+        ) : null}
 
-          {!carregando && guias?.length === 0 ? (
-            <p className="text-sm text-muted-foreground">
-              Este paciente não tem nenhuma guia com saldo.
-            </p>
-          ) : null}
+        {!carregando && guias?.length === 0 ? (
+          <p className="folha px-4 py-6 text-center text-sm text-muted-foreground">
+            Este paciente não tem nenhuma guia com saldo.
+          </p>
+        ) : null}
 
-          {!carregando &&
-            guias?.map((guia) => (
+        {!carregando && guias && guias.length > 0 ? (
+          <div className="folha divide-y divide-regua overflow-hidden">
+            {guias.map((guia) => (
               <LinhaDeGuia
                 key={guia.id}
                 guia={guia}
@@ -359,20 +366,22 @@ export function FormularioDeAtendimento({
                 aoAlterarCreditos={alterarCreditos}
               />
             ))}
-        </CardContent>
-      </Card>
+          </div>
+        ) : null}
+      </section>
 
       {erroExibido.erro ? (
-        <p
-          role="alert"
-          className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive"
-        >
+        <p role="alert" className="aviso-de-erro">
           {erroExibido.erro}
         </p>
       ) : null}
 
-      <div className="flex items-center gap-3">
-        <Button type="submit" disabled={enviando || marcadas.length === 0}>
+      <div className="flex flex-wrap items-center gap-3 border-t border-regua-forte pt-5">
+        <Button
+          type="submit"
+          size="lg"
+          disabled={enviando || marcadas.length === 0}
+        >
           {enviando ? "Lançando..." : "Lançar atendimentos"}
         </Button>
         <span className="text-sm text-muted-foreground">
@@ -396,6 +405,9 @@ export function FormularioDeAtendimento({
  * não marcado não é enviado, e o campo de créditos ao lado fica `disabled`
  * (que também sai do envio) enquanto a terapia não está marcada. Assim os dois
  * vetores têm sempre o mesmo tamanho e a mesma ordem.
+ *
+ * O filete de margem repete o do painel: status da guia quando está tudo bem,
+ * carmim quando o erro do servidor aponta para esta linha.
  */
 function LinhaDeGuia({
   guia,
@@ -420,7 +432,15 @@ function LinhaDeGuia({
   const idCreditos = `creditos-${guia.id}`;
 
   return (
-    <div className="flex flex-col gap-3 rounded-lg border p-3 sm:flex-row sm:items-center">
+    <div
+      className={cn(
+        "flex flex-col gap-3 border-l-[3px] px-3 py-3 sm:flex-row sm:items-center",
+        temErro
+          ? "border-l-esgotada bg-esgotada-fundo/50"
+          : MARCADOR_POR_STATUS[guia.statusAlerta],
+        marcada && !temErro ? "bg-secondary/50" : null,
+      )}
+    >
       <div className="flex min-w-0 flex-1 items-start gap-3">
         <input
           id={idCheckbox}
@@ -429,26 +449,40 @@ function LinhaDeGuia({
           value={guia.id}
           checked={marcada}
           onChange={(evento) => aoAlternar(guia.id, evento.target.checked)}
-          className="mt-1 size-4 shrink-0 accent-primary"
+          className="mt-1 size-4 shrink-0"
         />
 
         <div className="flex min-w-0 flex-col gap-1">
-          <Label htmlFor={idCheckbox} className="font-medium">
-            {guia.terapiaNome} ({guia.codigoTiss})
+          <Label htmlFor={idCheckbox} className="text-sm font-medium">
+            {guia.terapiaNome}
+            <span className="text-2xs font-normal text-muted-foreground">
+              {guia.codigoTiss}
+            </span>
           </Label>
-          <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
             <StatusBadge status={guia.statusAlerta} />
             <span>
-              saldo {guia.saldoRestante} de {guia.qtdAutorizada}
+              saldo{" "}
+              <strong className="text-sm font-semibold text-foreground">
+                {guia.saldoRestante}
+              </strong>{" "}
+              de {guia.qtdAutorizada}
             </span>
             <span>requisição {guia.numeroRequisicao}</span>
-            <span>validade {formatarData(guia.validade)}</span>
+            <span>
+              {guia.validade
+                ? `validade ${formatarData(guia.validade)}`
+                : "sem prazo de validade"}
+            </span>
           </div>
         </div>
       </div>
 
-      <div className="flex flex-col gap-2 sm:w-32">
-        <Label htmlFor={idCreditos}>Créditos</Label>
+      <div className="flex flex-col gap-1.5 sm:w-28">
+        <Label htmlFor={idCreditos} className="text-xs">
+          Créditos
+        </Label>
         <Input
           id={idCreditos}
           name="creditosConsumidos"
@@ -460,6 +494,7 @@ function LinhaDeGuia({
           // Fora do envio quando a terapia não está marcada — é isso que
           // mantém os dois vetores do `getAll` alinhados.
           disabled={!marcada}
+          className="h-9 text-right"
           value={creditos}
           aria-invalid={temErro ? true : undefined}
           onChange={(evento) => aoAlterarCreditos(guia.id, evento.target.value)}

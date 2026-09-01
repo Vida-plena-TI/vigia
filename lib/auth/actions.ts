@@ -19,7 +19,7 @@ export type LoginState = {
  * existe", "usuario inativo" e "senha errada" — isso entregaria a um atacante
  * quais usernames existem no sistema.
  */
-const ERRO_CREDENCIAIS = "Usuario ou senha invalidos.";
+const ERRO_CREDENCIAIS = "Usuário ou senha inválidos.";
 
 /**
  * Login (regra de negocio 1 do CONTEXT.md).

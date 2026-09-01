@@ -33,12 +33,10 @@ export default async function NovoAtendimentoPage() {
   ]);
 
   return (
-    <div className="flex w-full max-w-3xl flex-col gap-6">
-      <div className="flex flex-col gap-1">
-        <h1 className="text-2xl font-semibold tracking-tight">
-          Lançar atendimento
-        </h1>
-        <p className="text-sm text-muted-foreground">
+    <div className="flex w-full max-w-[46rem] flex-col gap-7">
+      <div className="flex flex-col gap-1 border-b border-regua-forte pb-4">
+        <h1 className="text-xl font-semibold">Lançar atendimento</h1>
+        <p className="max-w-prose text-sm text-muted-foreground">
           Só aparecem terapias com saldo. O lote inteiro é gravado em uma
           transação: se uma guia não tiver saldo, nenhum atendimento é lançado.
         </p>

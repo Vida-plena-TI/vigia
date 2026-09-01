@@ -45,9 +45,10 @@ import type {
 } from "@/lib/domain/guias";
 
 import { formatarData } from "./formato";
+import { StatusBadge } from "./status-badge";
 
 const CLASSE_TEXTAREA =
-  "min-h-16 w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-xs outline-none transition-[color,box-shadow] placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 disabled:cursor-not-allowed disabled:opacity-50 aria-invalid:border-destructive aria-invalid:ring-3 aria-invalid:ring-destructive/20";
+  "min-h-16 w-full rounded-lg border border-input bg-transparent px-2.5 py-2 text-base transition-colors outline-none placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 disabled:cursor-not-allowed disabled:opacity-50 aria-invalid:border-destructive aria-invalid:ring-3 aria-invalid:ring-destructive/20 md:text-sm";
 
 /**
  * Botões de uma guia: "Histórico" sempre, "Excluir guia" só em Renovar e
@@ -62,7 +63,7 @@ export function AcoesDaGuia({ guia }: { guia: GuiaDoDashboard }) {
   const podeExcluir = guia.statusAlerta !== "Regular";
 
   return (
-    <div className="flex justify-end gap-2">
+    <div className="flex flex-wrap gap-2 md:justify-end">
       <HistoricoDaGuia guia={guia} />
       {podeExcluir ? <ExcluirGuia guia={guia} /> : null}
     </div>
@@ -201,12 +202,18 @@ function HistoricoDaGuia({ guia }: { guia: GuiaDoDashboard }) {
         </Button>
       </DialogTrigger>
 
-      <DialogContent className="sm:max-w-4xl">
-        <DialogHeader>
-          <DialogTitle>{guia.terapiaNome}</DialogTitle>
-          <DialogDescription>
+      <DialogContent className="rounded-2xl sm:max-w-4xl">
+        <DialogHeader className="border-b border-regua pb-3">
+          <DialogTitle className="flex flex-wrap items-center gap-2 text-lg font-semibold">
+            {guia.terapiaNome}
+            <StatusBadge status={guia.statusAlerta} />
+          </DialogTitle>
+          <DialogDescription className="text-sm">
             {guia.pacienteNome} · requisição {guia.numeroRequisicao} ·{" "}
-            {totalUtilizado} de {guia.qtdAutorizada} crédito(s) utilizado(s).
+            <strong className="font-semibold text-foreground">
+              {totalUtilizado} de {guia.qtdAutorizada}
+            </strong>{" "}
+            crédito(s) utilizado(s).
           </DialogDescription>
         </DialogHeader>
 
@@ -229,14 +236,22 @@ function HistoricoDaGuia({ guia }: { guia: GuiaDoDashboard }) {
         ) : null}
 
         {!carregandoInicial && atendimentos && atendimentos.length > 0 ? (
-          <div className="max-h-[28rem] overflow-y-auto">
+          <div className="max-h-[28rem] overflow-y-auto rounded-md border border-regua">
             <Table>
               <TableHeader>
-                <TableRow>
-                  <TableHead>Data</TableHead>
-                  <TableHead className="w-28 text-right">Créditos</TableHead>
-                  <TableHead>Observação</TableHead>
-                  <TableHead className="w-56 text-right">Ações</TableHead>
+                <TableRow className="border-regua-forte hover:bg-transparent">
+                  <TableHead className="text-2xs font-medium text-muted-foreground">
+                    Data
+                  </TableHead>
+                  <TableHead className="w-28 text-right text-2xs font-medium text-muted-foreground">
+                    Créditos
+                  </TableHead>
+                  <TableHead className="text-2xs font-medium text-muted-foreground">
+                    Observação
+                  </TableHead>
+                  <TableHead className="w-56 text-right text-2xs font-medium text-muted-foreground">
+                    Ações
+                  </TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -397,11 +412,13 @@ function LinhaDoHistorico({
       <TableCell className="whitespace-nowrap">
         {formatarData(atendimento.dataAtendimento)}
       </TableCell>
-      <TableCell className="text-right tabular-nums">
+      <TableCell className="text-right font-semibold">
         {atendimento.creditosConsumidos}
       </TableCell>
-      <TableCell className="text-muted-foreground">
-        {atendimento.observacao ?? "—"}
+      <TableCell className="whitespace-normal text-muted-foreground">
+        {atendimento.observacao ?? (
+          <span className="text-xs italic">sem observação</span>
+        )}
       </TableCell>
       <TableCell>
         <div className="flex justify-end gap-2">
@@ -446,7 +463,7 @@ function ExcluirAtendimentoDoHistorico({
   return (
     <AlertDialog open={aberto} onOpenChange={setAberto}>
       <AlertDialogTrigger asChild>
-        <Button variant="destructive" size="sm" disabled={desabilitado}>
+        <Button variant="outline" size="sm" disabled={desabilitado}>
           Excluir
         </Button>
       </AlertDialogTrigger>
@@ -464,6 +481,7 @@ function ExcluirAtendimentoDoHistorico({
           <AlertDialogCancel disabled={excluindo}>Cancelar</AlertDialogCancel>
           <AlertDialogAction
             variant="destructive"
+            className="bg-esgotada text-white hover:bg-esgotada/90"
             disabled={excluindo}
             onClick={(evento) => {
               evento.preventDefault();
@@ -517,7 +535,7 @@ function ExcluirGuia({ guia }: { guia: GuiaDoDashboard }) {
       }}
     >
       <AlertDialogTrigger asChild>
-        <Button variant="destructive" size="sm">
+        <Button variant="outline" size="sm">
           Excluir guia
         </Button>
       </AlertDialogTrigger>
@@ -535,7 +553,7 @@ function ExcluirGuia({ guia }: { guia: GuiaDoDashboard }) {
         {erro ? (
           <p
             role="alert"
-            className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive"
+            className="aviso-de-erro"
           >
             {erro}
           </p>
@@ -545,6 +563,7 @@ function ExcluirGuia({ guia }: { guia: GuiaDoDashboard }) {
           <AlertDialogCancel disabled={excluindo}>Cancelar</AlertDialogCancel>
           <AlertDialogAction
             variant="destructive"
+            className="bg-esgotada text-white hover:bg-esgotada/90"
             disabled={excluindo}
             // Sem o preventDefault o Radix fecha o diálogo no clique e o erro
             // devolvido pela action não chegaria a aparecer.

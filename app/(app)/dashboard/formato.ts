@@ -9,7 +9,7 @@ import type { StatusAlerta } from "@/lib/domain/saldo";
  */
 export function formatarData(iso: string | null): string {
   if (!iso) {
-    return "—";
+    return "sem prazo";
   }
 
   const [ano, mes, dia] = iso.split("-");
@@ -34,18 +34,31 @@ export function normalizarParaBusca(texto: string): string {
     .trim();
 }
 
-/** Cor de cada status: verde/amarelo/vermelho (item 3 do Prompt 4). */
-export const CLASSE_POR_STATUS: Record<StatusAlerta, string> = {
-  Regular:
-    "border-emerald-600/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400",
-  Renovar:
-    "border-amber-600/30 bg-amber-500/10 text-amber-700 dark:text-amber-400",
-  Esgotada: "border-red-600/30 bg-red-500/10 text-red-700 dark:text-red-400",
+/**
+ * Marcador de margem da linha da tabela.
+ *
+ * É o canal que permite varrer só a borda esquerda da lista e saber onde
+ * olhar, sem ler status nenhum. "Regular" fica com o filete transparente para
+ * as três variações alinharem na mesma coluna de texto.
+ */
+export const MARCADOR_POR_STATUS: Record<StatusAlerta, string> = {
+  Regular: "border-l-transparent",
+  Renovar: "border-l-renovar",
+  Esgotada: "border-l-esgotada bg-esgotada-fundo/50",
 };
 
-/** Ordem de exibição do resumo, do mais urgente para o menos. */
-export const STATUS_EM_ORDEM_DE_URGENCIA: readonly StatusAlerta[] = [
-  "Esgotada",
-  "Renovar",
-  "Regular",
-];
+/** Cor do número no resumo. A tinta do contador acompanha a do selo. */
+export const TINTA_POR_STATUS: Record<StatusAlerta, string> = {
+  Regular: "text-regular",
+  Renovar: "text-renovar",
+  Esgotada: "text-esgotada",
+};
+
+/**
+ * Ordem de exibição do resumo, do mais urgente para o menos.
+ *
+ * Reexportada de `lib/domain/guias-apresentacao.ts` de propósito: é a mesma
+ * precedência que decide o pior status do cabeçalho recolhido do paciente, e
+ * duas cópias da ordem acabariam divergindo.
+ */
+export { STATUS_EM_ORDEM_DE_URGENCIA } from "@/lib/domain/guias-apresentacao";

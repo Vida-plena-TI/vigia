@@ -119,15 +119,31 @@ produção.
   está preservado; o código de status HTTP em si não é consumido por nada no sistema
   (nenhum client-side código depende de checar `response.status === 400`). Divergência
   intencional, não é bug.
-- **Separação de usuários de banco de dados**: `DATABASE_URL` aponta para um role
-  restrito (sem `CREATEDB`/DDL) usado pelo Prisma Client em runtime pela aplicação.
-  `DATABASE_SUPERUSER_URL` aponta para um usuário com privilégios administrativos
-  (`postgres`), usado **somente** por migrations, nunca importado pelo código da
-  aplicação. O script `scripts/run-with-superuser.mjs` sobrescreve `DATABASE_URL` com o
-  valor de `DATABASE_SUPERUSER_URL` apenas no processo filho ao rodar
-  `npm run db:migrate:dev` / `npm run db:migrate:deploy`. `shadowDatabaseUrl` no
-  `schema.prisma` também aponta para o superusuário, já que o `migrate dev` precisa criar
-  um banco temporário para detectar drift, e o role restrito não tem permissão para isso.
+- **Separação de conexões de banco de dados**: `DATABASE_URL` aponta para o role
+  `vigia_app.[project-ref]` na conexão pooled do Supavisor (`6543`,
+  `pgbouncer=true&connection_limit=1`) e é o que o Prisma Client usa em runtime.
+  `DIRECT_DATABASE_URL` usa a mesma credencial `vigia_app.[project-ref]` na porta `5432`,
+  sem `pgbouncer=true`, para ferramentas que precisam evitar o pooler de transação.
+  `DATABASE_SUPERUSER_URL` aponta para `postgres.[project-ref]` na porta `5432`, usado
+  **somente** por migrations no terminal local, nunca importado pelo código da aplicação.
+  Em Prisma ORM 7.10, `url`, `directUrl` e `shadowDatabaseUrl` não ficam mais no
+  `schema.prisma`: o schema mantém só `provider = "postgresql"` e a CLI lê
+  `prisma7.config.ts`. O antigo papel de `directUrl` é coberto no config pela preferência
+  por `DIRECT_DATABASE_URL`, e o wrapper `scripts/run-with-superuser.mjs` define
+  `PRISMA_MIGRATION_DATABASE_URL=DATABASE_SUPERUSER_URL` apenas no processo filho ao rodar
+  `npm run db:migrate:dev` / `npm run db:migrate:deploy`.
+- **Shadow database no Prisma 7 + Supabase**: `shadowDatabaseUrl` **não** aponta para
+  `DATABASE_SUPERUSER_URL`. Quando o wrapper usa o superusuário como `datasource.url`, essa
+  URL é o próprio banco principal, e o Prisma recusa usá-la também como shadow. O role
+  `postgres` do Supabase foi verificado em 01/09/2026 com `rolcreatedb = true`; por isso o
+  `migrate dev` pode deixar `shadowDatabaseUrl` ausente e o Prisma cria um shadow
+  temporário automaticamente quando precisar detectar drift.
+- **Prisma 7 usa driver adapter em runtime**: o projeto está em Prisma ORM 7.10.0, e o
+  caminho SQL atual exige driver adapter em vez do engine binário tradicional no
+  `PrismaClient`. O runtime (`lib/db/index.ts`), o seed (`prisma/seed.ts`) e o script de
+  admin (`scripts/create-admin.ts`) instanciam `PrismaClient` com `@prisma/adapter-pg`.
+  Isso também é a escolha compatível com Supavisor em modo transação, porque o adapter usa
+  o driver `pg` e recebe a connection string pooled do ambiente da aplicação.
 - **Runner de teste: Vitest**. Não havia nenhum configurado; o Vitest entra sem
   transpilador extra (lê TypeScript direto) e reaproveita o alias `@/` do `tsconfig` via
   `vitest.config.mts`. O teste de integração de saldo se auto-pula quando `DATABASE_URL`
@@ -301,6 +317,167 @@ produção.
     transação A para com o lock de pé até o teste liberar) e o bloqueio de B é
     confirmado no `pg_stat_activity` — não é um `sleep` esperançoso.
 
+- **Sistema de design (passagem visual, aplicada a todas as telas do Prompt 2 ao 8)**.
+  Vale para as telas novas dos Prompts 8-9 e para qualquer tela futura: seguir o que está
+  aqui em vez de redescobrir as escolhas. O sistema inteiro mora em `app/globals.css`
+  (tokens + três classes de componente) e em `app/(app)/dashboard/formato.ts` +
+  `status-badge.tsx` (apresentação de status).
+  - **Princípio que organiza a paleta: cor é informação, nunca decoração.** As únicas
+    cores saturadas do sistema são as três de `status_alerta`. Todo o chrome — cabeçalho,
+    botões, links, títulos, bordas — vive numa escala grafite/papel. É o que impede o olho
+    de se acostumar com cor e deixar de reagir quando ela significa alguma coisa. Um botão
+    "Excluir" na tabela é neutro de propósito; o carmim aparece só no botão de confirmação
+    dentro do diálogo, onde a ação realmente acontece.
+  - **Paleta (6 cores nomeadas)**: Grafite `#16202A` (tinta, faixa do cabeçalho, ação
+    primária), Névoa `#ECEFF3` (fundo da página), Papel `#FFFFFF` (superfície de dado),
+    Teal `#0E6E7D` (Regular), Âmbar `#8A5300` (Renovar), Carmim `#A8103C` (Esgotada).
+    Contraste sobre branco: 6,1:1 / 6,3:1 / 7,4:1; branco sobre carmim 7,4:1 — AA em texto
+    normal, não só em texto grande. `--muted-foreground: #55637A` dá 6,1:1 sobre papel e
+    5,3:1 sobre névoa; `--input: #7D8B9C` dá 3,5:1 (mínimo de componente de interface),
+    para o campo parecer campo antes de receber foco.
+  - **Status não depende de cor.** O eixo verde-vermelho puro foi evitado: "Regular" é
+    teal, puxado para o lado azul do espectro, onde sobrevive a protanopia e deuteranopia.
+    Mas a cor é só um dos cinco canais redundantes — os outros quatro são preenchimento
+    (Esgotada é bloco sólido com texto branco, Renovar é fundo tênue com anel, Regular é
+    só contorno), ícone com silhueta distinta (`Check` / `TriangleAlert` / `OctagonAlert`),
+    peso da fonte (700 no Esgotada, 500 nos outros) e o filete de margem de 3px na linha da
+    tabela (`MARCADOR_POR_STATUS`). Em escala de cinza os três continuam inconfundíveis.
+    **Ao acrescentar tela nova, usar `StatusBadge` e `MARCADOR_POR_STATUS` — não recriar a
+    cor à mão**, senão os cinco canais deixam de andar juntos.
+  - **O saldo é o número da decisão.** Autorizada e utilizada ficam em `muted-foreground`;
+    só `saldo_restante` fica na tinta cheia, e vira carmim em negrito quando `<= 0`, porque
+    aí o próprio número já é o alerta.
+  - **Tipografia: IBM Plex Sans** (400/500/600/700) em tudo, escolhida por ser desenhada
+    para interface técnica densa e ter algarismo tabular real (`tnum`, ligado globalmente
+    no `html` — não usar fonte monoespaçada para número). **IBM Plex Serif** (600) em
+    exatamente dois lugares: o logotipo "VIGIA" e os três contadores do resumo de status.
+    São a face do instrumento — o nome dele e a leitura de ponteiro. Nunca abaixo de
+    1,75rem, nunca em texto corrido, nunca em número de tabela.
+    Escala (tokens em `@theme inline`): `2xs` 11px, `xs` 12px, `sm` 13px (corpo de tabela
+    densa), `base` 16px (texto de leitura e **todo** campo de formulário — abaixo disso o
+    iOS dá zoom no foco), `lg` 18px, `xl` 21px (título de formulário), `2xl` 26px (título
+    de tela densa), `4xl` 44px (contadores).
+    **Antes desta passagem o `@theme inline` tinha `--font-sans: var(--font-sans)`** — uma
+    referência circular para uma variável nunca definida em `:root`. A `font-family` ficava
+    inválida e o navegador caía no serifado padrão; o Geist carregado no `app/layout.tsx`
+    nunca chegou a ser aplicado. Se alguma fonte "vazar" de novo, é aqui que se olha.
+  - **Largura diz o que a tela é.** Telas densas (painel, atendimentos de hoje) vão até
+    `max-w-[90rem]`, alinhadas à mesma borda esquerda do cabeçalho. Telas de formulário
+    (nova requisição, lançar atendimento) usam `max-w-[46rem]` e continuam **alinhadas à
+    esquerda**, não centralizadas. A diferença de medida é o que diz, antes de qualquer
+    leitura, se a tela é para varrer ou para preencher.
+  - **Régua, não cartão.** Dado mora em folha pautada (`.folha` — filete de 1px, raio de
+    3px, sem sombra); o painel é um livro-razão único com os pacientes separados por faixa,
+    não um cartão por paciente. Formulário é dividido por régua rotulada e numerada
+    (`.regua-de-secao`: "1. Paciente e data", "2. Terapias atendidas"), não por pilha de
+    `Card`. Elevação e raio maior (8px) ficam reservados para o que flutua de verdade:
+    diálogo, toast e a folha do login. **Não criar um `Card` genérico por seção** — foi
+    justamente o que esta passagem removeu.
+  - **Login é a única tela escura**, com fundo grafite e a folha branca centralizada: dá
+    para saber que se está fora do sistema antes de ler qualquer palavra.
+  - **Foco de teclado**: os componentes do shadcn trazem o próprio anel; para o resto há um
+    `:where(a, button, summary, [tabindex]):focus-visible` em `@layer base` com
+    `outline: 2px solid var(--anel-foco)`. `--anel-foco` é grafite por padrão e é
+    sobrescrito para branco dentro da faixa escura e da tela de login — um contorno grafite
+    sobre fundo grafite seria invisível.
+  - **Responsivo até o celular por reestruturação, não por rolagem lateral**: a tabela de
+    oito colunas do painel vira lista de blocos abaixo de `md` (`GuiaEmBloco`), e a de
+    atendimentos de hoje abaixo de `sm`. A navegação da faixa rola na horizontal.
+  - **Branding**: todo texto visível diz **VIGIA** — faixa do cabeçalho, `metadata.title`
+    da raiz e do login. Os rótulos de navegação são iguais aos `<h1>` das páginas,
+    acentuação incluída ("Nova requisição", "Lançar atendimento"). O `name` do
+    `package.json`, o cookie `klini_session` e o header `x-klini-pathname` continuam com o
+    nome antigo — nada disso é visível ao usuário, e trocar o cookie derruba as sessões
+    abertas.
+
+- **Painel com pacientes recolhidos e botão de copiar** (só camada de apresentação —
+  nenhuma Server Action, consulta ou regra de negócio foi tocada; `listarGuiasDoDashboard`
+  continua trazendo tudo de uma vez).
+  - **O que se perde ao recolher volta pelo cabeçalho.** Cada paciente começa fechado, e a
+    linha do cabeçalho carrega o **pior status entre as guias dele** — mesmo `StatusBadge`
+    e mesmo `MARCADOR_POR_STATUS` (filete de 3px na margem) das linhas da tabela, sem cor
+    nova. Com tudo recolhido ainda dá para varrer a coluna da esquerda e saber onde abrir;
+    nenhum "Esgotada" fica escondido dentro de um paciente fechado. A precedência é a mesma
+    do CONTEXT.md (Esgotada > Renovar > Regular), em `piorStatus`.
+  - **Guias sem sub-agrupamento por requisição.** Dentro do paciente segue a lista única de
+    terapias autorizadas, com o número da requisição em coluna própria. Na prática o
+    paciente tem uma requisição só; agrupar por número acrescentaria um nível de hierarquia
+    que quase sempre teria um filho só.
+  - **Padrão de acordeão do WAI-ARIA**: `<h2>` com um `<button>` dentro (o leitor de tela
+    continua navegando por cabeçalho), `aria-expanded` no botão e `aria-controls` apontando
+    para o painel, que **existe no DOM aberto ou fechado** — só o conteúdo dele é montado
+    sob demanda, para não instanciar dezenas de diálogos de histórico e exclusão que
+    ninguém abriu. O anel de foco desse botão usa `outline-offset: -3px`: o padrão do
+    sistema (`+2px`) fica do lado de fora e seria cortado pelo `overflow-hidden` da folha.
+  - **Aberto/fechado é derivado, não sincronizado por efeito.** O estado guarda só os
+    pacientes que o usuário abriu ou fechou **na mão** (`manuais`); sem entrada ali vale o
+    padrão — recolhido sem busca, **expandido quando há termo de busca**. É isso que faz o
+    filtro abrir sozinho o que sobrou no resultado sem `useEffect` nenhum: o padrão muda
+    junto com o termo. Consequência intencional: fechar um paciente durante a busca o mantém
+    fechado, e um aberto à mão continua aberto depois de limpar a busca — a escolha
+    explícita sempre ganha do padrão.
+  - **Copiar é um irmão do botão de expandir, não um filho.** `"Nome do paciente - Número
+    da requisição"` via `navigator.clipboard.writeText`. Aninhar um `<button>` dentro do
+    outro é HTML inválido, e mesmo com `stopPropagation` o clique em copiar acabaria
+    abrindo o paciente sem querer; por isso o cabeçalho é uma linha com dois controles
+    independentes, e o de copiar aparece igual recolhido ou expandido.
+  - **O aviso de "copiou" é a troca de silhueta do ícone** (`Copy` -> `Check`, 2s), não uma
+    cor: teal, âmbar e carmim são reservados para `status_alerta`, e um check verde gastaria
+    uma cor que significa outra coisa na mesma tela. Quem não vê o ícone recebe o aviso por
+    uma região `role="status"`. Toast fica só para a falha (área de transferência
+    indisponível fora de contexto seguro, ou `writeText` rejeitado) — nada de `alert()`.
+  - **Caso defensivo do número da requisição**: o schema permite mais de uma `requisicao`
+    por paciente (a unique é `(paciente_id, numero_requisicao)`, não por paciente), e o seed
+    de desenvolvimento **já cai nesse caso** — "Ana Beatriz Moraes" tem as requisições 1
+    (`2026-0001`) e 142 (`56565`). `numeroDaRequisicaoMaisRecente` escolhe a de **maior
+    `requisicao_id`**, para o texto não depender da ordem em que as guias chegaram. É
+    salvaguarda: não há nenhuma interface construída em cima disso.
+  - **`lib/domain/guias-apresentacao.ts`**: `piorStatus`, `numeroDaRequisicaoMaisRecente` e
+    `textoDeCopia` moram em `lib/` e não junto do componente por dois motivos — o painel é
+    Client Component e importar `lib/domain/guias.ts` de lá arrastaria o Prisma para o
+    bundle do navegador (mesmo motivo dos módulos `*-mensagens.ts`), e o `include` do Vitest
+    só enxerga `lib/**` e `prisma/**`. `STATUS_EM_ORDEM_DE_URGENCIA` foi movida para lá e é
+    reexportada por `app/(app)/dashboard/formato.ts`: é a mesma precedência do resumo do
+    topo e do pior status do cabeçalho, e duas cópias acabariam divergindo.
+  - **Cobertura**: as três funções puras têm teste unitário
+    (`lib/domain/guias-apresentacao.test.ts`, 14 casos, incluindo o de múltiplas
+    requisições). O comportamento de interface (recolhido por padrão, clique/Enter/Espaço,
+    busca expandindo o resultado, clipboard) foi verificado **no navegador**, não em teste
+    de componente: o projeto não tem jsdom nem testing-library, e o `environment` do Vitest
+    é `node`. Montar esse aparato só para esta tela não se paga agora — se um dia entrar,
+    é aqui que estes casos devem virar teste automatizado.
+
+- **Deploy Vercel + Supabase Postgres (verificado em 01/09/2026)**:
+  - URLs confirmadas sem expor segredo: `DATABASE_URL` está em
+    `postgresql://vigia_app.[project-ref]:[senha]@aws-0-us-west-2.pooler.supabase.com:6543/postgres?pgbouncer=true&connection_limit=1`;
+    `DIRECT_DATABASE_URL` usa a mesma credencial `vigia_app.[project-ref]` na porta `5432`,
+    sem `pgbouncer=true`; `DATABASE_SUPERUSER_URL` usa `postgres.[project-ref]` na porta
+    `5432`.
+  - Antes das migrations, o Supabase real estava vazio (`public` sem tabelas base). O role
+    `postgres` foi checado com `rolcreatedb = true`; depois disso
+    `npm run db:migrate:deploy` aplicou as 4 migrations e `npm run db:migrate:status`
+    confirmou `Database schema is up to date!`.
+  - RLS foi verificado com
+    `SELECT tablename, rowsecurity FROM pg_tables WHERE schemaname = 'public';`: as 6
+    tabelas de domínio (`paciente`, `usuario`, `terapia`, `requisicao`,
+    `requisicao_terapia`, `atendimento`) estão com `rowsecurity = true`. O Supabase também
+    reportou `_prisma_migrations` com RLS ativo. O role `vigia_app` continua com
+    `rolbypassrls = true`, então ignora RLS mesmo com ele ativado.
+  - A collation do banco Supabase é `datcollate = datctype = en_US.UTF-8`, não `C/POSIX`.
+  - Revalidação obrigatória contra a pooled real do Supabase:
+    `npm test -- atendimentos.integration guias.integration` passou com 2 arquivos e 18
+    testes. Os testes de portão + `pg_stat_activity` confirmaram que `SELECT ... FOR
+    UPDATE` dentro de transação Prisma continua serializando corretamente no Supavisor em
+    modo transação: no lançamento concorrente só o primeiro lote é aceito, e em duas
+    edições concorrentes só a primeira edição que cabe no saldo é aceita. A integração de
+    exclusão de guia também passou contra o mesmo banco. Depois disso, a suíte completa
+    (`npm test`) passou contra o Supabase real com 12 arquivos e 166 testes; o teste de
+    integração de saldo usa timeout explícito de 30s para não depender do limite padrão de
+    5s em banco remoto.
+  - `SESSION_SECRET` e `ADMIN_PASSWORD` novos foram gerados em 01/09/2026 sem gravar no
+    repositório. `SESSION_SECRET` vai na Vercel; `ADMIN_PASSWORD` fica só no terminal local
+    ao rodar `npm run create-admin`.
+
 ## Não fazer
 
 - Não recriar o campo `arquivada` em `requisicao_terapia` (foi removido no sistema
@@ -345,22 +522,38 @@ produção.
       `/atendimentos/hoje`, usando `CURRENT_DATE` do banco e ordenação por nome
       do paciente, sem filtros extras
 - [x] Prompt 9 — Relatório semanal por e-mail
-- [ ] Prompt 10 — Deploy no Vercel (incluir troca de todo texto/branding visível de
-      "klini" para "VIGIA" antes do deploy final, se ainda não tiver sido feito)
+- [x] Passagem de design visual — sistema de design aplicado a login, painel, nova
+      requisição, lançar atendimento, atendimentos de hoje e aos diálogos de
+      histórico/edição/exclusão. Sem mudança de regra de negócio, Server Action ou
+      consulta. Ver "Sistema de design" nas decisões de implementação
+- [x] Painel: pacientes recolhidos por padrão (com o pior status no cabeçalho) e botão
+      de copiar "Nome - Número da requisição". Só apresentação. Ver "Painel com pacientes
+      recolhidos e botão de copiar" nas decisões de implementação
+- [x] Prompt 10 — Deploy no Vercel/Supabase: conexão pooled/direct conferida,
+      migrations aplicadas no Supabase real vazio, RLS ativo nas 6 tabelas de domínio,
+      Prisma 7 documentado com `@prisma/adapter-pg`, `postinstall` confirmado, variáveis
+      de Vercel/local documentadas no README e testes de concorrência revalidados contra
+      a pooled real. O texto/branding visível já diz "VIGIA"; o cookie de sessão e o
+      `name` do `package.json` continuam com o nome antigo, o que não é visível ao usuário
 
 ## Pendências conhecidas (não bloqueiam o próximo passo, mas não esquecer)
 
-- Header e título da página ainda mostram "klini" em vez de "VIGIA".
-- Nome do cookie de sessão ainda é `klini_session`.
-- `ADMIN_PASSWORD` usado localmente deve ser trocado antes de qualquer deploy real (não
-  reusar a senha de desenvolvimento em produção).
+- Nome do cookie de sessão ainda é `klini_session` e o header interno é
+  `x-klini-pathname` — nenhum dos dois é visível ao usuário; trocar o cookie derruba todas
+  as sessões abertas, então fica para uma janela combinada. O `name` do `package.json`
+  também continua "klini".
+- `app/(app)/dashboard/acoes-da-guia.tsx` tem um erro de lint pré-existente
+  (`react-hooks/set-state-in-effect`, no `useEffect` de `LinhaDoHistorico` que recarrega os
+  campos ao entrar em edição). Não foi tocado pela passagem visual porque é lógica de
+  estado, não estilo — mas `npm run lint` falha por causa dele.
+- `ADMIN_PASSWORD` de produção deve ficar só no terminal local ao rodar
+  `npm run create-admin`; não versionar e não configurar na Vercel.
 - **A unicidade case-insensitive de `paciente.nome` depende da collation da instalação.**
-  Hoje ela funciona porque o banco é `Portuguese_Brazil.1252` (ver "Collation do banco").
-  Num Postgres criado com `--locale=C`, `lower()` só dobra ASCII e `'JOSÉ SILVA'` passaria
-  a conviver com `'José Silva'` — sem erro nenhum, só duplicando o paciente. Antes de
-  provisionar o banco de produção (Prompt 10), conferir com:
-  `SELECT datcollate, datctype FROM pg_database WHERE datname = current_database();`
-  Se vier `C` ou `POSIX`, a saída é trocar o índice para
+  O banco local verificado em 31/08/2026 usa `Portuguese_Brazil.1252`; o Supabase de
+  produção verificado em 01/09/2026 usa `en_US.UTF-8`. Nenhum dos dois é `C/POSIX`.
+  Num Postgres futuro criado com `--locale=C`, `lower()` só dobra ASCII e `'JOSÉ SILVA'`
+  passaria a conviver com `'José Silva'` — sem erro nenhum, só duplicando o paciente. Se
+  isso aparecer em um ambiente novo, a saída é trocar o índice para
   `CREATE UNIQUE INDEX ... ON paciente (lower(nome COLLATE "pt-BR-x-icu"))` (ou criar o
-  banco com a collation certa) — e a mesma expressão precisa ser usada no get-or-create
-  de `lib/domain/requisicoes.ts`, senão busca e constraint voltam a discordar.
+  banco com a collation certa) — e a mesma expressão precisa ser usada no get-or-create de
+  `lib/domain/requisicoes.ts`, senão busca e constraint voltam a discordar.

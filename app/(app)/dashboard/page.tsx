@@ -26,6 +26,11 @@ export const metadata: Metadata = {
  *
  * A autenticação é garantida pelo layout `app/(app)/layout.tsx`
  * (`requireUsuario`), além da triagem do `proxy.ts`.
+ *
+ * Esta é uma tela densa: ocupa a largura toda disponível, alinhada à mesma
+ * borda esquerda do cabeçalho. As telas de formulário fazem o contrário
+ * (medida estreita) — a diferença de largura é o que diz, antes de qualquer
+ * leitura, se a tela é para varrer ou para preencher.
  */
 /** Lê um parâmetro de busca só quando ele veio uma única vez, como texto. */
 function textoDaQuery(valor: string | string[] | undefined): string | null {
@@ -45,7 +50,7 @@ export default async function DashboardPage({
   const requisicaoCriada = textoDaQuery(parametros.criada);
 
   return (
-    <div className="flex flex-col gap-6">
+    <div className="flex flex-col gap-5">
       {requisicaoCriada ? (
         <AvisoDeCriacao
           numeroRequisicao={requisicaoCriada}
@@ -53,21 +58,16 @@ export default async function DashboardPage({
         />
       ) : null}
 
-      <div className="flex flex-wrap items-start justify-between gap-4">
+      <div className="flex flex-wrap items-end justify-between gap-4 border-b border-regua-forte pb-4">
         <div className="flex flex-col gap-1">
-          <h1 className="text-2xl font-semibold tracking-tight">
-            Painel de guias
-          </h1>
-          <p className="text-sm text-muted-foreground">
-            Saldo e alerta de cada autorização, direto da view
-            <code className="mx-1 rounded bg-muted px-1 py-0.5 text-xs">
-              requisicao_terapia_saldo
-            </code>
-            .
+          <h1 className="text-2xl font-semibold">Painel de guias</h1>
+          <p className="max-w-prose text-sm text-muted-foreground">
+            Saldo e alerta de cada autorização de terapia, recalculados a cada
+            atendimento lançado.
           </p>
         </div>
 
-        <Button asChild>
+        <Button asChild size="lg">
           <Link href="/requisicoes/nova">Nova requisição</Link>
         </Button>
       </div>

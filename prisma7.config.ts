@@ -3,6 +3,11 @@
 import "dotenv/config";
 import { defineConfig } from "prisma/config";
 
+const datasourceUrl =
+  process.env["PRISMA_MIGRATION_DATABASE_URL"] ??
+  process.env["DIRECT_DATABASE_URL"] ??
+  process.env["DATABASE_URL"];
+
 export default defineConfig({
   schema: "prisma/schema.prisma",
   migrations: {
@@ -10,24 +15,24 @@ export default defineConfig({
     seed: "tsx prisma/seed.ts",
   },
   datasource: {
-    // Runtime da aplicacao: role restrito, so DML.
+    // Prisma ORM 7 nao usa mais `directUrl` no schema/config; a CLI le
+    // `datasource.url`. Por isso preferimos a conexao direta quando ela existe.
     //
-    // A CLI do Prisma tambem resolve esta variavel para saber onde aplicar
-    // migrations. Como migrations sao DDL, os comandos de migration nao devem
-    // ser chamados direto — use `npm run db:migrate:dev` /
-    // `npm run db:migrate:deploy`, que passam por scripts/run-with-superuser.mjs
-    // e sobrescrevem DATABASE_URL com DATABASE_SUPERUSER_URL no processo filho.
-    url: process.env["DATABASE_URL"],
+    // Runtime da aplicacao: o Prisma Client ignora este arquivo e usa
+    // DATABASE_URL em lib/db/index.ts, mantendo a conexao pooled do Supavisor.
+    //
+    // Migrations sao DDL: use `npm run db:migrate:dev` /
+    // `npm run db:migrate:deploy`. O wrapper define
+    // PRISMA_MIGRATION_DATABASE_URL com DATABASE_SUPERUSER_URL apenas no
+    // processo filho.
+    url: datasourceUrl,
 
     // Shadow database usado pelo `migrate dev` para detectar drift.
     //
-    // Normalmente fica vazio: rodando via run-with-superuser.mjs, o Prisma se
-    // conecta como superusuario e cria/derruba um shadow temporario sozinho.
-    //
-    // Preencha SHADOW_DATABASE_URL apenas se o usuario de migration nao puder
-    // criar bancos (CREATEDB). Nesse caso aponte para um banco DEDICADO e
-    // vazio: com shadow explicito o Prisma **apaga o schema desse banco** a
-    // cada `migrate dev`. Nunca reaproveite aqui a URL do banco da aplicacao.
-    shadowDatabaseUrl: process.env["SHADOW_DATABASE_URL"],
+    // Nao aponte para DATABASE_SUPERUSER_URL: essa URL e o banco principal, e
+    // o Prisma recusa usar o proprio banco da aplicacao como shadow. Como o
+    // role postgres do Supabase tem CREATEDB, o Prisma cria um shadow
+    // temporario automaticamente quando `shadowDatabaseUrl` fica ausente.
+    shadowDatabaseUrl: process.env["PRISMA_SHADOW_DATABASE_URL"],
   },
 });

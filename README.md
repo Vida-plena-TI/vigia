@@ -22,20 +22,33 @@ This project uses [`next/font`](https://nextjs.org/docs/app/building-your-applic
 
 ## Migrations
 
-O banco é acessado por **dois usuários diferentes**, apontando para o mesmo banco:
+O banco é acessado por conexões separadas, apontando para o mesmo projeto Supabase:
 
 | Variável | Usuário | Para quê |
 | --- | --- | --- |
-| `DATABASE_URL` | role restrito (só DML) | runtime da aplicação e Prisma Client |
-| `DATABASE_SUPERUSER_URL` | usuário com DDL | apenas migrations, via `scripts/run-with-superuser.mjs` |
+| `DATABASE_URL` | `vigia_app.[project-ref]` | runtime da aplicação e Prisma Client, via Supavisor pooled/6543 |
+| `DIRECT_DATABASE_URL` | `vigia_app.[project-ref]` | conexão direta/session-mode em 5432 para ferramentas que não devem usar pooler de transação |
+| `DATABASE_SUPERUSER_URL` | `postgres.[project-ref]` | apenas migrations no terminal local, via `scripts/run-with-superuser.mjs` |
+
+Em Prisma ORM 7, `url`, `directUrl` e `shadowDatabaseUrl` não ficam mais no
+`schema.prisma`; o schema mantém só `provider = "postgresql"` e a CLI lê
+`prisma7.config.ts`. A aplicação também não usa o engine binário tradicional em runtime:
+`lib/db/index.ts`, `prisma/seed.ts` e `scripts/create-admin.ts` instanciam
+`PrismaClient` com `@prisma/adapter-pg`, que é o caminho exigido pelo Prisma 7 para SQL.
+
+O `DATABASE_URL` de produção deve ter este formato pooled:
+
+```text
+postgresql://vigia_app.[project-ref]:[senha]@aws-0-[regiao].pooler.supabase.com:6543/postgres?pgbouncer=true&connection_limit=1
+```
+
+`DIRECT_DATABASE_URL` usa a mesma credencial na porta `5432`, sem
+`pgbouncer=true`.
 
 O motivo da separação: se a aplicação for comprometida, a credencial que ela carrega não
-consegue executar `CREATE`, `ALTER` ou `DROP`. O custo é que a CLI do Prisma lê a *mesma*
-variável `DATABASE_URL` para decidir onde aplicar as migrations — e migrations são DDL.
-Rodar `npx prisma migrate dev` direto falha com erro de permissão.
-
-Por isso os comandos de migration passam por um wrapper que sobrescreve `DATABASE_URL`
-com `DATABASE_SUPERUSER_URL` **apenas no processo filho**, sem alterar o `.env` em disco.
+consegue executar `CREATE`, `ALTER` ou `DROP`. Migrations são DDL, então devem rodar pelo
+wrapper, que aponta a CLI do Prisma para `DATABASE_SUPERUSER_URL` **apenas no processo
+filho**, sem alterar o `.env` em disco.
 
 ### Desenvolvimento
 
@@ -46,15 +59,12 @@ npm run db:seed             # dados de exemplo (DML puro, usa o role restrito)
 
 ### Produção
 
-`npm run db:migrate:deploy` faz parte do processo de deploy e deve rodar **antes** de a
-nova versão começar a servir tráfego. O ambiente de deploy precisa ter as duas variáveis
-configuradas — `DATABASE_SUPERUSER_URL` como secret, nunca como variável pública.
+Rode `npm run db:migrate:deploy` no terminal local, com `.env` contendo
+`DATABASE_SUPERUSER_URL`, antes de promover uma versão que dependa de migrations novas.
+Não coloque `DATABASE_SUPERUSER_URL` na Vercel.
 
-Na Vercel isso entra no Build Command (a ser configurado no Prompt 10):
-
-```bash
-npm run db:migrate:deploy && npm run build
-```
+Na Vercel, mantenha o Build Command padrão (`npm run build`). O `postinstall` roda
+`prisma generate`, então o client é gerado durante a instalação.
 
 ### Conferir estado
 
@@ -77,13 +87,33 @@ O Prisma ignora esses objetos ao diffar o schema, então `migrate dev` não tent
 
 ### Shadow database
 
-O `migrate dev` cria um banco temporário para detectar drift. Como ele roda pelo wrapper,
-já se conecta com privilégio suficiente para criar e derrubar esse banco sozinho — não é
-preciso configurar nada.
+O `migrate dev` precisa de shadow database para detectar drift. Em Supabase, o
+`shadowDatabaseUrl` não deve apontar para `DATABASE_SUPERUSER_URL`, porque essa URL é o
+banco principal e o Prisma recusa usar o próprio banco da aplicação como shadow. Antes de
+usar migrations neste projeto foi confirmado que o role `postgres` tem `CREATEDB`, então o
+Prisma cria um shadow temporário automaticamente quando necessário.
 
-Só defina `SHADOW_DATABASE_URL` se o usuário de migration não puder criar bancos
-(`CREATEDB`). Nesse caso aponte para um banco **dedicado e vazio**: com shadow explícito o
-Prisma apaga o schema desse banco a cada execução.
+## Deploy
+
+Variáveis que vão no painel da Vercel:
+
+| Variável | Uso |
+| --- | --- |
+| `DATABASE_URL` | pooled Supabase/6543, com `pgbouncer=true&connection_limit=1` |
+| `DIRECT_DATABASE_URL` | mesma credencial em 5432, sem `pgbouncer=true` |
+| `SESSION_SECRET` | segredo de sessão com pelo menos 32 caracteres |
+| `RESEND_API_KEY` | envio do relatório semanal |
+| `REPORT_EMAIL_TO` | destinatário(s) do relatório |
+| `REPORT_EMAIL_FROM` | remetente verificado no Resend |
+| `CRON_SECRET` | bearer token do Vercel Cron |
+
+Variáveis que ficam só no terminal local:
+
+| Variável | Uso |
+| --- | --- |
+| `DATABASE_SUPERUSER_URL` | migrations locais com o role `postgres` |
+| `ADMIN_USERNAME` | criação/atualização do usuário administrativo |
+| `ADMIN_PASSWORD` | senha inicial/reset do usuário administrativo |
 
 ## Autenticação
 
@@ -165,17 +195,8 @@ e os dados do seed não são tocados. A data de referência das bordas de valida
 `CURRENT_DATE` do próprio banco, não o relógio do Node, para o resultado não depender do
 fuso da máquina.
 
-## Learn More
-
-To learn more about Next.js, take a look at the following resources:
-
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
 ## Deploy on Vercel
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+Use a Vercel como runtime Node.js do Next.js. A preparação do banco fica fora do build:
+rode as migrations localmente com `npm run db:migrate:deploy`, confira RLS e só então
+promova o deploy com as variáveis da seção `Deploy`.

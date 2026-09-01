@@ -296,7 +296,7 @@ describe.skipIf(!temBanco)(
           `TS divergiu do cenario esperado: ${cenario.nome}`,
         ).toBe(cenario.esperado);
       }
-    });
+    }, 30_000);
 
     it("o banco proibe qtd_autorizada = 0 (o ramo vazio/0 do TS e so defensivo)", async () => {
       await expect(

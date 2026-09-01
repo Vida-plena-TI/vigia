@@ -4,13 +4,6 @@ import { useActionState, useRef, useState } from "react";
 import Link from "next/link";
 
 import { Button } from "@/components/ui/button";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -60,6 +53,10 @@ function linhaVazia(chave: number): LinhaDoFormulario {
  * erro óbvio. Quem de fato recusa é a Server Action, que é alcançável por POST
  * direto — as duas usam as mesmas mensagens de
  * `lib/domain/requisicoes-mensagens.ts` para não divergirem.
+ *
+ * Visualmente é um formulário em etapas numeradas, separadas por régua
+ * rotulada — não uma pilha de cartões. Cartão sugere "objeto independente";
+ * aqui são dois passos de um mesmo preenchimento, e a numeração diz a ordem.
  */
 export function FormularioDeRequisicao({
   nomesDePacientes,
@@ -140,27 +137,30 @@ export function FormularioDeRequisicao({
       action={action}
       onSubmit={validarNoCliente}
       noValidate
-      className="flex flex-col gap-6"
+      className="flex flex-col gap-8"
     >
-      <Card>
-        <CardHeader>
-          <CardTitle>Paciente e requisição</CardTitle>
-          <CardDescription>
+      <section className="flex flex-col gap-4">
+        <div className="flex flex-col gap-1">
+          <h2 className="regua-de-secao">1. Paciente e requisição</h2>
+          <p className="max-w-prose text-xs text-muted-foreground">
             Se o paciente ainda não existe, ele é criado junto. A comparação
-            ignora maiúsculas e minúsculas — &quot;José Silva&quot; e
+            ignora maiúsculas e minúsculas: &quot;José Silva&quot; e
             &quot;JOSÉ SILVA&quot; são a mesma pessoa.
-          </CardDescription>
-        </CardHeader>
+          </p>
+        </div>
 
-        <CardContent className="grid gap-4 sm:grid-cols-2">
-          <div className="flex flex-col gap-2">
-            <Label htmlFor="pacienteNome">Nome do paciente</Label>
+        <div className="grid gap-4 sm:grid-cols-2">
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor="pacienteNome" className="text-xs">
+              Nome do paciente
+            </Label>
             <Input
               id="pacienteNome"
               name="pacienteNome"
               list="pacientes-existentes"
               autoComplete="off"
               autoFocus
+              className="h-9"
               value={pacienteNome}
               onChange={(evento) => setPacienteNome(evento.target.value)}
               placeholder="Digite ou escolha um paciente"
@@ -177,12 +177,15 @@ export function FormularioDeRequisicao({
             </datalist>
           </div>
 
-          <div className="flex flex-col gap-2">
-            <Label htmlFor="numeroRequisicao">Número da requisição</Label>
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor="numeroRequisicao" className="text-xs">
+              Número da requisição
+            </Label>
             <Input
               id="numeroRequisicao"
               name="numeroRequisicao"
               autoComplete="off"
+              className="h-9"
               value={numeroRequisicao}
               onChange={(evento) => setNumeroRequisicao(evento.target.value)}
               placeholder="Ex.: 2026-00187"
@@ -192,18 +195,18 @@ export function FormularioDeRequisicao({
               repetir em pacientes diferentes.
             </p>
           </div>
-        </CardContent>
-      </Card>
+        </div>
+      </section>
 
-      <Card>
-        <CardHeader>
-          <CardTitle>Terapias autorizadas</CardTitle>
-          <CardDescription>
+      <section className="flex flex-col gap-4">
+        <div className="flex flex-col gap-1">
+          <h2 className="regua-de-secao">2. Terapias autorizadas</h2>
+          <p className="max-w-prose text-xs text-muted-foreground">
             Uma linha por terapia. A validade é opcional.
-          </CardDescription>
-        </CardHeader>
+          </p>
+        </div>
 
-        <CardContent className="flex flex-col gap-4">
+        <div className="folha divide-y divide-regua overflow-hidden">
           {linhas.map((linha, indice) => (
             <LinhaDeTerapiaDoFormulario
               key={linha.chave}
@@ -216,31 +219,28 @@ export function FormularioDeRequisicao({
               aoRemover={removerLinha}
             />
           ))}
+        </div>
 
-          <div>
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              onClick={adicionarLinha}
-            >
-              Adicionar outra terapia
-            </Button>
-          </div>
-        </CardContent>
-      </Card>
+        <div>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={adicionarLinha}
+          >
+            Adicionar outra terapia
+          </Button>
+        </div>
+      </section>
 
       {erroExibido.erro ? (
-        <p
-          role="alert"
-          className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive"
-        >
+        <p role="alert" className="aviso-de-erro">
           {erroExibido.erro}
         </p>
       ) : null}
 
-      <div className="flex items-center gap-3">
-        <Button type="submit" disabled={enviando}>
+      <div className="flex items-center gap-3 border-t border-regua-forte pt-5">
+        <Button type="submit" size="lg" disabled={enviando}>
           {enviando ? "Salvando..." : "Criar requisição"}
         </Button>
         <Button asChild variant="ghost" size="sm">
@@ -253,7 +253,7 @@ export function FormularioDeRequisicao({
 
 /** Classes do `Input`, para o `select` nativo não destoar dos outros campos. */
 const CLASSES_DO_SELECT =
-  "h-8 w-full min-w-0 rounded-lg border border-input bg-transparent px-2.5 py-1 text-base transition-colors outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-50 aria-invalid:border-destructive aria-invalid:ring-3 aria-invalid:ring-destructive/20 md:text-sm dark:bg-input/30";
+  "h-9 w-full min-w-0 rounded-lg border border-input bg-transparent px-2.5 py-1 text-base transition-colors outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-50 aria-invalid:border-destructive aria-invalid:ring-3 aria-invalid:ring-destructive/20 md:text-sm dark:bg-input/30";
 
 /**
  * Uma linha "terapia + quantidade + validade".
@@ -266,6 +266,9 @@ const CLASSES_DO_SELECT =
  * escondido para participar do formulário, e aqui há um por linha — o campo
  * nativo é o que o `getAll` enxerga de forma previsível, e continua funcionando
  * sem JavaScript.
+ *
+ * A linha com erro ganha o mesmo filete de margem carmim das guias esgotadas
+ * do painel: é o canal que faz o erro ser achado pela borda, sem leitura.
  */
 function LinhaDeTerapiaDoFormulario({
   linha,
@@ -293,9 +296,15 @@ function LinhaDeTerapiaDoFormulario({
   const idValidade = `validade-${linha.chave}`;
 
   return (
-    <div className="flex flex-col gap-3 rounded-lg border p-3 sm:flex-row sm:items-end">
-      <div className="flex min-w-0 flex-1 flex-col gap-2">
-        <Label htmlFor={idTerapia}>Terapia {indice + 1}</Label>
+    <div
+      className={`flex flex-col gap-3 border-l-[3px] px-3 py-3 sm:flex-row sm:items-end ${
+        temErro ? "border-l-esgotada bg-esgotada-fundo/50" : "border-l-transparent"
+      }`}
+    >
+      <div className="flex min-w-0 flex-1 flex-col gap-1.5">
+        <Label htmlFor={idTerapia} className="text-xs">
+          Terapia {indice + 1}
+        </Label>
         <select
           id={idTerapia}
           name="terapiaId"
@@ -315,8 +324,10 @@ function LinhaDeTerapiaDoFormulario({
         </select>
       </div>
 
-      <div className="flex flex-col gap-2 sm:w-32">
-        <Label htmlFor={idQuantidade}>Qtd. autorizada</Label>
+      <div className="flex flex-col gap-1.5 sm:w-28">
+        <Label htmlFor={idQuantidade} className="text-xs">
+          Qtd. autorizada
+        </Label>
         <Input
           id={idQuantidade}
           name="qtdAutorizada"
@@ -324,6 +335,7 @@ function LinhaDeTerapiaDoFormulario({
           inputMode="numeric"
           min={1}
           step={1}
+          className="h-9 text-right"
           value={linha.qtdAutorizada}
           aria-invalid={temErro ? true : undefined}
           onChange={(evento) =>
@@ -332,12 +344,15 @@ function LinhaDeTerapiaDoFormulario({
         />
       </div>
 
-      <div className="flex flex-col gap-2 sm:w-44">
-        <Label htmlFor={idValidade}>Validade (opcional)</Label>
+      <div className="flex flex-col gap-1.5 sm:w-40">
+        <Label htmlFor={idValidade} className="text-xs">
+          Validade (opcional)
+        </Label>
         <Input
           id={idValidade}
           name="validade"
           type="date"
+          className="h-9"
           value={linha.validade}
           onChange={(evento) =>
             aoAlterar(linha.chave, "validade", evento.target.value)
@@ -349,6 +364,7 @@ function LinhaDeTerapiaDoFormulario({
         type="button"
         variant="ghost"
         size="sm"
+        className="sm:mb-0.5"
         // A última linha não pode sair: a requisição precisa de pelo menos uma
         // terapia, e um formulário sem nenhuma linha não teria como voltar.
         disabled={!podeRemover}

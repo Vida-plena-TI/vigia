@@ -54,10 +54,30 @@ function mascarar(url) {
   }
 }
 
-/** Identidade do banco alvo, para comparar duas connection strings. */
+/**
+ * Identidade do banco alvo, para comparar duas connection strings.
+ *
+ * No Supabase, a URL pooled usa porta 6543 e a direta usa 5432. As duas podem
+ * apontar para o mesmo projeto, entao a porta so entra na identidade de URLs
+ * que nao tenham project-ref do Supabase.
+ */
 function alvo(url) {
   try {
     const u = new URL(url);
+    const username = decodeURIComponent(u.username);
+    const refNoUsuario = username.match(/\.([a-z0-9-]+)$/)?.[1];
+    const refNoHostDireto = u.hostname.match(
+      /^db\.([a-z0-9-]+)\.supabase\.co$/,
+    )?.[1];
+    const projectRef = refNoUsuario ?? refNoHostDireto;
+
+    if (
+      projectRef &&
+      (u.hostname.endsWith(".pooler.supabase.com") || refNoHostDireto)
+    ) {
+      return `supabase:${projectRef}${u.pathname}`;
+    }
+
     return `${u.hostname}:${u.port}${u.pathname}`;
   } catch {
     return null;
@@ -155,7 +175,11 @@ const [comando, ...resto] = args;
 
 // A sobrescrita vive so neste objeto, que e entregue ao filho. `process.env` do
 // processo pai continua intacto.
-const envDoFilho = { ...process.env, DATABASE_URL: superuserUrl };
+const envDoFilho = {
+  ...process.env,
+  DATABASE_URL: superuserUrl,
+  PRISMA_MIGRATION_DATABASE_URL: superuserUrl,
+};
 
 console.error(
   `${PREFIX} ${args.join(" ")} -> ${mascarar(superuserUrl)}`,
