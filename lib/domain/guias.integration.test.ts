@@ -51,7 +51,10 @@ async function comRollback<T>(
       async (tx) => {
         throw new Rollback(await executar(tx));
       },
-      { timeout: 30_000 },
+      // `maxWait` é o tempo para *conseguir* a transação, e o padrão (2s) não
+      // cobre a primeira, que ainda paga o custo de abrir a conexão contra o
+      // banco remoto.
+      { maxWait: 30_000, timeout: 30_000 },
     );
   } catch (erro) {
     if (erro instanceof Rollback) {

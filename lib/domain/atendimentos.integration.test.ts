@@ -72,7 +72,7 @@ const temBanco = Boolean(process.env.DATABASE_URL);
 // do outro.
 afterAll(async () => {
   await prisma.$disconnect();
-});
+}, 60_000);
 
 /** Sufixo único para não colidir com paciente/terapia já existentes. */
 const SUFIXO = Math.random().toString(36).slice(2, 10);
@@ -152,14 +152,54 @@ async function criarCenario(
   };
 }
 
-/** Apaga um cenário commitado. As guias levam os atendimentos junto (cascade). */
+/**
+ * Apaga um cenário commitado. As guias levam os atendimentos junto (cascade).
+ *
+ * Cada DELETE é independente: um que falhe não pode impedir os seguintes de
+ * rodarem, senão um tropeço no primeiro deixa o cenário inteiro no banco. Mas
+ * tolerar a falha não é tolerar o silêncio — o que não for apagado sai no
+ * `console.error` com o id da linha, porque este teste roda contra o banco de
+ * produção e lixo esquecido lá só some se alguém enxergar qual é.
+ *
+ * A ordem é sequencial e não pode mudar: as FKs exigem apagar a guia antes da
+ * requisição e da terapia, e a requisição antes do paciente.
+ */
 async function apagarCenario(cenario: Cenario): Promise<void> {
-  await prisma.requisicaoTerapia.deleteMany({
-    where: { id: { in: cenario.guiaIds } },
-  });
-  await prisma.requisicao.deleteMany({ where: { id: cenario.requisicaoId } });
-  await prisma.paciente.deleteMany({ where: { id: cenario.pacienteId } });
-  await prisma.terapia.deleteMany({ where: { id: { in: cenario.terapiaIds } } });
+  const passos: { rotulo: string; apagar: () => Promise<unknown> }[] = [
+    {
+      rotulo: `requisicao_terapia id(s) ${cenario.guiaIds.join(", ")}`,
+      apagar: () =>
+        prisma.requisicaoTerapia.deleteMany({
+          where: { id: { in: cenario.guiaIds } },
+        }),
+    },
+    {
+      rotulo: `requisicao id ${cenario.requisicaoId}`,
+      apagar: () =>
+        prisma.requisicao.deleteMany({ where: { id: cenario.requisicaoId } }),
+    },
+    {
+      rotulo: `paciente id ${cenario.pacienteId}`,
+      apagar: () =>
+        prisma.paciente.deleteMany({ where: { id: cenario.pacienteId } }),
+    },
+    {
+      rotulo: `terapia id(s) ${cenario.terapiaIds.join(", ")}`,
+      apagar: () =>
+        prisma.terapia.deleteMany({ where: { id: { in: cenario.terapiaIds } } }),
+    },
+  ];
+
+  for (const passo of passos) {
+    try {
+      await passo.apagar();
+    } catch (erro) {
+      console.error(
+        `[atendimentos.integration] limpeza NAO apagou ${passo.rotulo}; o dado continua no banco.`,
+        erro,
+      );
+    }
+  }
 }
 
 /** `qtd_utilizada` de uma guia, lida da view (a fonte de verdade). */
@@ -196,7 +236,10 @@ async function comRollback<T>(
       async (tx) => {
         throw new Rollback(await executar(tx));
       },
-      { timeout: 30_000 },
+      // `maxWait` é o tempo para *conseguir* a transação, e o padrão (2s) não
+      // cobre a primeira, que ainda paga o custo de abrir a conexão contra o
+      // banco remoto.
+      { maxWait: 30_000, timeout: 30_000 },
     );
   } catch (erro) {
     if (erro instanceof Rollback) {
@@ -656,6 +699,33 @@ async function existeConexaoBloqueada(): Promise<boolean> {
   return Number(linha.total) > 0;
 }
 
+/**
+ * Abre `conexoes` conexões ao mesmo tempo e devolve todas ao pool.
+ *
+ * Contra um Postgres remoto atrás de um pooler, abrir uma conexão nova custa
+ * ~2,4s, e a transação B é a função de **produção** (`lancarLote` /
+ * `editarAtendimentoPeloId`). Foi essa medição que revelou que o `maxWait`
+ * padrão do Prisma (2s) é curto demais até sem concorrência nenhuma: B morria
+ * com `P2028` **antes** de chegar ao `SELECT ... FOR UPDATE`, nenhuma conexão
+ * aparecia esperando lock e o teste acusava "não bloqueou" sem ter chegado a
+ * exercitar o lock. Hoje a produção leva `maxWait` explícito
+ * (`OPCOES_DE_TRANSACAO`, em `lib/db/transacao.ts`), então B não perde mais
+ * essa corrida; aquecer continua valendo porque tira a latência de conexão do
+ * relógio de B, e o que o teste mede volta a ser só o lock.
+ *
+ * O `pg_sleep` é o que força conexões *distintas*: sem ele o pool atenderia as
+ * consultas em sequência com uma só. O `::text` existe porque `pg_sleep`
+ * devolve `void`, que o Prisma não sabe desserializar em `$queryRaw`.
+ */
+async function aquecerPool(conexoes = 4): Promise<void> {
+  await Promise.all(
+    Array.from(
+      { length: conexoes },
+      () => prisma.$queryRaw`SELECT pg_sleep(0.2)::text AS "ok"`,
+    ),
+  );
+}
+
 describe.skipIf(!temBanco)("corrida de saldo entre dois lancamentos", () => {
   let criado: Cenario | null = null;
 
@@ -665,7 +735,11 @@ describe.skipIf(!temBanco)("corrida de saldo entre dois lancamentos", () => {
     if (criado) {
       await apagarCenario(criado);
     }
-  });
+    // Timeout explícito: o padrão do Vitest é curto demais para quatro DELETEs
+    // contra um banco remoto. É só rede de segurança — o que garante que os
+    // DELETEs não fiquem presos num lock é o `finally` do teste, que sempre
+    // encerra a transação A.
+  }, 60_000);
 
   it("com saldo para so um dos dois lotes, apenas um e aceito", async () => {
     // Guia de 3 créditos; cada lote pede 2. Cabem separados, não cabem juntos.
@@ -679,6 +753,9 @@ describe.skipIf(!temBanco)("corrida de saldo entre dois lancamentos", () => {
       itens: [{ requisicaoTerapiaId: cenario.guiaIds[0], creditosConsumidos: 2 }],
     };
 
+    // Antes de A tomar uma conexão: ver comentário de `aquecerPool`.
+    await aquecerPool();
+
     const portao = criarPortao();
     let resultadoA: ResultadoDoLote | null = null;
 
@@ -691,52 +768,71 @@ describe.skipIf(!temBanco)("corrida de saldo entre dois lancamentos", () => {
 
         return resultadoA;
       },
-      { timeout: 30_000 },
+      { maxWait: 30_000, timeout: 30_000 },
     );
 
-    const aChegouNoPortao = await esperarAte(() => resultadoA !== null, 10_000);
-    expect(aChegouNoPortao).toBe(true);
+    // Tudo daqui em diante fica no `try`: o portão **precisa** ser aberto e a
+    // transação A **precisa** terminar (commit ou rollback) mesmo que uma
+    // asserção falhe no meio. Sem isso, uma falha antes do `portao.abrir()`
+    // deixa A segurando o lock da guia até o timeout de 30s, o `afterAll` trava
+    // nos DELETEs esperando esse mesmo lock e o cenário commitado fica órfão.
+    const pendentes: Promise<unknown>[] = [transacaoA];
 
-    // Transação B: abre agora, com A ainda sem commitar. O `FOR UPDATE` dela
-    // vai bater no lock de A. É a função de produção (`lancarLote`, que abre a
-    // própria transação), não uma versão de teste.
-    const transacaoB = lancarLote(lote);
+    try {
+      const aChegouNoPortao = await esperarAte(
+        () => resultadoA !== null,
+        10_000,
+      );
+      expect(aChegouNoPortao).toBe(true);
 
-    // Janela curta de propósito: `lancarLote` usa o timeout padrão do Prisma
-    // para a transação (5s), e B passa esse tempo bloqueada. Detectar o
-    // bloqueio leva milissegundos; esperar demais aqui faria B estourar o
-    // timeout em vez de ser recusada pelo saldo.
-    const bBloqueou = await esperarAte(existeConexaoBloqueada, 2_000);
-    expect(bBloqueou).toBe(true);
+      // Transação B: abre agora, com A ainda sem commitar. O `FOR UPDATE` dela
+      // vai bater no lock de A. É a função de produção (`lancarLote`, que abre
+      // a própria transação), não uma versão de teste.
+      const transacaoB = lancarLote(lote);
+      pendentes.push(transacaoB);
 
-    portao.abrir();
+      // Janela curta de propósito: `lancarLote` usa o timeout padrão do Prisma
+      // para a transação (5s), e B passa esse tempo bloqueada. Detectar o
+      // bloqueio leva milissegundos; esperar demais aqui faria B estourar o
+      // timeout em vez de ser recusada pelo saldo.
+      const bBloqueou = await esperarAte(existeConexaoBloqueada, 2_000);
+      expect(bBloqueou).toBe(true);
 
-    const [a, b] = await Promise.all([transacaoA, transacaoB]);
+      portao.abrir();
 
-    // Exatamente uma das duas passou.
-    expect([a.ok, b.ok].filter(Boolean)).toHaveLength(1);
+      const [a, b] = await Promise.all([transacaoA, transacaoB]);
 
-    // A é a que passa: ela chegou primeiro ao lock.
-    expect(a).toEqual({
-      ok: true,
-      totalDeAtendimentos: 1,
-      totalDeCreditos: 2,
-    });
+      // Exatamente uma das duas passou.
+      expect([a.ok, b.ok].filter(Boolean)).toHaveLength(1);
 
-    // B foi recusada pelo saldo (1 restante contra 2 pedidos), não por outro
-    // motivo qualquer — é isso que mostra que ela releu a view depois do
-    // commit de A, em vez de decidir com o snapshot velho (que diria 3).
-    expect(b.ok).toBe(false);
-    expect(b.ok === false && b.erro).toContain("1");
-    expect(b.ok === false && b.erro).toContain("2");
+      // A é a que passa: ela chegou primeiro ao lock.
+      expect(a).toEqual({
+        ok: true,
+        totalDeAtendimentos: 1,
+        totalDeCreditos: 2,
+      });
 
-    // O que o lock existe para impedir: 2 + 2 = 4 numa guia de 3.
-    expect(await utilizadaNaView(prisma, cenario.guiaIds[0])).toBe(2);
-    expect(
-      await prisma.atendimento.count({
-        where: { requisicaoTerapiaId: cenario.guiaIds[0] },
-      }),
-    ).toBe(1);
+      // B foi recusada pelo saldo (1 restante contra 2 pedidos), não por outro
+      // motivo qualquer — é isso que mostra que ela releu a view depois do
+      // commit de A, em vez de decidir com o snapshot velho (que diria 3).
+      expect(b.ok).toBe(false);
+      expect(b.ok === false && b.erro).toContain("1");
+      expect(b.ok === false && b.erro).toContain("2");
+
+      // O que o lock existe para impedir: 2 + 2 = 4 numa guia de 3.
+      expect(await utilizadaNaView(prisma, cenario.guiaIds[0])).toBe(2);
+      expect(
+        await prisma.atendimento.count({
+          where: { requisicaoTerapiaId: cenario.guiaIds[0] },
+        }),
+      ).toBe(1);
+    } finally {
+      // Idempotente: abrir um portão já aberto não faz nada. `allSettled`
+      // porque no caminho de falha estas promessas rejeitam, e o erro que
+      // importa é o da asserção, não o da transação abortada.
+      portao.abrir();
+      await Promise.allSettled(pendentes);
+    }
   }, 60_000);
 });
 
@@ -747,7 +843,7 @@ describe.skipIf(!temBanco)("corrida de saldo entre duas edições", () => {
     if (criado) {
       await apagarCenario(criado);
     }
-  });
+  }, 60_000);
 
   it("com autorização para só uma edição, apenas uma é aceita", async () => {
     // Guia de 5 créditos, com dois atendimentos de 1. Cada edição para 3 cabe
@@ -785,6 +881,8 @@ describe.skipIf(!temBanco)("corrida de saldo entre duas edições", () => {
       observacao: null,
     };
 
+    await aquecerPool();
+
     const portao = criarPortao();
     let resultadoA: ResultadoEdicaoDeAtendimento | null = null;
 
@@ -797,43 +895,57 @@ describe.skipIf(!temBanco)("corrida de saldo entre duas edições", () => {
 
         return resultadoA;
       },
-      { timeout: 30_000 },
+      { maxWait: 30_000, timeout: 30_000 },
     );
 
-    const aChegouNoPortao = await esperarAte(() => resultadoA !== null, 10_000);
-    expect(aChegouNoPortao).toBe(true);
+    // Mesmo motivo do bloco de lançamento: o `finally` garante que A termine
+    // mesmo se uma asserção falhar antes do `portao.abrir()`, senão o lock fica
+    // de pé até os 30s e o `afterAll` não consegue apagar o cenário.
+    const pendentes: Promise<unknown>[] = [transacaoA];
 
-    // B usa a função de produção, que abre a própria transação. Com A ainda
-    // sem commitar, B deve bloquear no `FOR UPDATE` da guia.
-    const transacaoB = editarAtendimentoPeloId(edicaoB);
+    try {
+      const aChegouNoPortao = await esperarAte(
+        () => resultadoA !== null,
+        10_000,
+      );
+      expect(aChegouNoPortao).toBe(true);
 
-    const bBloqueou = await esperarAte(existeConexaoBloqueada, 2_000);
-    expect(bBloqueou).toBe(true);
+      // B usa a função de produção, que abre a própria transação. Com A ainda
+      // sem commitar, B deve bloquear no `FOR UPDATE` da guia.
+      const transacaoB = editarAtendimentoPeloId(edicaoB);
+      pendentes.push(transacaoB);
 
-    portao.abrir();
+      const bBloqueou = await esperarAte(existeConexaoBloqueada, 2_000);
+      expect(bBloqueou).toBe(true);
 
-    const [a, b] = await Promise.all([transacaoA, transacaoB]);
+      portao.abrir();
 
-    expect(a).toEqual({
-      ok: true,
-      requisicaoTerapiaId: cenario.guiaIds[0],
-      totalUtilizado: 4,
-    });
+      const [a, b] = await Promise.all([transacaoA, transacaoB]);
 
-    expect(b.ok).toBe(false);
-    expect(b.ok === false && b.erro).toContain("5");
-    expect(b.ok === false && b.erro).toContain("3");
+      expect(a).toEqual({
+        ok: true,
+        requisicaoTerapiaId: cenario.guiaIds[0],
+        totalUtilizado: 4,
+      });
 
-    expect(await utilizadaNaView(prisma, cenario.guiaIds[0])).toBe(4);
+      expect(b.ok).toBe(false);
+      expect(b.ok === false && b.erro).toContain("5");
+      expect(b.ok === false && b.erro).toContain("3");
 
-    const creditos = await prisma.atendimento.findMany({
-      where: { requisicaoTerapiaId: cenario.guiaIds[0] },
-      orderBy: { id: "asc" },
-      select: { creditosConsumidos: true },
-    });
+      expect(await utilizadaNaView(prisma, cenario.guiaIds[0])).toBe(4);
 
-    expect(creditos.map((atendimento) => atendimento.creditosConsumidos)).toEqual(
-      [3, 1],
-    );
+      const creditos = await prisma.atendimento.findMany({
+        where: { requisicaoTerapiaId: cenario.guiaIds[0] },
+        orderBy: { id: "asc" },
+        select: { creditosConsumidos: true },
+      });
+
+      expect(
+        creditos.map((atendimento) => atendimento.creditosConsumidos),
+      ).toEqual([3, 1]);
+    } finally {
+      portao.abrir();
+      await Promise.allSettled(pendentes);
+    }
   }, 60_000);
 });

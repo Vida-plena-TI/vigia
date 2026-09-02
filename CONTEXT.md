@@ -316,6 +316,32 @@ produção.
     transação enxergar o *commit* da outra. A interleaving é forçada com um portão (a
     transação A para com o lock de pé até o teste liberar) e o bloqueio de B é
     confirmado no `pg_stat_activity` — não é um `sleep` esperançoso.
+  - **O portão tem de ser aberto num `finally`.** Como o teste commita, a limpeza depende
+    do `afterAll`; e se qualquer asserção falhar entre a abertura da transação A e o
+    `portao.abrir()`, A fica segurando o lock da guia até o timeout de 30s. O `afterAll`
+    então trava nos `DELETE` esperando esse mesmo lock, estoura o próprio timeout e deixa
+    paciente/requisição/terapia commitados no banco. O `finally` abre o portão e espera as
+    duas transações terminarem (`Promise.allSettled`, porque no caminho de falha elas
+    rejeitam e o erro que importa é o da asserção).
+  - **`apagarCenario` é tolerante a falha, mas não silenciosa**: cada `DELETE` roda no seu
+    próprio `try`, para que um que falhe não impeça os seguintes, e o que não for apagado
+    sai num `console.error` com o id da linha. Este teste roda contra o banco de produção;
+    lixo esquecido lá só some se alguém enxergar qual é.
+  - **O pool é aquecido antes de abrir a transação A** (`aquecerPool`, quatro
+    `pg_sleep` em paralelo). A transação B é a função de *produção*, que usa o `maxWait`
+    padrão do Prisma (2s) para conseguir a conexão — e abrir uma conexão nova contra o
+    Supabase remoto custa ~2,4s, medido. Sem aquecer, B morre com `P2028` **antes** de
+    chegar ao `SELECT ... FOR UPDATE`: nenhuma conexão aparece esperando lock e o teste
+    acusa "não bloqueou" sem ter chegado a exercitar o lock que ele existe para provar.
+  - **Todo `$transaction` dos testes de integração leva `maxWait: 30_000` junto do
+    `timeout: 30_000`.** `timeout` é o tempo *dentro* da transação; `maxWait` é o tempo
+    para *consegui-la*, e o padrão de 2s é curto demais quando os 12 arquivos de teste
+    rodam em paralelo contra a pooled do Supabase. Sem isso a suíte falha de forma
+    intermitente com `P2028 Unable to start a transaction in the given time`, em arquivos
+    diferentes a cada rodada — parece flakiness de concorrência e não é.
+    A mesma medição vale para produção, onde uma conexão fria sozinha já estoura o padrão;
+    a regra completa está em "Convenções de acesso ao banco", que é a fonte única — este
+    bullet é só o registro de onde ela apareceu primeiro.
 
 - **Sistema de design (passagem visual, aplicada a todas as telas do Prompt 2 ao 8)**.
   Vale para as telas novas dos Prompts 8-9 e para qualquer tela futura: seguir o que está
@@ -455,8 +481,15 @@ produção.
     `5432`.
   - Antes das migrations, o Supabase real estava vazio (`public` sem tabelas base). O role
     `postgres` foi checado com `rolcreatedb = true`; depois disso
-    `npm run db:migrate:deploy` aplicou as 4 migrations e `npm run db:migrate:status`
-    confirmou `Database schema is up to date!`.
+    `npm run db:migrate:deploy` aplicou as 3 migrations do histórico do Prisma e
+    `npm run db:migrate:status` confirmou `Database schema is up to date!`.
+  - **RLS não está no histórico do Prisma.** O `ENABLE ROW LEVEL SECURITY` das 6 tabelas
+    vive em `scripts/supabase/enable-rls.sql` e é rodado manualmente uma vez contra o
+    Supabase (SQL Editor ou `psql`), separado do `db:migrate:deploy`. O motivo: o
+    histórico em `prisma/migrations` é schema portável e roda também contra o Postgres
+    local via `db:migrate:dev`, onde não existe o role `vigia_app` com `BYPASSRLS` — ligar
+    RLS por lá derrubaria o login em desenvolvimento. Os grants de `vigia_app` (e o
+    próprio `BYPASSRLS`) foram feitos manualmente antes e também não estão no script.
   - RLS foi verificado com
     `SELECT tablename, rowsecurity FROM pg_tables WHERE schemaname = 'public';`: as 6
     tabelas de domínio (`paciente`, `usuario`, `terapia`, `requisicao`,
@@ -477,6 +510,58 @@ produção.
   - `SESSION_SECRET` e `ADMIN_PASSWORD` novos foram gerados em 01/09/2026 sem gravar no
     repositório. `SESSION_SECRET` vai na Vercel; `ADMIN_PASSWORD` fica só no terminal local
     ao rodar `npm run create-admin`.
+  - **Revalidação de concorrência refeita em 02/09/2026, depois de dois bugs de teste que
+    só apareciam contra a pooled remota.** Ambos estão descritos em detalhe nas decisões
+    de implementação do Prompt 6 (portão no `finally`, `apagarCenario` resiliente,
+    `aquecerPool`, `maxWait` explícito). O resumo do porquê de nenhum dos dois aparecer no
+    Postgres local: no local a conexão abre em milissegundos, então o `maxWait` padrão de
+    2s nunca estourava e a asserção de bloqueio nunca falhava — e, sem asserção falhando
+    antes do `portao.abrir()`, o defeito da limpeza também nunca era exercitado. Contra o
+    Supabase os dois se combinaram: a asserção de bloqueio falhava por falta de conexão,
+    a transação A ficava com o lock de pé pelos 30s, o `afterAll` estourava com
+    `Hook timed out in 10000ms` no meio dos `DELETE` e sobrava paciente/requisição/terapia
+    órfãos (a guia, primeiro `DELETE`, chegava a sair — foi essa a assinatura do lixo).
+  - Resultado da revalidação: `npm test` passou 4 vezes seguidas contra o Supabase real,
+    12 arquivos e 166 testes, sem nenhuma falha intermitente. Os dois blocos de corrida
+    confirmam o bloqueio real de B pelo `pg_stat_activity` (fora do pool do Prisma), o
+    saldo final correto (`qtd_utilizada = 2` na guia de 3; `qtd_utilizada = 4` na guia de
+    5) e uma varredura do banco depois de cada rodada devolveu 0 linhas residuais. A
+    correção da limpeza foi validada injetando uma falha logo após a asserção de bloqueio,
+    numa cópia descartável do arquivo: os dois testes falham como esperado, o `afterAll`
+    completa sem estourar e o banco fica em 0 órfãos. A injeção foi revertida.
+
+## Convenções de acesso ao banco
+
+- **Todo `prisma.$transaction` — de produção ou de teste — precisa de `maxWait` explícito,
+  maior que o padrão do Prisma.** `maxWait` é o tempo para *conseguir* a transação (abrir
+  ou pegar do pool a conexão em que ela vai rodar); `timeout` é o orçamento de trabalho
+  *dentro* dela. São coisas diferentes e só a primeira está em jogo aqui.
+  - **De onde veio a exigência**: a investigação que corrigiu a flakiness dos testes de
+    concorrência contra a pooled do Supabase (02/09/2026, descrita em detalhe nas decisões
+    de implementação do Prompt 6 e no bloco de deploy). Ela instrumentou o custo de abrir
+    uma conexão nova contra o Supabase: **~2,4s**, contra os **2000ms** do `maxWait` padrão
+    do Prisma. O padrão perde por uma margem estreita e constante, e o sintoma é
+    `P2028 Unable to start a transaction in the given time`.
+  - **Isso não é um problema só de teste.** Sem concorrência nenhuma, toda função
+    serverless da Vercel que precise abrir a primeira conexão paga esses ~2,4s — ou seja,
+    qualquer conexão fria em produção estourava o padrão. Foi por isso que a exigência
+    virou convenção em vez de continuar como comentário local.
+  - **Produção**: `OPCOES_DE_TRANSACAO` em `lib/db/transacao.ts` (`maxWait: 10_000`, ~4x de
+    folga sobre os 2,4s medidos). É o que as quatro transações de produção usam —
+    `lancarLote` e `editarAtendimentoPeloId` (`atendimentos.ts`), `excluirGuiaPeloId`
+    (`guias.ts`) e `criarRequisicao` (`requisicoes.ts`). Transação nova em produção importa
+    essa constante em vez de repetir o número.
+  - **Testes de integração**: `{ maxWait: 30_000, timeout: 30_000 }`. O valor é maior que o
+    de produção porque os 12 arquivos da suíte disputam a mesma pooled em paralelo — carga
+    que uma requisição de produção não tem. Ali o `timeout` também sobe, porque os blocos
+    de corrida seguram lock de propósito.
+  - **O `timeout` de produção fica no padrão do Prisma (5s), de propósito.** O que estava
+    errado era a espera *pela* conexão, não o trabalho dentro da transação; e o teste de
+    corrida de `lancarLote` conta com esses 5s para dimensionar a janela em que observa B
+    bloqueada no `pg_stat_activity`.
+  - **Por que isso não aparece no Postgres local**: lá a conexão abre em milissegundos, o
+    `maxWait` padrão nunca estoura e o defeito fica invisível. Só a pooled remota exercita
+    esse caminho — foi assim que ele passou despercebido até a revalidação de deploy.
 
 ## Não fazer
 
@@ -489,6 +574,12 @@ produção.
   `DATABASE_SUPERUSER_URL`.
 - Não replicar a fórmula de saldo/status em mais de um lugar em TypeScript como fonte de
   verdade — a view SQL é a fonte de verdade; TypeScript só espelha para testes.
+- Não abrir `prisma.$transaction` sem `maxWait` explícito. O padrão do Prisma (2s) é
+  menor que o custo medido de uma conexão fria contra o Supabase (~2,4s) e vira `P2028`
+  em produção. Ver "Convenções de acesso ao banco".
+- Não colocar configuração específica do Supabase (RLS, grants, roles) em
+  `prisma/migrations` — esse histórico é schema portável e roda também no Postgres local.
+  Esse tipo de configuração vai em `scripts/supabase/`, rodado à mão.
 
 ## Progresso
 
@@ -530,11 +621,23 @@ produção.
       de copiar "Nome - Número da requisição". Só apresentação. Ver "Painel com pacientes
       recolhidos e botão de copiar" nas decisões de implementação
 - [x] Prompt 10 — Deploy no Vercel/Supabase: conexão pooled/direct conferida,
-      migrations aplicadas no Supabase real vazio, RLS ativo nas 6 tabelas de domínio,
+      migrations aplicadas no Supabase real vazio, RLS ativo nas 6 tabelas de domínio
+      (por `scripts/supabase/enable-rls.sql`, fora do histórico do Prisma),
       Prisma 7 documentado com `@prisma/adapter-pg`, `postinstall` confirmado, variáveis
       de Vercel/local documentadas no README e testes de concorrência revalidados contra
       a pooled real. O texto/branding visível já diz "VIGIA"; o cookie de sessão e o
       `name` do `package.json` continuam com o nome antigo, o que não é visível ao usuário
+- [x] Revalidação de concorrência contra o Supabase (02/09/2026) — **última pendência do
+      deploy, fecha o Prompt 10**. `npm test` verde 4x seguidas (12 arquivos, 166 testes)
+      contra a pooled real, bloqueio de B confirmado por `pg_stat_activity` fora do pool,
+      saldos finais corretos e 0 linhas residuais no banco depois de cada rodada. Dois
+      bugs de teste foram corrigidos no caminho, ambos invisíveis no Postgres local: (1) o
+      portão da transação A não estava num `finally`, então uma asserção que falhasse
+      antes do `portao.abrir()` deixava o lock de pé por 30s, travava o `afterAll` nos
+      `DELETE` e deixava paciente/requisição/terapia órfãos em produção; (2) o `maxWait`
+      padrão de 2s do Prisma é menor que os ~2,4s que uma conexão nova ao Supabase leva
+      para abrir, o que fazia a própria asserção de bloqueio falhar de forma intermitente.
+      Ver "Revalidação de concorrência refeita em 02/09/2026" no bloco de deploy
 
 ## Pendências conhecidas (não bloqueiam o próximo passo, mas não esquecer)
 

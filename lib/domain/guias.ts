@@ -11,6 +11,7 @@
  * conforto visual, não é a validação.
  */
 import { prisma } from "@/lib/db";
+import { OPCOES_DE_TRANSACAO } from "@/lib/db/transacao";
 import type { Prisma } from "@/lib/generated/prisma/client";
 
 import type { StatusAlerta } from "./saldo";
@@ -276,5 +277,8 @@ export async function excluirGuiaPeloId(
     return { ok: false, erro: ERRO_ID_INVALIDO };
   }
 
-  return prisma.$transaction((tx) => excluirGuiaNaTransacao(tx, guiaId));
+  return prisma.$transaction(
+    (tx) => excluirGuiaNaTransacao(tx, guiaId),
+    OPCOES_DE_TRANSACAO,
+  );
 }

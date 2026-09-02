@@ -29,6 +29,7 @@
  * vez de se travarem em cruz.
  */
 import { prisma } from "@/lib/db";
+import { OPCOES_DE_TRANSACAO } from "@/lib/db/transacao";
 import type { Prisma } from "@/lib/generated/prisma/client";
 
 import type { StatusAlerta } from "./saldo";
@@ -502,7 +503,10 @@ export async function lancarLote(
     return { ok: false, erro: validacao.erro, item: validacao.item };
   }
 
-  return prisma.$transaction((tx) => lancarLoteNaTransacao(tx, entrada));
+  return prisma.$transaction(
+    (tx) => lancarLoteNaTransacao(tx, entrada),
+    OPCOES_DE_TRANSACAO,
+  );
 }
 
 /** A guia travada para uma edição de atendimento. */
@@ -606,7 +610,10 @@ export async function editarAtendimentoPeloId(
     return validacao;
   }
 
-  return prisma.$transaction((tx) => editarAtendimentoNaTransacao(tx, entrada));
+  return prisma.$transaction(
+    (tx) => editarAtendimentoNaTransacao(tx, entrada),
+    OPCOES_DE_TRANSACAO,
+  );
 }
 
 async function excluirAtendimentoComCliente(

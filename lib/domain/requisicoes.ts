@@ -15,6 +15,7 @@
  * insert estouraria em vez de reaproveitar a linha existente.
  */
 import { prisma } from "@/lib/db";
+import { OPCOES_DE_TRANSACAO } from "@/lib/db/transacao";
 import type { Prisma } from "@/lib/generated/prisma/client";
 
 import {
@@ -324,7 +325,10 @@ export async function criarRequisicao(
   }
 
   try {
-    return await prisma.$transaction((tx) => criarNaTransacao(tx, entrada));
+    return await prisma.$transaction(
+      (tx) => criarNaTransacao(tx, entrada),
+      OPCOES_DE_TRANSACAO,
+    );
   } catch (erro) {
     if (erro instanceof ErroDeNegocio) {
       return { ok: false, erro: erro.erro, linha: erro.linha };

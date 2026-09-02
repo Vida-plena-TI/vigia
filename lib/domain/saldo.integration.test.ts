@@ -238,7 +238,10 @@ async function lerViewParaOsCenarios(): Promise<{
 
         throw new Rollback(linhas);
       },
-      { timeout: 30_000 },
+      // `maxWait` é o tempo para *conseguir* a transação, e o padrão (2s) não
+      // cobre a primeira, que ainda paga o custo de abrir a conexão contra o
+      // banco remoto.
+      { maxWait: 30_000, timeout: 30_000 },
     );
   } catch (erro) {
     if (erro instanceof Rollback && hoje) {
@@ -300,29 +303,32 @@ describe.skipIf(!temBanco)(
 
     it("o banco proibe qtd_autorizada = 0 (o ramo vazio/0 do TS e so defensivo)", async () => {
       await expect(
-        prisma.$transaction(async (tx) => {
-          const paciente = await tx.paciente.create({
-            data: { nome: `Paciente Check ${SUFIXO}` },
-          });
-          const requisicao = await tx.requisicao.create({
-            data: {
-              numeroRequisicao: `CHK-${SUFIXO}`,
-              pacienteId: paciente.id,
-            },
-          });
-          const terapia = await tx.terapia.create({
-            data: { nome: `Terapia Check ${SUFIXO}`, codigoTiss: "CHK" },
-          });
+        prisma.$transaction(
+          async (tx) => {
+            const paciente = await tx.paciente.create({
+              data: { nome: `Paciente Check ${SUFIXO}` },
+            });
+            const requisicao = await tx.requisicao.create({
+              data: {
+                numeroRequisicao: `CHK-${SUFIXO}`,
+                pacienteId: paciente.id,
+              },
+            });
+            const terapia = await tx.terapia.create({
+              data: { nome: `Terapia Check ${SUFIXO}`, codigoTiss: "CHK" },
+            });
 
-          await tx.requisicaoTerapia.create({
-            data: {
-              requisicaoId: requisicao.id,
-              terapiaId: terapia.id,
-              qtdAutorizada: 0,
-              validade: null,
-            },
-          });
-        }),
+            await tx.requisicaoTerapia.create({
+              data: {
+                requisicaoId: requisicao.id,
+                terapiaId: terapia.id,
+                qtdAutorizada: 0,
+                validade: null,
+              },
+            });
+          },
+          { maxWait: 30_000, timeout: 30_000 },
+        ),
       ).rejects.toThrow(/qtd_autorizada_positiva/);
     });
   },
