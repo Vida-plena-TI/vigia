@@ -1,0 +1,100 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Get a free hosted Postgres database in seconds: `npx create-db`
+
+generator client {
+  provider = "prisma-client"
+  output   = "../lib/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+/// Paciente. O nome e sempre trimado antes de salvar/buscar e e unico
+/// case-insensitive no banco — o indice `UNIQUE (lower(nome))` nao e
+/// expressavel no schema Prisma, ele vive na migration
+/// `20260828120100_indices_e_constraints_manuais`.
+model Paciente {
+  id   Int    @id @default(autoincrement())
+  nome String
+
+  requisicoes Requisicao[]
+
+  @@index([nome])
+  @@map("paciente")
+}
+
+/// Usuario do sistema. Nao existem perfis: ou o usuario esta autenticado e
+/// ativo, ou nao esta autenticado.
+model Usuario {
+  id           Int     @id @default(autoincrement())
+  username     String  @unique
+  passwordHash String  @map("password_hash")
+  ativo        Boolean @default(true)
+
+  @@map("usuario")
+}
+
+/// Terapia oferecida pela clinica.
+model Terapia {
+  id         Int    @id @default(autoincrement())
+  nome       String @unique
+  codigoTiss String @map("codigo_tiss")
+
+  guias RequisicaoTerapia[]
+
+  @@map("terapia")
+}
+
+/// Requisicao (autorizacao) de um paciente. `numero_requisicao` e unico
+/// por paciente, nao globalmente.
+model Requisicao {
+  id               Int    @id @default(autoincrement())
+  numeroRequisicao String @map("numero_requisicao")
+  pacienteId       Int    @map("paciente_id")
+
+  paciente Paciente            @relation(fields: [pacienteId], references: [id])
+  guias    RequisicaoTerapia[]
+
+  @@unique([pacienteId, numeroRequisicao], map: "requisicao_paciente_id_numero_requisicao_key")
+  @@index([numeroRequisicao])
+  @@index([pacienteId])
+  @@map("requisicao")
+}
+
+/// "Guia": o cruzamento de uma requisicao com uma terapia, com a quantidade
+/// autorizada. Os campos calculados (qtd_utilizada, saldo_restante,
+/// creditos_por_sessao, status_alerta) NAO ficam aqui — sao lidos da view
+/// SQL `requisicao_terapia_saldo`.
+model RequisicaoTerapia {
+  id            Int       @id @default(autoincrement())
+  qtdAutorizada Int       @map("qtd_autorizada")
+  validade      DateTime? @db.Date
+  requisicaoId  Int       @map("requisicao_id")
+  terapiaId     Int       @map("terapia_id")
+
+  requisicao   Requisicao    @relation(fields: [requisicaoId], references: [id])
+  terapia      Terapia       @relation(fields: [terapiaId], references: [id])
+  atendimentos Atendimento[]
+
+  @@index([requisicaoId])
+  @@index([terapiaId])
+  @@map("requisicao_terapia")
+}
+
+/// Atendimento lancado contra uma guia. Apagar a guia apaga os atendimentos
+/// filhos (ON DELETE CASCADE, regra de negocio 9).
+model Atendimento {
+  id                  Int      @id @default(autoincrement())
+  dataAtendimento     DateTime @map("data_atendimento") @db.Date
+  creditosConsumidos  Int      @default(1) @map("creditos_consumidos")
+  observacao          String?
+  requisicaoTerapiaId Int      @map("requisicao_terapia_id")
+
+  requisicaoTerapia RequisicaoTerapia @relation(fields: [requisicaoTerapiaId], references: [id], onDelete: Cascade)
+
+  @@index([requisicaoTerapiaId])
+  @@map("atendimento")
+}

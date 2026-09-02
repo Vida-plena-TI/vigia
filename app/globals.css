@@ -1,26 +1,259 @@
 @import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
-}
+@custom-variant dark (&:is(.dark *));
+
+/*
+  Sistema visual do VIGIA.
+
+  Princípio que organiza a paleta inteira: **cor é informação, nunca
+  decoração**. As únicas cores saturadas do sistema são as três de
+  `status_alerta`; todo o chrome (cabeçalho, botões, bordas, títulos) vive numa
+  escala grafite/papel. É o que impede o olho de se acostumar com cor e deixar
+  de reagir quando ela significa alguma coisa.
+*/
 
 @theme inline {
+  /*
+    A fonte precisa ser resolvida aqui. Antes, `--font-sans: var(--font-sans)`
+    era uma referência circular para uma variável nunca definida — a
+    `font-family` ficava inválida e o navegador caía no serifado padrão.
+  */
+  --font-sans: var(--fonte-texto);
+  --font-serif: var(--fonte-instrumento);
+  --font-heading: var(--fonte-texto);
+  --font-mono: var(--fonte-texto);
+
+  /*
+    Escala tipográfica. 16px é o piso de tudo que se digita (abaixo disso o
+    iOS dá zoom no foco do campo); 13px é o corpo de tabela densa, que se lê
+    varrendo e não linha a linha.
+  */
+  --text-2xs: 0.6875rem;
+  --text-2xs--line-height: 1.45;
+  --text-xs: 0.75rem;
+  --text-xs--line-height: 1.45;
+  --text-sm: 0.8125rem;
+  --text-sm--line-height: 1.5;
+  --text-base: 1rem;
+  --text-base--line-height: 1.55;
+  --text-lg: 1.125rem;
+  --text-lg--line-height: 1.4;
+  --text-xl: 1.3125rem;
+  --text-xl--line-height: 1.3;
+  --text-2xl: 1.625rem;
+  --text-2xl--line-height: 1.25;
+  --text-3xl: 2.125rem;
+  --text-3xl--line-height: 1.15;
+  --text-4xl: 2.75rem;
+  --text-4xl--line-height: 1;
+
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  --color-ring: var(--ring);
+  --color-input: var(--input);
+  --color-border: var(--border);
+  --color-destructive: var(--destructive);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent: var(--accent);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-muted: var(--muted);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-secondary: var(--secondary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary: var(--primary);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-popover: var(--popover);
+  --color-card-foreground: var(--card-foreground);
+  --color-card: var(--card);
+
+  /* Grafite: a tinta. Também é a faixa do cabeçalho e a ação primária. */
+  --color-grafite: var(--grafite);
+  --color-grafite-claro: var(--grafite-claro);
+  /* Régua: o filete que separa linha de dado. Não é borda de caixa. */
+  --color-regua: var(--regua);
+  --color-regua-forte: var(--regua-forte);
+
+  /* As três únicas cores saturadas do sistema. */
+  --color-regular: var(--regular);
+  --color-regular-fundo: var(--regular-fundo);
+  --color-renovar: var(--renovar);
+  --color-renovar-fundo: var(--renovar-fundo);
+  --color-esgotada: var(--esgotada);
+  --color-esgotada-fundo: var(--esgotada-fundo);
+
+  /*
+    Raio em dois degraus: 3–4px em superfície de dado (instrumento) e 8px só
+    em camada transitória (diálogo). Cartão com raio grande e sombra suave é
+    justamente o que faz tudo parecer decoração de igual peso.
+  */
+  --radius-sm: 2px;
+  --radius-md: 3px;
+  --radius-lg: 4px;
+  --radius-xl: 6px;
+  --radius-2xl: 8px;
+  --radius-3xl: 10px;
+  --radius-4xl: 12px;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+:root {
+  --grafite: #16202a;
+  --grafite-claro: #47566a;
+  --nevoa: #eceff3;
+  --papel: #ffffff;
+
+  --regua: #dde3ea;
+  --regua-forte: #c3ccd7;
+
+  --regular: #0e6e7d;
+  --regular-fundo: #e6f1f3;
+  --renovar: #8a5300;
+  --renovar-fundo: #fbeedb;
+  --esgotada: #a8103c;
+  --esgotada-fundo: #fbe4ea;
+
+  --background: var(--nevoa);
+  --foreground: var(--grafite);
+  --card: var(--papel);
+  --card-foreground: var(--grafite);
+  --popover: var(--papel);
+  --popover-foreground: var(--grafite);
+  --primary: var(--grafite);
+  --primary-foreground: #ffffff;
+  --secondary: #dfe4eb;
+  --secondary-foreground: var(--grafite);
+  --muted: #e7ebf0;
+  /* 6,1:1 sobre papel e 5,3:1 sobre névoa — AA em texto normal, não só grande. */
+  --muted-foreground: #55637a;
+  --accent: #dfe4eb;
+  --accent-foreground: var(--grafite);
+  --destructive: var(--esgotada);
+  --border: var(--regua);
+  /*
+    Borda de campo escura o bastante para chegar a 3,5:1 sobre papel: num
+    sistema de digitação rápida, o campo precisa parecer um campo antes de
+    receber foco.
+  */
+  --input: #7d8b9c;
+  --ring: var(--grafite);
+  --anel-foco: var(--grafite);
+  --radius: 0.25rem;
+}
+
+/*
+  O projeto não tem alternador de tema; estes valores existem para o `.dark`
+  do shadcn não ficar apontando para o esquema antigo caso um dia entre.
+  As três cores de status são clareadas para manter AA sobre fundo escuro.
+*/
+.dark {
+  --grafite: #0d141c;
+  --grafite-claro: #93a1b3;
+  --nevoa: #0d141c;
+  --papel: #161f29;
+
+  --regua: #29323e;
+  --regua-forte: #3c4855;
+
+  --regular: #5fc8d6;
+  --regular-fundo: #10323a;
+  --renovar: #f0b357;
+  --renovar-fundo: #3a2a0d;
+  --esgotada: #ff8098;
+  --esgotada-fundo: #3d0f1f;
+
+  --background: var(--nevoa);
+  --foreground: #e7ecf2;
+  --card: var(--papel);
+  --card-foreground: #e7ecf2;
+  --popover: var(--papel);
+  --popover-foreground: #e7ecf2;
+  --primary: #e7ecf2;
+  --primary-foreground: #0d141c;
+  --secondary: #222c38;
+  --secondary-foreground: #e7ecf2;
+  --muted: #1d2733;
+  --muted-foreground: #9dabbb;
+  --accent: #222c38;
+  --accent-foreground: #e7ecf2;
+  --destructive: var(--esgotada);
+  --border: var(--regua);
+  --input: #55647a;
+  --ring: #9dabbb;
+  --anel-foco: #9dabbb;
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  html {
+    @apply font-sans;
+    /*
+      Algarismo tabular por padrão em todo o sistema: coluna de número só
+      compara na vertical se o "1" ocupar a mesma largura do "8". Vem do
+      recurso `tnum` da própria IBM Plex Sans — não é fonte monoespaçada,
+      que deixaria o texto ao redor parecer terminal.
+    */
+    font-variant-numeric: tabular-nums;
+  }
+
+  body {
+    @apply bg-background text-foreground;
+    text-rendering: optimizeLegibility;
+  }
+
+  /*
+    Foco visível para tudo que não é componente do shadcn (que já traz o
+    próprio anel). `:where()` tem especificidade zero, então o `outline-none`
+    dos componentes continua vencendo onde eles cuidam do próprio foco.
+  */
+  :where(a, button, summary, [tabindex]):focus-visible {
+    outline: 2px solid var(--anel-foco);
+    outline-offset: 2px;
+    border-radius: 2px;
+  }
+
+  /*
+    Campos nativos (checkbox, date) herdam a cor de acento do sistema em vez
+    da azul do navegador — senão aparece uma sexta cor que não significa nada.
+  */
+  input[type="checkbox"],
+  input[type="radio"] {
+    accent-color: var(--grafite);
   }
 }
 
-body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+@layer components {
+  /*
+    A folha: superfície de dado. Filete de 1px e raio pequeno, sem sombra.
+    Sombra fica reservada para camada que flutua de verdade (diálogo, toast) —
+    é o que mantém a hierarquia legível em vez de decorar tudo por igual.
+  */
+  .folha {
+    @apply rounded-md border border-regua bg-card;
+  }
+
+  /*
+    Régua rotulada: separa etapas dentro de um formulário sem transformar cada
+    etapa num cartão. O rótulo fica na linha, em caixa normal — sem caixa alta
+    nem letter-spacing.
+  */
+  .regua-de-secao {
+    @apply flex items-center gap-3 text-base font-semibold text-foreground;
+  }
+
+  .regua-de-secao::after {
+    content: "";
+    @apply h-px flex-1 bg-regua;
+  }
+
+  /*
+    Aviso de erro. Carrega o filete de margem do "Esgotada" pelo mesmo motivo
+    da tabela: dá para achar o erro na tela pela borda, sem ler.
+  */
+  .aviso-de-erro {
+    @apply rounded-md border border-l-[3px] border-esgotada/30 border-l-esgotada bg-esgotada-fundo px-3 py-2 text-sm text-esgotada;
+  }
 }
