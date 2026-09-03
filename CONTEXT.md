@@ -147,6 +147,44 @@ produção.
   admin (`scripts/create-admin.ts`) instanciam `PrismaClient` com `@prisma/adapter-pg`.
   Isso também é a escolha compatível com Supavisor em modo transação, porque o adapter usa
   o driver `pg` e recebe a connection string pooled do ambiente da aplicação.
+- **O cliente Prisma é criado preguiçosamente, e `lib/db` não exporta mais um `prisma`**
+  (03/09/2026). A checagem de `DATABASE_URL` e a abertura do pool moravam no topo de
+  `lib/db/index.ts` (`export const prisma = ... ?? createPrismaClient()`), então **só
+  importar o módulo já podia estourar**. Quem chama `getPrismaClient()` agora é cada
+  função de domínio e cada Server Action, dentro do corpo.
+  - **O que isso quebrava**: o `next build` falha na fase **"Collecting page data"**. Essa
+    fase carrega os módulos de cada rota só para ler a configuração deles (`revalidate`,
+    `runtime`, `dynamic`) e não executa consulta nenhuma — mas importar a rota importa a
+    cadeia inteira até `lib/db`, e o `throw` do topo derrubava o build inteiro. O erro sai
+    como `Failed to collect page data for /api/cron/relatorio-semanal`, com a mensagem de
+    `DATABASE_URL` pendurada em `cause` — o que faz parecer problema da rota do cron, e
+    não do módulo de banco. Reproduzido localmente em 03/09/2026 renomeando o `.env`.
+  - **Onde dói**: qualquer ambiente que compile sem a variável. Na prática o **Preview da
+    Vercel**, onde é comum a `DATABASE_URL` não estar configurada. Build não precisa de
+    banco; runtime precisa. Amarrar os dois transforma uma variável de runtime ausente em
+    build quebrado.
+  - **O que a lazy não faz**: ela não perdoa ambiente mal configurado. Um Preview sem
+    `DATABASE_URL` continua falhando — só que na primeira consulta de verdade, com uma
+    mensagem que diz explicitamente que o banco só é tocado em runtime e onde configurar
+    a variável (`.env` local ou o ambiente correspondente na Vercel). Verificado nas duas
+    pontas: `/login` responde 200 sem a variável (o import não estoura) e a tentativa de
+    autenticar falha em `getPrismaClient` com essa mensagem.
+  - **`getPrismaClient()` é barato de chamar quantas vezes for.** A primeira chamada cria
+    o cliente e memoiza; as seguintes devolvem o mesmo. Em desenvolvimento ele também é
+    publicado no `globalThis`, como antes e pelo mesmo motivo: o Next reavalia os módulos
+    a cada hot reload, e sem isso cada alteração abriria um pool novo até esgotar os slots
+    do Postgres.
+  - **A armadilha ao escrever código novo**: `const prisma = getPrismaClient()` no topo de
+    um módulo reintroduz exatamente o problema, porque volta a ser trabalho de import. A
+    chamada tem que estar dentro da função que consulta. É por isso que o `prisma`
+    exportado foi removido em vez de mantido por compatibilidade — ele é justamente a
+    forma que não se pode ter.
+  - **Efeito colateral bem-vindo nos testes**: os quatro `*.integration.test.ts` já tinham
+    um `temBanco = Boolean(process.env.DATABASE_URL)` para se auto-pular sem banco, mas o
+    `import { prisma }` estourava antes do skip chegar a valer. Com o import sem efeito
+    colateral, o skip finalmente funciona como estava escrito.
+  - Nenhuma regra de negócio mudou: a troca é mecânica (`prisma.x` → `getPrismaClient().x`)
+    e o cliente devolvido é idêntico, `@prisma/adapter-pg` e `log` incluídos.
 - **Runner de teste: Vitest**. Não havia nenhum configurado; o Vitest entra sem
   transpilador extra (lê TypeScript direto) e reaproveita o alias `@/` do `tsconfig` via
   `vitest.config.mts`. O teste de integração de saldo se auto-pula quando `DATABASE_URL`
@@ -787,6 +825,19 @@ produção.
       quebra no fim), marcar por espaço no teclado, marcar sem expandir o paciente, e o
       botão individual continuando a copiar só a linha dele. `npm test` do módulo de
       apresentação verde (20 casos) e `tsc --noEmit` limpo
+- [x] Cliente Prisma com inicialização preguiçosa (03/09/2026) — `lib/db/index.ts` deixou
+      de exportar `prisma` e passou a exportar `getPrismaClient()`, chamado de dentro de
+      cada função de domínio e Server Action. Resolve a falha de `next build` na fase
+      "Collecting page data" em ambiente sem `DATABASE_URL` (Preview da Vercel). Ver "O
+      cliente Prisma é criado preguiçosamente" nas decisões de implementação. Verificado
+      localmente: com o `.env` renomeado o build **falhava** em
+      `Failed to collect page data for /api/cron/relatorio-semanal` e passou a **buildar
+      com sucesso**; com `.env` completo menos a linha da `DATABASE_URL`, `/login` responde
+      200 e só a tentativa de autenticar falha, em `getPrismaClient`, com a mensagem que
+      diz onde configurar a variável; com o `.env` restaurado, `npm run dev` navegado no
+      Chrome cobriu as 4 telas que consultam o banco (7/7 verificações). `tsc --noEmit`
+      limpo, `npm run build` verde e `npm test` verde (12 arquivos, 173 testes, incluindo
+      os de integração contra o Postgres local — não pulados)
 
 ## Pendências conhecidas (não bloqueiam o próximo passo, mas não esquecer)
 

@@ -99,7 +99,7 @@ const mocks = vi.hoisted(() => {
 });
 
 vi.mock("@/lib/db", () => ({
-  prisma: { $transaction: mocks.transacao },
+  getPrismaClient: () => ({ $transaction: mocks.transacao }),
 }));
 
 vi.mock("@/lib/auth/current-user", () => ({

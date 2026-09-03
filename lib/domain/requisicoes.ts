@@ -14,7 +14,7 @@
  * achar um paciente que o índice mesmo assim recusaria como duplicado, e o
  * insert estouraria em vez de reaproveitar a linha existente.
  */
-import { prisma } from "@/lib/db";
+import { getPrismaClient } from "@/lib/db";
 import { OPCOES_DE_TRANSACAO } from "@/lib/db/transacao";
 import type { Prisma } from "@/lib/generated/prisma/client";
 
@@ -325,7 +325,7 @@ export async function criarRequisicao(
   }
 
   try {
-    return await prisma.$transaction(
+    return await getPrismaClient().$transaction(
       (tx) => criarNaTransacao(tx, entrada),
       OPCOES_DE_TRANSACAO,
     );
@@ -388,7 +388,7 @@ export async function criarRequisicaoNaTransacao(
  * impressão de que escolher da lista é diferente de digitar o nome inteiro.
  */
 export async function listarNomesDePacientes(): Promise<string[]> {
-  const pacientes = await prisma.$queryRaw<{ nome: string }[]>`
+  const pacientes = await getPrismaClient().$queryRaw<{ nome: string }[]>`
     SELECT "nome" FROM "paciente" ORDER BY lower("nome"), "id"
   `;
 
@@ -397,7 +397,7 @@ export async function listarNomesDePacientes(): Promise<string[]> {
 
 /** Terapias disponíveis, em ordem alfabética. */
 export async function listarTerapias(): Promise<TerapiaParaEscolha[]> {
-  return prisma.$queryRaw<TerapiaParaEscolha[]>`
+  return getPrismaClient().$queryRaw<TerapiaParaEscolha[]>`
     SELECT "id", "nome", "codigo_tiss" AS "codigoTiss"
     FROM "terapia"
     ORDER BY lower("nome"), "id"

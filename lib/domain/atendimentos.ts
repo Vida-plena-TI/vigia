@@ -28,7 +28,7 @@
  * pedem os locks na mesma sequência (7 depois 9), então um espera o outro em
  * vez de se travarem em cruz.
  */
-import { prisma } from "@/lib/db";
+import { getPrismaClient } from "@/lib/db";
 import { OPCOES_DE_TRANSACAO } from "@/lib/db/transacao";
 import type { Prisma } from "@/lib/generated/prisma/client";
 
@@ -193,7 +193,7 @@ function dataValida(data: string): boolean {
 export async function listarPacientesComGuiasDisponiveis(): Promise<
   PacienteParaEscolha[]
 > {
-  return prisma.$queryRaw<PacienteParaEscolha[]>`
+  return getPrismaClient().$queryRaw<PacienteParaEscolha[]>`
     SELECT p."id", p."nome"
     FROM "paciente" p
     WHERE EXISTS (
@@ -222,7 +222,7 @@ export async function listarGuiasDisponiveisDoPaciente(
     return [];
   }
 
-  const linhas = await prisma.$queryRaw<LinhaDeGuia[]>`
+  const linhas = await getPrismaClient().$queryRaw<LinhaDeGuia[]>`
     SELECT
       s."id"                AS "id",
       t."nome"              AS "terapiaNome",
@@ -257,7 +257,7 @@ export async function listarGuiasDisponiveisDoPaciente(
 export async function listarAtendimentosDeHoje(): Promise<
   AtendimentoDeHoje[]
 > {
-  return prisma.$queryRaw<AtendimentoDeHoje[]>`
+  return getPrismaClient().$queryRaw<AtendimentoDeHoje[]>`
     SELECT
       a."id"                  AS "id",
       p."nome"                AS "pacienteNome",
@@ -503,7 +503,7 @@ export async function lancarLote(
     return { ok: false, erro: validacao.erro, item: validacao.item };
   }
 
-  return prisma.$transaction(
+  return getPrismaClient().$transaction(
     (tx) => lancarLoteNaTransacao(tx, entrada),
     OPCOES_DE_TRANSACAO,
   );
@@ -610,7 +610,7 @@ export async function editarAtendimentoPeloId(
     return validacao;
   }
 
-  return prisma.$transaction(
+  return getPrismaClient().$transaction(
     (tx) => editarAtendimentoNaTransacao(tx, entrada),
     OPCOES_DE_TRANSACAO,
   );
@@ -647,7 +647,7 @@ export async function excluirAtendimentoNaTransacao(
 export async function excluirAtendimentoPeloId(
   atendimentoId: number,
 ): Promise<ResultadoExclusaoDeAtendimento> {
-  return excluirAtendimentoComCliente(prisma, atendimentoId);
+  return excluirAtendimentoComCliente(getPrismaClient(), atendimentoId);
 }
 
 /**
@@ -661,7 +661,7 @@ export async function excluirAtendimentoPeloId(
  * validade ainda contaria o dia anterior.
  */
 export async function dataDeHoje(): Promise<string> {
-  const [linha] = await prisma.$queryRaw<{ hoje: string }[]>`
+  const [linha] = await getPrismaClient().$queryRaw<{ hoje: string }[]>`
     SELECT CURRENT_DATE::text AS "hoje"
   `;
 

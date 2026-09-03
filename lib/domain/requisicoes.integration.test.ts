@@ -15,7 +15,7 @@
  */
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
-import { prisma } from "@/lib/db";
+import { getPrismaClient } from "@/lib/db";
 
 import {
   criarRequisicao,
@@ -40,7 +40,7 @@ class Rollback<T> extends Error {
 }
 
 type ClienteDaTransacao = Parameters<
-  Parameters<typeof prisma.$transaction>[0]
+  Parameters<ReturnType<typeof getPrismaClient>["$transaction"]>[0]
 >[0];
 
 /** Roda `executar` numa transação e desfaz tudo, devolvendo o que ela produziu. */
@@ -48,7 +48,7 @@ async function comRollback<T>(
   executar: (tx: ClienteDaTransacao) => Promise<T>,
 ): Promise<T> {
   try {
-    await prisma.$transaction(
+    await getPrismaClient().$transaction(
       async (tx) => {
         throw new Rollback(await executar(tx));
       },
@@ -84,7 +84,7 @@ async function criarTerapia(
 
 /** Quantos pacientes têm este nome, comparando como o índice compara. */
 async function contarPacientes(
-  cliente: ClienteDaTransacao | typeof prisma,
+  cliente: ClienteDaTransacao | ReturnType<typeof getPrismaClient>,
   nome: string,
 ): Promise<number> {
   const [linha] = await cliente.$queryRaw<{ n: number }[]>`
@@ -97,11 +97,11 @@ async function contarPacientes(
 describe.skipIf(!temBanco)("cadastro de requisicao contra o banco real", () => {
   beforeAll(async () => {
     // Abre a conexão fora do relógio da primeira transação.
-    await prisma.$connect();
+    await getPrismaClient().$connect();
   });
 
   afterAll(async () => {
-    await prisma.$disconnect();
+    await getPrismaClient().$disconnect();
   });
 
   it("cria o paciente quando ele ainda não existe", async () => {
@@ -262,7 +262,7 @@ describe.skipIf(!temBanco)("cadastro de requisicao contra o banco real", () => {
     // Este caso NÃO roda dentro da transação do teste de propósito: o que está
     // sob teste é justamente a transação que `criarRequisicao` abre sozinha.
     // Como ela termina em falha, nada é commitado — não há lixo para limpar.
-    const terapiaValida = await prisma.terapia.findFirst({
+    const terapiaValida = await getPrismaClient().terapia.findFirst({
       orderBy: { id: "asc" },
       select: { id: true },
     });
@@ -292,10 +292,10 @@ describe.skipIf(!temBanco)("cadastro de requisicao contra o banco real", () => {
     // O ponto do teste: o paciente chegou a ser inserido dentro da transação e
     // o rollback o levou junto. Se `criarNaTransacao` devolvesse `{ ok: false }`
     // em vez de lançar, esta contagem seria 1.
-    expect(await contarPacientes(prisma, nome)).toBe(0);
+    expect(await contarPacientes(getPrismaClient(), nome)).toBe(0);
 
     expect(
-      await prisma.requisicao.count({ where: { numeroRequisicao: numero } }),
+      await getPrismaClient().requisicao.count({ where: { numeroRequisicao: numero } }),
     ).toBe(0);
   });
 
@@ -311,6 +311,6 @@ describe.skipIf(!temBanco)("cadastro de requisicao contra o banco real", () => {
     expect(resultado).toMatchObject({ ok: false, linha: 0 });
     // A CHECK `requisicao_terapia_qtd_autorizada_positiva` existe como backstop,
     // mas nem chega a ser exercitada: a validação recusa antes da transação.
-    expect(await contarPacientes(prisma, nome)).toBe(0);
+    expect(await contarPacientes(getPrismaClient(), nome)).toBe(0);
   });
 });

@@ -10,7 +10,7 @@
  * {@link excluirGuiaNaTransacao}, no backend. Esconder o botão na UI é
  * conforto visual, não é a validação.
  */
-import { prisma } from "@/lib/db";
+import { getPrismaClient } from "@/lib/db";
 import { OPCOES_DE_TRANSACAO } from "@/lib/db/transacao";
 import type { Prisma } from "@/lib/generated/prisma/client";
 
@@ -110,7 +110,7 @@ function comoStatusAlerta(valor: string): StatusAlerta {
  * minúsculos.
  */
 export async function listarGuiasDoDashboard(): Promise<GuiaDoDashboard[]> {
-  const linhas = await prisma.$queryRaw<LinhaDoDashboard[]>`
+  const linhas = await getPrismaClient().$queryRaw<LinhaDoDashboard[]>`
     SELECT
       s."id"                AS "id",
       p."id"                AS "pacienteId",
@@ -188,7 +188,7 @@ export async function listarAtendimentosDaGuia(
     return [];
   }
 
-  const atendimentos = await prisma.atendimento.findMany({
+  const atendimentos = await getPrismaClient().atendimento.findMany({
     where: { requisicaoTerapiaId: guiaId },
     orderBy: [{ dataAtendimento: "desc" }, { id: "desc" }],
     select: {
@@ -277,7 +277,7 @@ export async function excluirGuiaPeloId(
     return { ok: false, erro: ERRO_ID_INVALIDO };
   }
 
-  return prisma.$transaction(
+  return getPrismaClient().$transaction(
     (tx) => excluirGuiaNaTransacao(tx, guiaId),
     OPCOES_DE_TRANSACAO,
   );

@@ -3,7 +3,7 @@ import "server-only";
 import { cache } from "react";
 import { redirect } from "next/navigation";
 
-import { prisma } from "@/lib/db";
+import { getPrismaClient } from "@/lib/db";
 
 import { urlDeLogin } from "./next-path";
 import { getSession } from "./session";
@@ -32,7 +32,7 @@ export const getUsuarioAtual = cache(
       return null;
     }
 
-    const usuario = await prisma.usuario.findUnique({
+    const usuario = await getPrismaClient().usuario.findUnique({
       where: { id: session.usuarioId },
       select: { id: true, username: true, ativo: true },
     });

@@ -2,7 +2,7 @@
 
 import { redirect } from "next/navigation";
 
-import { prisma } from "@/lib/db";
+import { getPrismaClient } from "@/lib/db";
 
 import { safeNextPath } from "./next-path";
 import { fakeVerifyPassword, verifyPassword } from "./password";
@@ -41,7 +41,7 @@ export async function login(
     return { erro: ERRO_CREDENCIAIS, username };
   }
 
-  const usuario = await prisma.usuario.findUnique({
+  const usuario = await getPrismaClient().usuario.findUnique({
     where: { username },
     select: { id: true, passwordHash: true, ativo: true },
   });

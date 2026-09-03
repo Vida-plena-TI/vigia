@@ -14,7 +14,7 @@
  */
 import { afterAll, describe, expect, it } from "vitest";
 
-import { prisma } from "@/lib/db";
+import { getPrismaClient } from "@/lib/db";
 
 import { ERRO_GUIA_REGULAR, excluirGuiaNaTransacao } from "./guias";
 
@@ -37,7 +37,7 @@ type GuiaCriada = {
 };
 
 type ClienteDaTransacao = Parameters<
-  Parameters<typeof prisma.$transaction>[0]
+  Parameters<ReturnType<typeof getPrismaClient>["$transaction"]>[0]
 >[0];
 
 /**
@@ -47,7 +47,7 @@ async function comRollback<T>(
   executar: (tx: ClienteDaTransacao) => Promise<T>,
 ): Promise<T> {
   try {
-    await prisma.$transaction(
+    await getPrismaClient().$transaction(
       async (tx) => {
         throw new Rollback(await executar(tx));
       },
@@ -120,7 +120,7 @@ async function criarGuia(
 
 describe.skipIf(!temBanco)("exclusao de guia contra o banco real", () => {
   afterAll(async () => {
-    await prisma.$disconnect();
+    await getPrismaClient().$disconnect();
   });
 
   it("recusa apagar uma guia Regular e deixa a linha no banco", async () => {

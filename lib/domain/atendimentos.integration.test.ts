@@ -44,7 +44,7 @@
  */
 import { afterAll, describe, expect, it } from "vitest";
 
-import { prisma } from "@/lib/db";
+import { getPrismaClient } from "@/lib/db";
 
 import {
   ERRO_ATENDIMENTO_ID_INVALIDO,
@@ -71,7 +71,7 @@ const temBanco = Boolean(process.env.DATABASE_URL);
 // mesmo cliente, e desconectar dentro de um deles derrubaria a conexao debaixo
 // do outro.
 afterAll(async () => {
-  await prisma.$disconnect();
+  await getPrismaClient().$disconnect();
 }, 60_000);
 
 /** Sufixo único para não colidir com paciente/terapia já existentes. */
@@ -83,10 +83,11 @@ const DATA = "2026-01-15";
 /**
  * `PrismaClient` é atribuível a `Prisma.TransactionClient` (que é só ele sem
  * `$transaction` e afins), então o mesmo tipo serve para os dois blocos: o de
- * regras passa o cliente da transação, o de concorrência passa o `prisma`.
+ * regras passa o cliente da transação, o de concorrência passa o cliente de
+ * `getPrismaClient()`.
  */
 type ClienteDaTransacao = Parameters<
-  Parameters<typeof prisma.$transaction>[0]
+  Parameters<ReturnType<typeof getPrismaClient>["$transaction"]>[0]
 >[0];
 
 /** Ids de tudo que foi criado, para o bloco sem rollback saber o que apagar. */
@@ -169,24 +170,24 @@ async function apagarCenario(cenario: Cenario): Promise<void> {
     {
       rotulo: `requisicao_terapia id(s) ${cenario.guiaIds.join(", ")}`,
       apagar: () =>
-        prisma.requisicaoTerapia.deleteMany({
+        getPrismaClient().requisicaoTerapia.deleteMany({
           where: { id: { in: cenario.guiaIds } },
         }),
     },
     {
       rotulo: `requisicao id ${cenario.requisicaoId}`,
       apagar: () =>
-        prisma.requisicao.deleteMany({ where: { id: cenario.requisicaoId } }),
+        getPrismaClient().requisicao.deleteMany({ where: { id: cenario.requisicaoId } }),
     },
     {
       rotulo: `paciente id ${cenario.pacienteId}`,
       apagar: () =>
-        prisma.paciente.deleteMany({ where: { id: cenario.pacienteId } }),
+        getPrismaClient().paciente.deleteMany({ where: { id: cenario.pacienteId } }),
     },
     {
       rotulo: `terapia id(s) ${cenario.terapiaIds.join(", ")}`,
       apagar: () =>
-        prisma.terapia.deleteMany({ where: { id: { in: cenario.terapiaIds } } }),
+        getPrismaClient().terapia.deleteMany({ where: { id: { in: cenario.terapiaIds } } }),
     },
   ];
 
@@ -232,7 +233,7 @@ async function comRollback<T>(
   executar: (tx: ClienteDaTransacao) => Promise<T>,
 ): Promise<T> {
   try {
-    await prisma.$transaction(
+    await getPrismaClient().$transaction(
       async (tx) => {
         throw new Rollback(await executar(tx));
       },
@@ -421,7 +422,7 @@ describe.skipIf(!temBanco)(
       const { antes, depois } = await comRollback(async (tx) => {
         const cenario = await criarCenario(tx, "REGRA6", [2]);
 
-        // `listarGuiasDisponiveisDoPaciente` usa o `prisma` global, que está
+        // `listarGuiasDisponiveisDoPaciente` usa o cliente global, que está
         // fora desta transação e não enxergaria dados ainda não commitados —
         // por isso o filtro da regra 6 é refeito aqui com o cliente da
         // transação.
@@ -688,7 +689,7 @@ async function esperarAte(
  * mesmo sem privilégio de superusuário.
  */
 async function existeConexaoBloqueada(): Promise<boolean> {
-  const [linha] = await prisma.$queryRaw<{ total: bigint }[]>`
+  const [linha] = await getPrismaClient().$queryRaw<{ total: bigint }[]>`
     SELECT count(*) AS "total"
     FROM pg_stat_activity
     WHERE "datname" = current_database()
@@ -721,7 +722,7 @@ async function aquecerPool(conexoes = 4): Promise<void> {
   await Promise.all(
     Array.from(
       { length: conexoes },
-      () => prisma.$queryRaw`SELECT pg_sleep(0.2)::text AS "ok"`,
+      () => getPrismaClient().$queryRaw`SELECT pg_sleep(0.2)::text AS "ok"`,
     ),
   );
 }
@@ -743,7 +744,7 @@ describe.skipIf(!temBanco)("corrida de saldo entre dois lancamentos", () => {
 
   it("com saldo para so um dos dois lotes, apenas um e aceito", async () => {
     // Guia de 3 créditos; cada lote pede 2. Cabem separados, não cabem juntos.
-    const cenario = await criarCenario(prisma, "CORRIDA", [3]);
+    const cenario = await criarCenario(getPrismaClient(), "CORRIDA", [3]);
     criado = cenario;
 
     const lote: EntradaDeLote = {
@@ -761,7 +762,7 @@ describe.skipIf(!temBanco)("corrida de saldo entre dois lancamentos", () => {
 
     // Transação A: trava a guia, lê o saldo, insere — e fica parada no portão,
     // segurando o lock com a transação ainda aberta.
-    const transacaoA = prisma.$transaction(
+    const transacaoA = getPrismaClient().$transaction(
       async (tx) => {
         resultadoA = await lancarLoteNaTransacao(tx, lote);
         await portao.promessa;
@@ -820,9 +821,9 @@ describe.skipIf(!temBanco)("corrida de saldo entre dois lancamentos", () => {
       expect(b.ok === false && b.erro).toContain("2");
 
       // O que o lock existe para impedir: 2 + 2 = 4 numa guia de 3.
-      expect(await utilizadaNaView(prisma, cenario.guiaIds[0])).toBe(2);
+      expect(await utilizadaNaView(getPrismaClient(), cenario.guiaIds[0])).toBe(2);
       expect(
-        await prisma.atendimento.count({
+        await getPrismaClient().atendimento.count({
           where: { requisicaoTerapiaId: cenario.guiaIds[0] },
         }),
       ).toBe(1);
@@ -848,10 +849,10 @@ describe.skipIf(!temBanco)("corrida de saldo entre duas edições", () => {
   it("com autorização para só uma edição, apenas uma é aceita", async () => {
     // Guia de 5 créditos, com dois atendimentos de 1. Cada edição para 3 cabe
     // separadamente (3 + 1 = 4), mas as duas juntas passariam para 6.
-    const cenario = await criarCenario(prisma, "CORRIDAED", [5]);
+    const cenario = await criarCenario(getPrismaClient(), "CORRIDAED", [5]);
     criado = cenario;
 
-    const primeiro = await prisma.atendimento.create({
+    const primeiro = await getPrismaClient().atendimento.create({
       data: {
         requisicaoTerapiaId: cenario.guiaIds[0],
         dataAtendimento: new Date(`${DATA}T00:00:00.000Z`),
@@ -859,7 +860,7 @@ describe.skipIf(!temBanco)("corrida de saldo entre duas edições", () => {
       },
     });
 
-    const segundo = await prisma.atendimento.create({
+    const segundo = await getPrismaClient().atendimento.create({
       data: {
         requisicaoTerapiaId: cenario.guiaIds[0],
         dataAtendimento: new Date(`${DATA}T00:00:00.000Z`),
@@ -888,7 +889,7 @@ describe.skipIf(!temBanco)("corrida de saldo entre duas edições", () => {
 
     // A trava a guia, recalcula, atualiza e fica parada antes do commit,
     // segurando a mesma linha de `requisicao_terapia` que B precisa travar.
-    const transacaoA = prisma.$transaction(
+    const transacaoA = getPrismaClient().$transaction(
       async (tx) => {
         resultadoA = await editarAtendimentoNaTransacao(tx, edicaoA);
         await portao.promessa;
@@ -932,9 +933,9 @@ describe.skipIf(!temBanco)("corrida de saldo entre duas edições", () => {
       expect(b.ok === false && b.erro).toContain("5");
       expect(b.ok === false && b.erro).toContain("3");
 
-      expect(await utilizadaNaView(prisma, cenario.guiaIds[0])).toBe(4);
+      expect(await utilizadaNaView(getPrismaClient(), cenario.guiaIds[0])).toBe(4);
 
-      const creditos = await prisma.atendimento.findMany({
+      const creditos = await getPrismaClient().atendimento.findMany({
         where: { requisicaoTerapiaId: cenario.guiaIds[0] },
         orderBy: { id: "asc" },
         select: { creditosConsumidos: true },

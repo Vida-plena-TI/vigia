@@ -17,7 +17,7 @@
  */
 import { afterAll, describe, expect, it } from "vitest";
 
-import { prisma } from "@/lib/db";
+import { getPrismaClient } from "@/lib/db";
 
 import { calcularSaldo, qtdUtilizada, type StatusAlerta } from "./saldo";
 
@@ -180,7 +180,7 @@ async function lerViewParaOsCenarios(): Promise<{
   let hoje: Date | undefined;
 
   try {
-    await prisma.$transaction(
+    await getPrismaClient().$transaction(
       async (tx) => {
         const [linhaHoje] = await tx.$queryRaw<{ hoje: string }[]>`
           SELECT CURRENT_DATE::text AS "hoje"
@@ -257,7 +257,7 @@ describe.skipIf(!temBanco)(
   "view requisicao_terapia_saldo x lib/domain/saldo.ts",
   () => {
     afterAll(async () => {
-      await prisma.$disconnect();
+      await getPrismaClient().$disconnect();
     });
 
     it("calcula os quatro campos igual ao espelho em TypeScript", async () => {
@@ -303,7 +303,7 @@ describe.skipIf(!temBanco)(
 
     it("o banco proibe qtd_autorizada = 0 (o ramo vazio/0 do TS e so defensivo)", async () => {
       await expect(
-        prisma.$transaction(
+        getPrismaClient().$transaction(
           async (tx) => {
             const paciente = await tx.paciente.create({
               data: { nome: `Paciente Check ${SUFIXO}` },
