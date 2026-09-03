@@ -1,7 +1,9 @@
 "use client";
 
-import { useActionState, useRef, useState } from "react";
+import { useActionState, useEffect, useRef, useState } from "react";
+import { useFormStatus } from "react-dom";
 import Link from "next/link";
+import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -65,28 +67,62 @@ export function FormularioDeRequisicao({
   nomesDePacientes: string[];
   terapias: TerapiaParaEscolha[];
 }) {
-  const [estado, action, enviando] = useActionState(
+  const [estado, action] = useActionState(
     criarRequisicaoAction,
     ESTADO_INICIAL,
   );
 
   const proximaChave = useRef(1);
+  const campoPacienteRef = useRef<HTMLInputElement>(null);
+  const tokenTratado = useRef<string | null>(null);
   const [pacienteNome, setPacienteNome] = useState("");
   const [numeroRequisicao, setNumeroRequisicao] = useState("");
   const [linhas, setLinhas] = useState<LinhaDoFormulario[]>(() => [
     linhaVazia(0),
   ]);
   const [erroLocal, setErroLocal] = useState<EstadoNovaRequisicao | null>(null);
+  const [mensagemDeSucesso, setMensagemDeSucesso] = useState<string | null>(
+    null,
+  );
 
   // O erro do cliente só vale até a próxima submissão; depois disso quem manda
   // é a resposta do servidor.
   const erroExibido = erroLocal ?? estado;
 
+  // Limpeza pós-sucesso: sem navegar para o dashboard, o formulário volta ao
+  // início ali mesmo para cadastrar a próxima requisição. O token evita limpar
+  // duas vezes no StrictMode e transforma sucessos iguais em eventos distintos.
+  useEffect(() => {
+    const sucesso = estado.sucesso;
+
+    if (!sucesso || tokenTratado.current === sucesso.token) {
+      return;
+    }
+
+    tokenTratado.current = sucesso.token;
+
+    const mensagem = `Requisição criada para ${sucesso.pacienteNome}.`;
+
+    toast.success(mensagem, {
+      description: `Número ${sucesso.numeroRequisicao}.`,
+    });
+
+    setMensagemDeSucesso(mensagem);
+    setPacienteNome("");
+    setNumeroRequisicao("");
+    setLinhas([linhaVazia(proximaChave.current++)]);
+    setErroLocal(null);
+
+    requestAnimationFrame(() => campoPacienteRef.current?.focus());
+  }, [estado]);
+
   function adicionarLinha() {
+    setMensagemDeSucesso(null);
     setLinhas((atuais) => [...atuais, linhaVazia(proximaChave.current++)]);
   }
 
   function removerLinha(chave: number) {
+    setMensagemDeSucesso(null);
     setLinhas((atuais) => atuais.filter((linha) => linha.chave !== chave));
   }
 
@@ -95,6 +131,7 @@ export function FormularioDeRequisicao({
     campo: keyof Omit<LinhaDoFormulario, "chave">,
     valor: string,
   ) {
+    setMensagemDeSucesso(null);
     setLinhas((atuais) =>
       atuais.map((linha) =>
         linha.chave === chave ? { ...linha, [campo]: valor } : linha,
@@ -107,6 +144,8 @@ export function FormularioDeRequisicao({
    * daqui nunca chega a virar requisição.
    */
   function validarNoCliente(evento: React.FormEvent<HTMLFormElement>) {
+    setMensagemDeSucesso(null);
+
     if (linhas.length === 0) {
       evento.preventDefault();
       setErroLocal({ erro: ERRO_SEM_TERAPIA });
@@ -155,6 +194,7 @@ export function FormularioDeRequisicao({
               Nome do paciente
             </Label>
             <Input
+              ref={campoPacienteRef}
               id="pacienteNome"
               name="pacienteNome"
               list="pacientes-existentes"
@@ -162,7 +202,10 @@ export function FormularioDeRequisicao({
               autoFocus
               className="h-9"
               value={pacienteNome}
-              onChange={(evento) => setPacienteNome(evento.target.value)}
+              onChange={(evento) => {
+                setMensagemDeSucesso(null);
+                setPacienteNome(evento.target.value);
+              }}
               placeholder="Digite ou escolha um paciente"
             />
             {/*
@@ -187,7 +230,10 @@ export function FormularioDeRequisicao({
               autoComplete="off"
               className="h-9"
               value={numeroRequisicao}
-              onChange={(evento) => setNumeroRequisicao(evento.target.value)}
+              onChange={(evento) => {
+                setMensagemDeSucesso(null);
+                setNumeroRequisicao(evento.target.value);
+              }}
               placeholder="Ex.: 2026-00187"
             />
             <p className="text-xs text-muted-foreground">
@@ -239,15 +285,29 @@ export function FormularioDeRequisicao({
         </p>
       ) : null}
 
+      {mensagemDeSucesso ? (
+        <p role="status" className="text-sm font-medium text-regular">
+          {mensagemDeSucesso}
+        </p>
+      ) : null}
+
       <div className="flex items-center gap-3 border-t border-regua-forte pt-5">
-        <Button type="submit" size="lg" disabled={enviando}>
-          {enviando ? "Salvando..." : "Criar requisição"}
-        </Button>
+        <BotaoDeSubmit />
         <Button asChild variant="ghost" size="sm">
           <Link href="/dashboard">Cancelar</Link>
         </Button>
       </div>
     </form>
+  );
+}
+
+function BotaoDeSubmit() {
+  const { pending } = useFormStatus();
+
+  return (
+    <Button type="submit" size="lg" disabled={pending}>
+      {pending ? "Salvando..." : "Criar requisição"}
+    </Button>
   );
 }
 

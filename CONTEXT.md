@@ -246,11 +246,23 @@ produção.
     import de banco. O formulário (cliente) e a validação (servidor) importam dele para
     mostrarem o mesmo texto; importar `lib/domain/requisicoes.ts` do cliente arrastaria o
     Prisma para o bundle do navegador.
-  - **Toast de sucesso viaja pela URL**: o `redirect` da Server Action troca a página
-    inteira, então o aviso vai como `?criada=<numero>&paciente=<nome>`; o dashboard
-    dispara o toast (`sonner`) e apaga a query com `router.replace`, para o aviso não
-    voltar a cada recarga. Não há `revalidatePath`: o dashboard é dinâmico (depende da
-    sessão) e o `redirect` já entrega a página recém-renderizada.
+  - **Sucesso não navega**: a rotina real é cadastrar várias requisições em sequência,
+    então a Server Action permanece na página e devolve um `sucesso` com token único pelo
+    `useActionState`, no mesmo padrão do lançamento de atendimento. O formulário guarda o
+    último token tratado para não repetir a limpeza no StrictMode nem confundir duas
+    criações com dados parecidos.
+  - **Limpeza pós-sucesso**: paciente, número da requisição e terapias são limpos ali
+    mesmo; a lista de terapias volta para uma única linha vazia, o aviso curto
+    "Requisição criada para [paciente]" aparece no próprio formulário/toast, e o foco
+    volta automaticamente para o campo de nome do paciente.
+  - **`refresh()` em vez de `revalidatePath`**: nada é cacheado (a página é dinâmica por
+    causa da sessão), mas depois de criar um paciente novo o `datalist` precisa incluir o
+    nome recém-criado caso outra requisição dele seja cadastrada logo em seguida. O
+    `refresh()` redesenha o Server Component sem derrubar o estado client-side que acabou
+    de ser limpo.
+  - **Botão de submit com `useFormStatus`**: o botão lê o `pending` do formulário, fica
+    desabilitado durante o envio e troca o texto para "Salvando...", evitando duplo clique
+    no cadastro em lote.
   - **`sonner` + `next-themes`**: `npx shadcn add sonner` trouxe `next-themes` junto. O
     projeto não tem alternador de tema, e o componente sobrescreve as cores com as
     variáveis CSS da aplicação (`--popover`, `--border`), então o `theme` do sonner não
@@ -296,10 +308,9 @@ produção.
     um checkbox não marcado não é enviado, e um campo `disabled` também não. Assim
     `requisicaoTerapiaId` e `creditosConsumidos` chegam com o mesmo tamanho e a mesma
     ordem, e o índice do erro devolvido pelo servidor aponta a linha certa na tela.
-  - **Sucesso não navega** (diferente do cadastro de requisição, que redireciona): o
-    formulário se limpa ali mesmo e mostra o toast, para lançar o próximo paciente sem
-    esperar uma navegação — é o comportamento do sistema Worker atual, melhor que o do
-    legado nesse ponto. Como não há `redirect`, o aviso não precisa viajar pela URL: o
+  - **Sucesso não navega**: o formulário se limpa ali mesmo e mostra o toast, para lançar
+    o próximo paciente sem esperar uma navegação — o mesmo padrão usado no cadastro de
+    requisição. Como não há `redirect`, o aviso não precisa viajar pela URL: o
     `useActionState` devolve um `sucesso` com um token único, e o formulário guarda o
     último token tratado para não repetir a limpeza no StrictMode nem confundir dois
     lotes de números idênticos.
@@ -612,7 +623,8 @@ produção.
       autocomplete de paciente (`datalist`), lista dinâmica de terapias, validação no
       cliente e no servidor, Server Action transacional com get-or-create
       case-insensitive do paciente e unicidade de `numero_requisicao` por paciente,
-      redirect para o dashboard com toast de sucesso
+      sucesso sem navegação com `refresh()`, confirmação no próprio formulário/toast,
+      limpeza dos campos e foco de volta no nome do paciente
 - [x] Prompt 6 — Lançamento de atendimento (`/atendimentos/novo`): formulário com
       seleção de paciente, data padrão vinda do `CURRENT_DATE` do banco, observação
       opcional e carga sob demanda das guias com `saldo_restante > 0`; Server Action

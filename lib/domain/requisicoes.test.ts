@@ -83,11 +83,7 @@ const mocks = vi.hoisted(() => {
 
   const requireUsuario = vi.fn(async () => ({ id: 1, username: "admin" }));
 
-  const redirect = vi.fn((destino: string) => {
-    // O `redirect` real lança para interromper a action; o dublê imita isso
-    // para o teste conseguir distinguir sucesso de erro.
-    throw new Error(`NEXT_REDIRECT:${destino}`);
-  });
+  const refresh = vi.fn();
 
   return {
     banco,
@@ -96,7 +92,7 @@ const mocks = vi.hoisted(() => {
     consultar,
     criarRequisicao,
     escritas,
-    redirect,
+    refresh,
     requireUsuario,
     transacao,
   };
@@ -110,7 +106,7 @@ vi.mock("@/lib/auth/current-user", () => ({
   requireUsuario: mocks.requireUsuario,
 }));
 
-vi.mock("next/navigation", () => ({ redirect: mocks.redirect }));
+vi.mock("next/cache", () => ({ refresh: mocks.refresh }));
 
 import {
   criarRequisicao,
@@ -448,17 +444,32 @@ describe("criarRequisicaoAction (Server Action)", () => {
     expect(mocks.transacao).not.toHaveBeenCalled();
   });
 
-  it("redireciona para o dashboard com o aviso no sucesso", async () => {
-    await expect(criarRequisicaoAction({}, formulario())).rejects.toThrow(
-      "NEXT_REDIRECT",
-    );
+  it("permanece na tela, atualiza a rota atual e devolve sucesso com token", async () => {
+    const estado = await criarRequisicaoAction({}, formulario());
 
-    expect(mocks.redirect).toHaveBeenCalledWith(
-      "/dashboard?criada=2026-001&paciente=Jos%C3%A9+Silva",
-    );
+    expect(mocks.refresh).toHaveBeenCalledTimes(1);
+    expect(estado).toEqual({
+      sucesso: {
+        pacienteNome: "José Silva",
+        numeroRequisicao: "2026-001",
+        token: expect.any(String),
+      },
+    });
   });
 
-  it("devolve o erro para o formulário em vez de redirecionar", async () => {
+  it("gera um token diferente para cada sucesso", async () => {
+    const primeiro = await criarRequisicaoAction({}, formulario());
+    const segundo = await criarRequisicaoAction(
+      {},
+      formulario({ numeroRequisicao: "2026-002" }),
+    );
+
+    expect(primeiro.sucesso?.token).toEqual(expect.any(String));
+    expect(segundo.sucesso?.token).toEqual(expect.any(String));
+    expect(segundo.sucesso?.token).not.toBe(primeiro.sucesso?.token);
+  });
+
+  it("devolve o erro para o formulário em vez de sinalizar sucesso", async () => {
     mocks.banco.numeroJaExiste = true;
 
     const estado = await criarRequisicaoAction({}, formulario());
@@ -467,22 +478,21 @@ describe("criarRequisicaoAction (Server Action)", () => {
       erro: erroNumeroDuplicado("2026-001", "José Silva"),
       linha: undefined,
     });
-    expect(mocks.redirect).not.toHaveBeenCalled();
+    expect(mocks.refresh).not.toHaveBeenCalled();
   });
 
   it("costura as linhas repetidas do formulário na ordem do DOM", async () => {
-    await expect(
-      criarRequisicaoAction(
-        {},
-        formulario({
-          linhas: [
-            { terapiaId: "1", qtdAutorizada: "10", validade: "2026-03-01" },
-            { terapiaId: "2", qtdAutorizada: "4", validade: "" },
-          ],
-        }),
-      ),
-    ).rejects.toThrow("NEXT_REDIRECT");
+    const estado = await criarRequisicaoAction(
+      {},
+      formulario({
+        linhas: [
+          { terapiaId: "1", qtdAutorizada: "10", validade: "2026-03-01" },
+          { terapiaId: "2", qtdAutorizada: "4", validade: "" },
+        ],
+      }),
+    );
 
+    expect(estado.sucesso?.token).toEqual(expect.any(String));
     expect(mocks.criarRequisicao).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({

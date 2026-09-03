@@ -13,7 +13,7 @@
  * três vetores na ordem do DOM, e eles são costurados por índice.
  */
 
-import { redirect } from "next/navigation";
+import { refresh } from "next/cache";
 
 import { requireUsuario } from "@/lib/auth/current-user";
 
@@ -28,6 +28,18 @@ export type EstadoNovaRequisicao = {
   erro?: string;
   /** Índice da linha de terapia culpada, quando o erro é de uma linha. */
   linha?: number;
+  /** Presente só no sucesso. É ele que dispara a limpeza do formulário. */
+  sucesso?: {
+    pacienteNome: string;
+    numeroRequisicao: string;
+    /**
+     * Identificador da criação, único por submissão.
+     *
+     * O formulário guarda o último token já tratado para não repetir a
+     * limpeza no StrictMode nem confundir duas requisições iguais no shape.
+     */
+    token: string;
+  };
 };
 
 /**
@@ -76,12 +88,11 @@ function lerLinhas(formData: FormData): LinhaDeTerapia[] {
 }
 
 /**
- * Cria a requisição e, no sucesso, manda para o dashboard com o aviso.
+ * Cria a requisição e, no sucesso, mantém o usuário na tela.
  *
- * Sucesso -> `redirect` para `/dashboard?criada=...`, que o dashboard traduz em
- * um toast. Não há `revalidatePath` aqui: o dashboard é dinâmico (depende da
- * sessão), então o `redirect` já entrega a página recém-renderizada, com a
- * requisição nova dentro.
+ * Sucesso -> `refresh()` para redesenhar o Server Component e atualizar a
+ * lista de pacientes do `datalist`, mais um estado com token único para o
+ * formulário limpar os campos e avisar o usuário.
  *
  * Falha -> devolve a mensagem para o formulário, que continua na tela com o
  * que o usuário digitou.
@@ -104,11 +115,13 @@ export async function criarRequisicaoAction(
     return { erro: resultado.erro, linha: resultado.linha };
   }
 
-  const parametros = new URLSearchParams({
-    criada: resultado.numeroRequisicao,
-    paciente: resultado.pacienteNome,
-  });
+  refresh();
 
-  // `redirect` lança uma exceção de controle — precisa ficar fora de try/catch.
-  redirect(`/dashboard?${parametros.toString()}`);
+  return {
+    sucesso: {
+      pacienteNome: resultado.pacienteNome,
+      numeroRequisicao: resultado.numeroRequisicao,
+      token: crypto.randomUUID(),
+    },
+  };
 }
