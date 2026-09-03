@@ -170,13 +170,18 @@ SELECT rolname, rolbypassrls FROM pg_roles WHERE rolname = 'vigia_app';
 As 6 tabelas de domínio devem aparecer com `rowsecurity = true`, e `vigia_app` com
 `rolbypassrls = true`.
 
-### 3. Usuário administrativo (uma vez, do terminal local)
+### 3. Usuário administrativo e catálogo de terapias (uma vez, do terminal local)
 
-Sem isso não há como entrar no sistema: não existe cadastro público de usuário.
+São dois scripts, e os dois rodam **na mesma sessão do terminal**, com o mesmo
+`DATABASE_URL` apontando temporariamente para o Supabase. Sem o primeiro não há como
+entrar no sistema (não existe cadastro público de usuário); sem o segundo o banco fica com
+a tabela `terapia` vazia e não dá para cadastrar requisição nenhuma, porque a lista de
+terapias do formulário vem do banco.
 
-`scripts/create-admin.ts` usa **só o `DATABASE_URL`** — criar usuário é DML, não precisa
-do role de migrations. Então aqui o que aponta temporariamente para o Supabase é o
-`DATABASE_URL`, não o `DATABASE_SUPERUSER_URL`:
+`scripts/create-admin.ts` e `scripts/seed-terapias.ts` usam **só o `DATABASE_URL`** —
+criar usuário e cadastrar terapia são DML, não precisam do role de migrations. Então aqui
+o que aponta temporariamente para o Supabase é o `DATABASE_URL`, não o
+`DATABASE_SUPERUSER_URL`:
 
 ```powershell
 # PowerShell — vale só nesta sessão do terminal; nada disso vai para o `.env`.
@@ -185,24 +190,37 @@ $env:ADMIN_USERNAME  = "admin"
 $env:ADMIN_PASSWORD  = "a-senha-de-producao"   # mínimo 8 caracteres
 
 npm run create-admin
+npm run seed:terapias
 
 Remove-Item Env:DATABASE_URL, Env:ADMIN_USERNAME, Env:ADMIN_PASSWORD
 ```
 
-O script é idempotente: se o username já existir, ele redefine a senha e reativa a conta
-em vez de falhar. É também o jeito recomendado de resetar a senha do admin depois — nunca
-mexer no hash por SQL manual.
+Os dois são idempotentes:
+
+- `create-admin`: se o username já existir, ele redefine a senha e reativa a conta em vez
+  de falhar. É também o jeito recomendado de resetar a senha do admin depois — nunca mexer
+  no hash por SQL manual.
+- `seed:terapias`: faz upsert por `nome` (a coluna única da tabela), então rodar de novo
+  só reescreve o `codigo_tiss` de quem já existe. Não duplica nem apaga terapia cadastrada
+  à mão. No catálogo real da clínica, **`Psicomotricidade` e `Fisioterapia` compartilham o
+  código `50000171`** — é o dado que a clínica forneceu, `codigo_tiss` não é único no
+  banco e não há nada a corrigir ali.
+
+`seed:terapias` não tem provedor hardcoded: ele escreve no banco para onde a
+`DATABASE_URL` ativa apontar. É o que faz dele o mesmo script para o Postgres local e para
+produção — e é também por isso que o `Remove-Item` acima importa.
 
 **Feche o terminal (ou rode o `Remove-Item`) ao terminar.** Deixar `DATABASE_URL`
-apontando para o Supabase nessa sessão faz o próximo `npm run dev` ou `npm test` rodar
-contra produção sem aviso nenhum.
+apontando para o Supabase nessa sessão faz o próximo `npm run dev`, `npm test` ou
+`npm run seed:terapias` rodar contra produção sem aviso nenhum.
 
 ### 4. Promover e conferir
 
 1. `git push` da branch — a Vercel constrói e publica.
 2. Abrir a URL de produção: deve cair em `/login` (a raiz redireciona para `/dashboard`,
    que exige sessão).
-3. Entrar com o usuário do passo 3 e confirmar que o painel carrega.
+3. Entrar com o usuário do passo 3 e confirmar que o painel carrega e que
+   `/requisicoes/nova` oferece as 8 terapias do catálogo.
 4. Conferir em Vercel → Cron Jobs que `/api/cron/relatorio-semanal` aparece agendado. Para
    testar o envio sem esperar a segunda-feira, chame a rota à mão com o bearer:
    `curl -H "Authorization: Bearer $CRON_SECRET" https://SEU-APP.vercel.app/api/cron/relatorio-semanal`
@@ -230,6 +248,10 @@ Variáveis que ficam só no terminal local:
 | `DATABASE_SUPERUSER_URL` | migrations locais com o role `postgres` |
 | `ADMIN_USERNAME` | criação/atualização do usuário administrativo |
 | `ADMIN_PASSWORD` | senha inicial/reset do usuário administrativo |
+
+`npm run seed:terapias` não precisa de nenhuma variável além do `DATABASE_URL` já ativo
+na sessão — é o mesmo script para local e para produção, e faz parte do checklist de
+primeiro deploy junto com `npm run create-admin` (passo 3 de "Primeiro deploy").
 
 ### Configuração de RLS no Supabase (passo manual, uma vez)
 

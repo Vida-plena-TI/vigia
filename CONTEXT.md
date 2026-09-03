@@ -747,6 +747,15 @@ produção.
       padrão de 2s do Prisma é menor que os ~2,4s que uma conexão nova ao Supabase leva
       para abrir, o que fazia a própria asserção de bloqueio falhar de forma intermitente.
       Ver "Revalidação de concorrência refeita em 02/09/2026" no bloco de deploy
+- [x] Catálogo real de terapias (`scripts/seed-terapias.ts`, `npm run seed:terapias`) —
+      as 8 terapias da clínica com o código TISS de cada uma, no mesmo molde idempotente
+      de `scripts/create-admin.ts`: upsert por `nome` (a coluna única), sem apagar nem
+      duplicar terapia cadastrada à mão. Lê a `DATABASE_URL` do ambiente, sem provedor
+      hardcoded — o mesmo script serve para o Postgres local e para o Supabase, conforme
+      qual `DATABASE_URL` estiver ativa na sessão do terminal. Documentado no README como
+      parte do passo 3 do primeiro deploy, ao lado de `npm run create-admin`.
+      `Psicomotricidade` e `Fisioterapia` compartilham o código `50000171` — é o dado
+      real da clínica, `codigo_tiss` não é único no banco e não deve ser "corrigido"
 - [x] Checkbox "Marcar todas" no lançamento de atendimento (03/09/2026) — só aparece
       depois do paciente escolhido e da lista de guias carregada, marca todas preenchendo
       o crédito padrão sem sobrescrever valor digitado à mão, desmarca todas, cai para
@@ -791,6 +800,15 @@ produção.
   estado, não estilo — mas `npm run lint` falha por causa dele.
 - `ADMIN_PASSWORD` de produção deve ficar só no terminal local ao rodar
   `npm run create-admin`; não versionar e não configurar na Vercel.
+- **`prisma/seed.ts` e `scripts/seed-terapias.ts` discordam sobre o `codigo_tiss` de três
+  terapias.** O seed de desenvolvimento cria `Fonoaudiologia`, `Terapia Ocupacional` e
+  `Psicologia` com códigos inventados (`50000470`, `50000560`, `50000586`) e também faz
+  upsert por `nome` — então rodar `npm run db:seed` depois de `npm run seed:terapias`
+  sobrescreve os códigos reais por esses três no banco em que rodar. Em desenvolvimento é
+  inofensivo; em produção o `db:seed` não deve ser rodado de jeito nenhum (ele também cria
+  pacientes e atendimentos fictícios). Se um dia incomodar, a saída é alinhar os três
+  códigos de `prisma/seed.ts` com o catálogo real — os nomes dos pacientes de demonstração
+  continuam fictícios do mesmo jeito.
 - **A unicidade case-insensitive de `paciente.nome` depende da collation da instalação.**
   O banco local verificado em 31/08/2026 usa `Portuguese_Brazil.1252`; o Supabase de
   produção verificado em 01/09/2026 usa `en_US.UTF-8`. Nenhum dos dois é `C/POSIX`.
