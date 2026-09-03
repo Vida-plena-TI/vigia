@@ -22,6 +22,15 @@ import type { TerapiaParaEscolha } from "@/lib/domain/requisicoes";
 const ESTADO_INICIAL: EstadoNovaRequisicao = {};
 
 /**
+ * Quantidade que uma linha de terapia já nasce preenchida, até o usuário mudar.
+ *
+ * É só um valor inicial, não um piso nem um limite: o campo continua livre para
+ * ser apagado e redigitado, e a validação de "inteiro > 0" (aqui e na Server
+ * Action) não sabe deste número.
+ */
+const QTD_AUTORIZADA_PADRAO = "4";
+
+/**
  * Uma linha do formulário.
  *
  * Os valores ficam como texto porque é isso que um `input` produz — converter
@@ -39,8 +48,13 @@ type LinhaDoFormulario = {
   validade: string;
 };
 
-function linhaVazia(chave: number): LinhaDoFormulario {
-  return { chave, terapiaId: "", qtdAutorizada: "", validade: "" };
+function linhaNova(chave: number): LinhaDoFormulario {
+  return {
+    chave,
+    terapiaId: "",
+    qtdAutorizada: QTD_AUTORIZADA_PADRAO,
+    validade: "",
+  };
 }
 
 /**
@@ -78,7 +92,7 @@ export function FormularioDeRequisicao({
   const [pacienteNome, setPacienteNome] = useState("");
   const [numeroRequisicao, setNumeroRequisicao] = useState("");
   const [linhas, setLinhas] = useState<LinhaDoFormulario[]>(() => [
-    linhaVazia(0),
+    linhaNova(0),
   ]);
   const [erroLocal, setErroLocal] = useState<EstadoNovaRequisicao | null>(null);
   const [mensagemDeSucesso, setMensagemDeSucesso] = useState<string | null>(
@@ -110,7 +124,7 @@ export function FormularioDeRequisicao({
     setMensagemDeSucesso(mensagem);
     setPacienteNome("");
     setNumeroRequisicao("");
-    setLinhas([linhaVazia(proximaChave.current++)]);
+    setLinhas([linhaNova(proximaChave.current++)]);
     setErroLocal(null);
 
     requestAnimationFrame(() => campoPacienteRef.current?.focus());
@@ -118,7 +132,7 @@ export function FormularioDeRequisicao({
 
   function adicionarLinha() {
     setMensagemDeSucesso(null);
-    setLinhas((atuais) => [...atuais, linhaVazia(proximaChave.current++)]);
+    setLinhas((atuais) => [...atuais, linhaNova(proximaChave.current++)]);
   }
 
   function removerLinha(chave: number) {

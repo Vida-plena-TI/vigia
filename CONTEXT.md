@@ -252,9 +252,18 @@ produção.
     último token tratado para não repetir a limpeza no StrictMode nem confundir duas
     criações com dados parecidos.
   - **Limpeza pós-sucesso**: paciente, número da requisição e terapias são limpos ali
-    mesmo; a lista de terapias volta para uma única linha vazia, o aviso curto
-    "Requisição criada para [paciente]" aparece no próprio formulário/toast, e o foco
-    volta automaticamente para o campo de nome do paciente.
+    mesmo; a lista de terapias volta para uma única linha nova (já com a quantidade
+    padrão), o aviso curto "Requisição criada para [paciente]" aparece no próprio
+    formulário/toast, e o foco volta automaticamente para o campo de nome do paciente.
+  - **"Qtd. autorizada" nasce em `4`** (`QTD_AUTORIZADA_PADRAO`, no mesmo molde do
+    `CREDITOS_PADRAO` do lançamento de atendimento), tanto na primeira linha quanto em
+    cada linha criada pelo "Adicionar outra terapia" e na linha que sobra depois da
+    limpeza pós-sucesso. É a quantidade autorizada na esmagadora maioria das requisições,
+    então o padrão poupa digitação no caso comum. **É só valor inicial, não regra**: o
+    campo continua livre para ser apagado e redigitado, e a validação de inteiro > 0 (no
+    cliente e na Server Action) não conhece esse número — quem digita `7` grava `7`. Por
+    isso a função que monta a linha se chama `linhaNova`, não `linhaVazia`: ela deixou de
+    devolver uma linha em branco.
   - **`refresh()` em vez de `revalidatePath`**: nada é cacheado (a página é dinâmica por
     causa da sessão), mas depois de criar um paciente novo o `datalist` precisa incluir o
     nome recém-criado caso outra requisição dele seja cadastrada logo em seguida. O
@@ -693,6 +702,15 @@ produção.
       incluindo operação por teclado (espaço), `aria-checked="mixed"` no estado misto e um
       lote de 4 atendimentos lançado pelo mestre com o crédito 3 digitado à mão preservado.
       Sem mudança na validação de lote nem na Server Action
+- [x] "Qtd. autorizada" já vem preenchida com 4 em `/requisicoes/nova` (03/09/2026) — na
+      primeira linha, em cada linha do "Adicionar outra terapia" e na linha que sobra
+      depois do sucesso. Só valor inicial: nada mudou na validação (inteiro > 0 continua
+      no cliente e na Server Action) nem no schema. Ver `QTD_AUTORIZADA_PADRAO` e
+      a decisão "Qtd. autorizada nasce em 4" nas decisões de implementação. Testado no
+      navegador (Chrome, dev local): 6/6 verificações — primeira linha em `4`, segunda
+      linha adicionada em `4`, campo apagado e redigitado como `7`, requisição salva e
+      conferida no banco com `qtd_autorizada` 4 e 7 (o valor editado ganhou do padrão),
+      formulário limpo voltando em `4`, e `0` ainda recusado com a mensagem de sempre
 
 ## Pendências conhecidas (não bloqueiam o próximo passo, mas não esquecer)
 
