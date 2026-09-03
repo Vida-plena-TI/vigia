@@ -4,6 +4,7 @@ import {
   numeroDaRequisicaoMaisRecente,
   piorStatus,
   textoDeCopia,
+  textoDeCopiaEmLote,
 } from "./guias-apresentacao";
 import type { StatusAlerta } from "./saldo";
 
@@ -111,6 +112,62 @@ describe("textoDeCopia", () => {
   it("preserva o nome exatamente como veio do banco", () => {
     expect(textoDeCopia("José Silva", [guia("Regular", 1, "0001")])).toBe(
       "José Silva - 0001",
+    );
+  });
+});
+
+describe("textoDeCopiaEmLote", () => {
+  const ana = {
+    nome: "Ana Beatriz Moraes",
+    guias: [guia("Regular", 1, "2026-0001")],
+  };
+  const bruno = {
+    nome: "Bruno Carvalho",
+    guias: [guia("Renovar", 2, "2026-0002")],
+  };
+  const carla = {
+    nome: "Carla Nunes",
+    guias: [guia("Esgotada", 3, "2026-0003")],
+  };
+
+  it("devolve texto vazio sem paciente nenhum", () => {
+    expect(textoDeCopiaEmLote([])).toBe("");
+  });
+
+  it("com um paciente só é igual ao botão individual", () => {
+    expect(textoDeCopiaEmLote([ana])).toBe(textoDeCopia(ana.nome, ana.guias));
+  });
+
+  // O que se cola numa mensagem: uma linha por paciente e nada pendurado no
+  // fim — uma linha em branco sobrando é justamente o que se percebe ao colar.
+  it("junta uma linha por paciente, sem quebra sobrando no fim", () => {
+    expect(textoDeCopiaEmLote([ana, bruno, carla])).toBe(
+      "Ana Beatriz Moraes - 2026-0001\n" +
+        "Bruno Carvalho - 2026-0002\n" +
+        "Carla Nunes - 2026-0003",
+    );
+  });
+
+  it("respeita a ordem recebida, que é a ordem da lista do painel", () => {
+    expect(textoDeCopiaEmLote([carla, ana])).toBe(
+      "Carla Nunes - 2026-0003\nAna Beatriz Moraes - 2026-0001",
+    );
+  });
+
+  it("aplica o caso defensivo do número em cada linha", () => {
+    const comDuasRequisicoes = {
+      nome: "Mariana Souza Ribeiro",
+      guias: [guia("Esgotada", 4, "2026-0003"), guia("Regular", 88, "56565")],
+    };
+
+    expect(textoDeCopiaEmLote([ana, comDuasRequisicoes])).toBe(
+      "Ana Beatriz Moraes - 2026-0001\nMariana Souza Ribeiro - 56565",
+    );
+  });
+
+  it("paciente sem guia entra só com o nome, sem sufixo pendurado", () => {
+    expect(textoDeCopiaEmLote([{ nome: "Carlos Eduardo Lima", guias: [] }, ana])).toBe(
+      "Carlos Eduardo Lima\nAna Beatriz Moraes - 2026-0001",
     );
   });
 });

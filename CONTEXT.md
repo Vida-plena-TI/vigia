@@ -496,6 +496,60 @@ produção.
     é `node`. Montar esse aparato só para esta tela não se paga agora — se um dia entrar,
     é aqui que estes casos devem virar teste automatizado.
 
+- **Seleção múltipla e "Copiar selecionados" no painel** (03/09/2026 — de novo só camada
+  de apresentação: nenhuma Server Action, consulta ou regra de negócio foi tocada).
+  - **Os dois botões de copiar convivem, e não são alternativas.** O de ícone em cada
+    linha continua sendo o atalho de um paciente só, sem marcar nada; o do lote existe para
+    quem precisa montar uma lista. Os dois passam pelo mesmo
+    `useCopiaParaAreaDeTransferencia` e pelo mesmo `textoDeCopia`, então o texto de um
+    paciente é idêntico pelos dois caminhos — não há um "formato do lote" separado que
+    possa divergir do individual.
+  - **O checkbox é o terceiro controle irmão do cabeçalho**, pelo mesmo motivo já
+    documentado para o botão de copiar: fora da área clicável de expandir. Se estivesse
+    dentro, marcar um paciente abriria a tabela dele junto. Ele é `<input
+    type="checkbox">` nativo com `aria-label` que inclui o nome ("Selecionar Fulano para
+    copiar") — numa lista de pacientes, "Selecionar" sozinho não diz de quem, e é botão a
+    botão que o leitor de tela anda. O `<label>` sem texto em volta existe só para o alvo
+    de toque cobrir a altura da linha.
+  - **A seleção mora em `ListaDeGuias`, não na linha, e é guardada por id.** É o que a faz
+    sobreviver ao filtro de busca: a lista renderizada é a filtrada, então uma marca que
+    vivesse dentro de `PacienteRecolhivel` evaporaria junto com o paciente que sai do
+    resultado. Consequência intencional: **copiar durante uma busca leva também quem está
+    fora do filtro** — o filtro é temporário e não deveria decidir o conteúdo da área de
+    transferência.
+  - **A ordem do texto é a da lista, não a dos cliques.** `selecionadosNaOrdemDaLista`
+    filtra `pacientes` (a lista inteira, já ordenada por `lower(nome)` no banco) em vez de
+    acumular os ids na ordem em que foram marcados. Colar sai na mesma ordem que se lê na
+    tela, sem nenhum `sort` no cliente — a ordenação continua sendo uma decisão só, a da
+    consulta.
+  - **`textoDeCopiaEmLote` junta com `\n` e não deixa quebra sobrando no fim.** Uma linha
+    em branco pendurada é justamente o que se percebe ao colar numa mensagem. Observação de
+    plataforma: o Windows converte o `\n` para `\r\n` ao colocar o texto na área de
+    transferência do sistema — o que a aplicação escreve é LF, o que se cola no Bloco de
+    Notas é CRLF, e nos dois casos são N linhas sem linha vazia no fim.
+  - **A seleção não é limpa depois de copiar.** O usuário confere o que colou, ajusta e
+    copia de novo; limpar sozinho obrigaria a remarcar tudo por causa de um paciente
+    errado. Quem quer zerar usa o "Limpar seleção" ao lado, que só existe enquanto há algo
+    marcado — botão explícito em vez de efeito colateral.
+  - **A barra é `sticky top-0` e é `.folha`, não uma faixa colorida.** Marcar é gesto de
+    rolagem: quem desce o livro-razão marcando precisa do botão ao alcance. E ela é
+    superfície de dado em grafite e papel porque cor no painel significa `status_alerta` —
+    uma barra de ação colorida roubaria o canal. O realce da linha marcada, pelo mesmo
+    motivo, é `bg-secondary` (mais fundo), não outra cor.
+  - **O rótulo do botão mantém a contagem mesmo durante a confirmação** ("Copiar 3
+    selecionados" o tempo todo). O aviso de "copiou" continua sendo só a troca de silhueta
+    do ícone (`Copy` -> `Check`, 2s) mais a região `role="status"`, como no botão
+    individual — trocar o texto por "Copiado" apagaria justamente o número que o botão
+    precisa dizer.
+  - **`useCopiaParaAreaDeTransferencia` (`app/(app)/dashboard/usar-copia.ts`)** é onde a
+    regra de copiar mora: checagem de contexto seguro, toast só na falha e os 2s de
+    confirmação. Foi extraído do `BotaoDeCopiar` quando o segundo botão apareceu — duas
+    cópias disso acabariam divergindo no detalhe que menos se testa, que é o erro.
+  - **Cobertura**: `textoDeCopiaEmLote` tem teste unitário
+    (`lib/domain/guias-apresentacao.test.ts`, agora 20 casos) para ordem, formato exato,
+    ausência de quebra no fim e o caso defensivo do número por linha. O comportamento de
+    interface foi verificado no navegador, pelo mesmo motivo já registrado acima.
+
 - **Deploy Vercel + Supabase Postgres (verificado em 01/09/2026)**:
   - URLs confirmadas sem expor segredo: `DATABASE_URL` está em
     `postgresql://vigia_app.[project-ref]:[senha]@aws-0-us-west-2.pooler.supabase.com:6543/postgres?pgbouncer=true&connection_limit=1`;
@@ -711,6 +765,19 @@ produção.
       linha adicionada em `4`, campo apagado e redigitado como `7`, requisição salva e
       conferida no banco com `qtd_autorizada` 4 e 7 (o valor editado ganhou do padrão),
       formulário limpo voltando em `4`, e `0` ainda recusado com a mensagem de sempre
+- [x] Seleção múltipla no painel com "Copiar N selecionados" (03/09/2026) — um checkbox por
+      paciente ao lado do botão de copiar individual (os dois convivem), barra `sticky` no
+      topo da lista com "Copiar N selecionados" e "Limpar seleção", uma linha
+      `"Nome - Número da requisição"` por paciente em ordem alfabética, seleção que
+      atravessa o filtro de busca e não é limpa depois de copiar. Só apresentação — nenhuma
+      Server Action, consulta ou regra de negócio tocada. Ver "Seleção múltipla e 'Copiar
+      selecionados' no painel" nas decisões de implementação. Testado no navegador (Chrome
+      152, headless via CDP, dev local): 31/31 verificações, incluindo o texto lido de volta
+      da área de transferência de verdade nos três cenários (3 marcados, 2 marcados, e
+      copiando com a busca filtrando), o texto cru escrito pela aplicação (LF puro, sem
+      quebra no fim), marcar por espaço no teclado, marcar sem expandir o paciente, e o
+      botão individual continuando a copiar só a linha dele. `npm test` do módulo de
+      apresentação verde (20 casos) e `tsc --noEmit` limpo
 
 ## Pendências conhecidas (não bloqueiam o próximo passo, mas não esquecer)
 

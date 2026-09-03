@@ -10,6 +10,7 @@ import { piorStatus } from "@/lib/domain/guias-apresentacao";
 import type { GuiaDoDashboard, PacienteComGuias } from "@/lib/domain/guias";
 
 import { AcoesDaGuia } from "./acoes-da-guia";
+import { BarraDeSelecao } from "./barra-de-selecao";
 import { BotaoDeCopiar } from "./botao-de-copiar";
 import {
   MARCADOR_POR_STATUS,
@@ -36,6 +37,11 @@ import { StatusBadge } from "./status-badge";
  * o filete de margem na mesma cor. Nenhum "Esgotada" fica escondido dentro de
  * um paciente fechado — dá para varrer a coluna da esquerda com tudo fechado e
  * saber onde abrir.
+ *
+ * Também é aqui que mora a seleção múltipla: o checkbox de cada linha, e a
+ * barra de "Copiar selecionados" que aparece quando há pelo menos um marcado.
+ * As duas peças precisam de um dono comum acima da lista filtrada — ver o
+ * comentário de `selecionados`.
  */
 export function ListaDeGuias({
   pacientes,
@@ -57,6 +63,20 @@ export function ListaDeGuias({
    * usuário sempre ganha do padrão.
    */
   const [manuais, setManuais] = useState<Record<number, boolean>>({});
+
+  /**
+   * Os pacientes marcados para o "Copiar selecionados", por id.
+   *
+   * Mora aqui, e não dentro de `PacienteRecolhivel`, porque a lista renderizada
+   * é a **filtrada**: se a marca vivesse na linha, digitar no campo de busca
+   * desmontaria os pacientes fora do resultado e a seleção deles evaporaria
+   * junto. Guardada por id — não por posição nem por objeto —, ela atravessa o
+   * filtro inteira: quem estava marcado continua marcado enquanto se busca e
+   * depois que a busca é limpa.
+   */
+  const [selecionados, setSelecionados] = useState<ReadonlySet<number>>(
+    () => new Set(),
+  );
 
   const termo = normalizarParaBusca(busca);
   const filtrando = termo !== "";
@@ -81,6 +101,34 @@ export function ListaDeGuias({
       [pacienteId]: !(atuais[pacienteId] ?? filtrando),
     }));
   }
+
+  function alternarSelecao(pacienteId: number, marcado: boolean) {
+    setSelecionados((atuais) => {
+      const proximos = new Set(atuais);
+
+      if (marcado) {
+        proximos.add(pacienteId);
+      } else {
+        proximos.delete(pacienteId);
+      }
+
+      return proximos;
+    });
+  }
+
+  /**
+   * Os marcados na ordem do painel, não na ordem em que foram marcados.
+   *
+   * Sai de `pacientes` (a lista inteira) de propósito: o filtro de busca é
+   * temporário e não deveria decidir o que vai para a área de transferência —
+   * um paciente marcado antes de digitar continua no lote. Como `pacientes` já
+   * vem ordenada por `lower(nome)` do banco, filtrar preserva a ordem
+   * alfabética que se lê na tela, que é a ordem em que as linhas são coladas.
+   */
+  const selecionadosNaOrdemDaLista = useMemo(
+    () => pacientes.filter((paciente) => selecionados.has(paciente.id)),
+    [pacientes, selecionados],
+  );
 
   return (
     <div className="flex flex-col gap-3">
@@ -113,6 +161,13 @@ export function ListaDeGuias({
         </p>
       </div>
 
+      {selecionadosNaOrdemDaLista.length > 0 ? (
+        <BarraDeSelecao
+          selecionados={selecionadosNaOrdemDaLista}
+          aoLimpar={() => setSelecionados(new Set())}
+        />
+      ) : null}
+
       {pacientes.length === 0 ? (
         <p className="folha px-4 py-8 text-center text-sm text-muted-foreground">
           Nenhuma guia cadastrada ainda.
@@ -133,6 +188,10 @@ export function ListaDeGuias({
               paciente={paciente}
               aberto={estaAberto(paciente.id)}
               aoAlternar={() => alternar(paciente.id)}
+              selecionado={selecionados.has(paciente.id)}
+              aoAlternarSelecao={(marcado) =>
+                alternarSelecao(paciente.id, marcado)
+              }
             />
           ))}
         </div>
@@ -144,10 +203,10 @@ export function ListaDeGuias({
 /**
  * Um paciente do livro-razão: cabeçalho sempre visível, guias sob demanda.
  *
- * O cabeçalho é uma linha com **dois controles irmãos** — o botão que abre e
- * fecha, e o de copiar. Aninhar um dentro do outro seria HTML inválido, e
- * mesmo com `stopPropagation` o clique em copiar acabaria abrindo o paciente
- * sem querer.
+ * O cabeçalho é uma linha com **três controles irmãos** — o checkbox de
+ * seleção, o botão que abre e fecha, e o de copiar. Aninhar um dentro do outro
+ * seria HTML inválido, e mesmo com `stopPropagation` o clique em copiar (ou na
+ * marca) acabaria abrindo o paciente sem querer.
  *
  * O botão de abrir segue o padrão de acordeão do WAI-ARIA: fica dentro do
  * `<h2>` (para o leitor de tela continuar navegando por cabeçalho), carrega
@@ -160,10 +219,14 @@ function PacienteRecolhivel({
   paciente,
   aberto,
   aoAlternar,
+  selecionado,
+  aoAlternarSelecao,
 }: {
   paciente: PacienteComGuias;
   aberto: boolean;
   aoAlternar: () => void;
+  selecionado: boolean;
+  aoAlternarSelecao: (marcado: boolean) => void;
 }) {
   const idPainel = useId();
   const pior = piorStatus(paciente.guias);
@@ -177,8 +240,29 @@ function PacienteRecolhivel({
           // paciente inteiro: com tudo recolhido, a coluna da esquerda continua
           // dizendo onde olhar.
           pior ? MARCADOR_POR_STATUS[pior] : "border-l-transparent",
+          // Marcado é mais fundo, não outra cor: o realce só precisa dizer
+          // "este entra no lote" sem competir com o selo de status ao lado.
+          selecionado && "bg-secondary",
         )}
       >
+        {/*
+          Terceiro controle irmão da linha, pelo mesmo cuidado do botão de
+          copiar: fica **fora** da área clicável de expandir, senão marcar um
+          paciente abriria a tabela dele sem querer. O `<label>` sem texto
+          existe só para o alvo de toque cobrir a altura da linha — o rótulo de
+          verdade é o `aria-label`, que precisa dizer de quem é a marca, porque
+          é botão a botão que o leitor de tela anda numa lista dessas.
+        */}
+        <label className="flex shrink-0 cursor-pointer items-center self-stretch pl-3">
+          <input
+            type="checkbox"
+            className="size-4 shrink-0"
+            checked={selecionado}
+            aria-label={`Selecionar ${paciente.nome} para copiar`}
+            onChange={(evento) => aoAlternarSelecao(evento.target.checked)}
+          />
+        </label>
+
         <h2 className="min-w-0 flex-1">
           <button
             type="button"
@@ -188,7 +272,7 @@ function PacienteRecolhivel({
             // O anel de foco padrão fica do lado de fora (`outline-offset: 2px`)
             // e seria cortado pelo `overflow-hidden` da folha; aqui ele entra
             // para dentro da linha em vez de sumir.
-            className="flex w-full items-center gap-2 px-3 py-2.5 text-left focus-visible:[outline-offset:-3px]"
+            className="flex w-full items-center gap-2 py-2.5 pr-3 pl-2 text-left focus-visible:[outline-offset:-3px]"
           >
             <ChevronRight
               aria-hidden
@@ -210,11 +294,11 @@ function PacienteRecolhivel({
             ) : null}
 
             {/*
-              No celular a contagem sai de cena: com selo, contagem e botão de
-              copiar na mesma linha de 390px, quem era cortado era o nome do
-              paciente — que é o que se lê primeiro. A contagem reaparece
-              assim que há largura, e de todo jeito ela está logo abaixo quando
-              o paciente abre.
+              No celular a contagem sai de cena: com marca, selo, contagem e
+              botão de copiar na mesma linha de 390px, quem era cortado era o
+              nome do paciente — que é o que se lê primeiro. A contagem
+              reaparece assim que há largura, e de todo jeito ela está logo
+              abaixo quando o paciente abre.
             */}
             <span className="ml-auto hidden pl-2 text-xs whitespace-nowrap text-muted-foreground sm:inline">
               {paciente.guias.length} guia(s)

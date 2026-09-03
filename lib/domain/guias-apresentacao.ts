@@ -98,3 +98,28 @@ export function textoDeCopia(
 
   return numero ? `${nome} - ${numero}` : nome;
 }
+
+/** O mínimo que um paciente precisa ter para virar uma linha de cópia. */
+type PacienteCopiavel = {
+  nome: string;
+  guias: readonly Pick<GuiaResumivel, "requisicaoId" | "numeroRequisicao">[];
+};
+
+/**
+ * O texto de vários pacientes de uma vez: uma linha por paciente, `\n` entre
+ * elas e **sem quebra sobrando no fim** — colar numa mensagem não deve deixar
+ * uma linha em branco pendurada.
+ *
+ * A ordem é a da lista recebida, não a ordem em que o usuário foi marcando os
+ * checkboxes: quem chama passa os pacientes já na ordem do painel (alfabética,
+ * por `lower(nome)`), então o texto colado sai na mesma ordem que se lê na
+ * tela. Cada linha usa exatamente o mesmo `textoDeCopia` do botão individual,
+ * caso defensivo do número da requisição incluído.
+ */
+export function textoDeCopiaEmLote(
+  pacientes: readonly PacienteCopiavel[],
+): string {
+  return pacientes
+    .map((paciente) => textoDeCopia(paciente.nome, paciente.guias))
+    .join("\n");
+}
