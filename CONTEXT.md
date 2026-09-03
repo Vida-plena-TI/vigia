@@ -708,6 +708,28 @@ produção.
     acontecia ao desmarcar uma linha sozinha.
   - Nenhuma validação de lote (lote vazio, guia repetida, créditos > 0) nem a Server Action
     foram tocadas — é camada de interação do formulário.
+- **Favicon são dois arquivos em `public/`, escolhidos por `prefers-color-scheme` — não
+  um ícone fixo.** `public/icon-light.png` e `public/icon-dark.png` (512x512) são
+  declarados em `metadata.icons.icon` de `app/layout.tsx`, cada um com sua `media`, e o
+  navegador troca sozinho conforme o tema do sistema. A motivação é a mesma de sempre com
+  marca em barra de aba: um ícone só desaparece contra um dos dois fundos.
+  - **Por que não a convenção de arquivo do Next** (`app/icon.png`, que era o que existia
+    antes): ela gera o `<link>` automaticamente, mas não aceita `media`, então não dá para
+    condicionar por tema. A API baseada em arquivo e a `metadata.icons` não se somam bem
+    aqui — por isso `app/favicon.ico` e `app/icon.png` foram removidos. Se algum deles
+    voltar para `app/`, volta a competir com esta configuração.
+  - **Nomes fora da convenção não são servidos de dentro de `app/`.** O Next só reconhece
+    `icon.png`, `icon1.png`, etc.; `app/icon-light.png` não vira rota nenhuma e a URL
+    `/icon-light.png` daria 404. Os dois arquivos precisam estar em `public/`.
+  - **O Turbopack guarda o ícone antigo em `.next`.** Trocar ou remover ícone e recarregar
+    a página costuma não refletir nada — inclusive `.next/server/app/favicon.ico` sobrevive
+    à remoção do arquivo de origem. O caminho confiável é matar o dev server, `rm -rf
+    .next` e subir de novo. Cache de favicon do próprio navegador é uma segunda camada:
+    vale conferir o `<link>` no HTML (`curl -s localhost:3000/ | grep 'rel="icon"'`) antes
+    de suspeitar do código.
+  - Os PNGs são pesados para favicon (378 KB o claro, 151 KB o escuro, ambos 512x512).
+    Funciona, e a aba é servida uma vez só, mas se um dia incomodar a saída é gerar
+    versões 32x32/48x48 — não mexer na estratégia dos dois arquivos.
 
 ## Não fazer
 

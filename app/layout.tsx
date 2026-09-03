@@ -31,6 +31,18 @@ const plexSerif = IBM_Plex_Serif({
 export const metadata: Metadata = {
   title: "VIGIA",
   description: "Controle de autorizações de terapia.",
+  /**
+   * Dois ícones em `public/` em vez de um `app/icon.png` fixo: o navegador
+   * escolhe por `prefers-color-scheme`, então a marca não some contra a barra
+   * de abas clara nem contra a escura. A API de arquivo (`app/icon.png`) não
+   * aceita `media`, por isso a configuração é declarada aqui.
+   */
+  icons: {
+    icon: [
+      { url: "/icon-light.png", media: "(prefers-color-scheme: light)" },
+      { url: "/icon-dark.png", media: "(prefers-color-scheme: dark)" },
+    ],
+  },
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {
