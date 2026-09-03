@@ -588,6 +588,25 @@ produção.
   modelo de policies do Supabase faz sentido. O RLS permanece ativado como rede de
   segurança: qualquer conexão futura que não use explicitamente esse role continua sujeita
   às regras de RLS.
+- **"Marcar todas" no lançamento de atendimento é estado derivado, não um `useState`
+  próprio.** O checkbox mestre de `app/(app)/atendimentos/novo` lê `selecoes`: marcado
+  quando todas as guias do paciente estão marcadas, indeterminado quando só algumas estão.
+  Guardar um booleano separado obrigaria a lembrar de zerá-lo na troca de paciente e na
+  limpeza pós-sucesso — exatamente o tipo de estado obsoleto que o smoke test do Prompt 6
+  já tinha pego ao trocar de paciente no meio do preenchimento. Derivando, o mestre reseta
+  de graça junto com `selecoes` e nunca mente sobre o que está de fato marcado. Detalhes
+  que valem para qualquer checkbox mestre futuro:
+  - `indeterminate` só existe como **propriedade do DOM** (não há atributo HTML nem prop do
+    React), então um `useEffect` com `ref` a mantém em dia; `aria-checked="mixed"` é o par
+    disso para leitor de tela, e sai do DOM quando o estado não é misto.
+  - O mestre **não tem `name`**. O que o servidor lê continua sendo o checkbox de cada
+    linha; um `name` a mais desalinharia os vetores que a Server Action costura por índice
+    com `formData.getAll`.
+  - Marcar todas **preserva o crédito já digitado à mão** na linha e só aplica o padrão (1)
+    a quem não tinha valor. Desmarcar mantém os valores guardados, igual ao que já
+    acontecia ao desmarcar uma linha sozinha.
+  - Nenhuma validação de lote (lote vazio, guia repetida, créditos > 0) nem a Server Action
+    foram tocadas — é camada de interação do formulário.
 
 ## Não fazer
 
@@ -665,6 +684,15 @@ produção.
       padrão de 2s do Prisma é menor que os ~2,4s que uma conexão nova ao Supabase leva
       para abrir, o que fazia a própria asserção de bloqueio falhar de forma intermitente.
       Ver "Revalidação de concorrência refeita em 02/09/2026" no bloco de deploy
+- [x] Checkbox "Marcar todas" no lançamento de atendimento (03/09/2026) — só aparece
+      depois do paciente escolhido e da lista de guias carregada, marca todas preenchendo
+      o crédito padrão sem sobrescrever valor digitado à mão, desmarca todas, cai para
+      indeterminado quando uma linha é desmarcada na mão e reseta na troca de paciente.
+      Estado derivado de `selecoes` — ver "Marcar todas ... é estado derivado" nas decisões
+      de implementação. Testado no navegador (Chrome, dev local): 13/13 verificações,
+      incluindo operação por teclado (espaço), `aria-checked="mixed"` no estado misto e um
+      lote de 4 atendimentos lançado pelo mestre com o crédito 3 digitado à mão preservado.
+      Sem mudança na validação de lote nem na Server Action
 
 ## Pendências conhecidas (não bloqueiam o próximo passo, mas não esquecer)
 

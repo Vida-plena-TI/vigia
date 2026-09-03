@@ -92,7 +92,28 @@ export function FormularioDeAtendimento({
     (paciente) => String(paciente.id) === pacienteId,
   );
 
+  // "Marcar todas" é derivado das seleções individuais, não um estado à parte.
+  // É isso que o faz cair para indeterminado quando o usuário desmarca uma
+  // linha na mão depois de usar o mestre — e voltar sozinho ao vazio quando
+  // `selecoes` é limpo (troca de paciente, limpeza pós-sucesso), sem precisar
+  // lembrar de resetar um segundo estado que ficaria obsoleto.
+  const totalDeGuias = guias?.length ?? 0;
+  const todasMarcadas = totalDeGuias > 0 && marcadas.length === totalDeGuias;
+  const parcialmenteMarcadas =
+    marcadas.length > 0 && marcadas.length < totalDeGuias;
+
+  const refMarcarTodas = useRef<HTMLInputElement>(null);
   const tokenTratado = useRef<string | null>(null);
+
+  // `indeterminate` existe só como propriedade do DOM: não há atributo HTML nem
+  // prop do React para ele, então é este efeito que mantém o desenho do
+  // checkbox de acordo com o estado derivado acima. O `aria-checked="mixed"` do
+  // JSX é o outro lado disso, para quem ouve a tela em vez de olhar.
+  useEffect(() => {
+    if (refMarcarTodas.current) {
+      refMarcarTodas.current.indeterminate = parcialmenteMarcadas;
+    }
+  }, [parcialmenteMarcadas]);
 
   // Limpeza pós-sucesso (item 4 do Prompt 6): sem navegar para o dashboard, o
   // formulário volta ao início ali mesmo para o próximo lançamento. O token
@@ -155,6 +176,29 @@ export function FormularioDeAtendimento({
         creditos: atuais[guiaId]?.creditos ?? CREDITOS_PADRAO,
       },
     }));
+  }
+
+  /**
+   * Marca ou desmarca de uma vez todas as guias com saldo do paciente.
+   *
+   * Ao marcar, o crédito que o usuário já tinha digitado numa linha é
+   * preservado — só quem não tinha valor nenhum recebe o padrão. Ao desmarcar,
+   * os valores continuam guardados, exatamente como já acontece ao desmarcar
+   * uma linha sozinha.
+   */
+  function alternarTodas(marcada: boolean) {
+    setSelecoes((atuais) => {
+      const proximas: Record<number, Selecao> = { ...atuais };
+
+      for (const guia of guias ?? []) {
+        proximas[guia.id] = {
+          marcada,
+          creditos: atuais[guia.id]?.creditos ?? CREDITOS_PADRAO,
+        };
+      }
+
+      return proximas;
+    });
   }
 
   function alterarCreditos(guiaId: number, creditos: string) {
@@ -352,6 +396,39 @@ export function FormularioDeAtendimento({
 
         {!carregando && guias && guias.length > 0 ? (
           <div className="folha divide-y divide-regua overflow-hidden">
+            {/*
+              Só existe aqui dentro: enquanto não há paciente escolhido e lista
+              carregada, não há nada para marcar. Sem `name`, porque é controle
+              de interação — o que o servidor lê continua sendo o checkbox de
+              cada linha, e um `name` a mais desalinharia os vetores do
+              `getAll`.
+            */}
+            <div className="flex items-center gap-3 bg-secondary/40 px-3 py-2.5">
+              <input
+                ref={refMarcarTodas}
+                id="marcar-todas"
+                type="checkbox"
+                className="size-4 shrink-0"
+                checked={todasMarcadas}
+                aria-checked={parcialmenteMarcadas ? "mixed" : undefined}
+                aria-label={
+                  totalDeGuias === 1
+                    ? "Marcar a única terapia com saldo deste paciente"
+                    : `Marcar todas as ${totalDeGuias} terapias com saldo deste paciente`
+                }
+                onChange={(evento) => alternarTodas(evento.target.checked)}
+              />
+              <Label
+                htmlFor="marcar-todas"
+                className="text-xs font-medium text-muted-foreground"
+              >
+                Marcar todas
+                <span className="font-normal">
+                  ({marcadas.length} de {totalDeGuias})
+                </span>
+              </Label>
+            </div>
+
             {guias.map((guia) => (
               <LinhaDeGuia
                 key={guia.id}
