@@ -31,6 +31,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { getPrismaClient } from "@/lib/db";
 
 import {
+  listarEncaminhamentosNaTransacao,
   registrarEncaminhamentoNaTransacao,
   type StatusEncaminhamento,
 } from "./encaminhamentos";
@@ -502,4 +503,133 @@ describe.skipIf(!temBanco)("encaminhamento contra o banco real", () => {
       expect(resultado.status).toBe(statusEsperado);
     },
   );
+
+  /**
+   * A ordem da listagem: status primeiro, nome depois.
+   *
+   * Cada caso é `[nome do paciente, expressão SQL do vencimento alvo, status
+   * esperado]`. Como nas fronteiras acima, os alvos são calculados pelo banco a
+   * partir do `CURRENT_DATE` — com datas fixas o cenário inteiro mudaria de
+   * categoria no mês seguinte.
+   *
+   * Os nomes foram escolhidos para que a ordem alfabética seja **o contrário**
+   * da ordem por status: quem está vencido chama Zulmira e quem está sem
+   * marcação chama Ana. Se alguém trocar o `ORDER BY` de volta por nome, a
+   * lista sai exatamente invertida.
+   *
+   * "Ordem aurora" e "Ordem Beatriz" são o par que testa o desempate: mesma
+   * categoria ("A vencer"), e a caixa da primeira letra discorda da ordem
+   * alfabética. Por `lower(nome)` aurora vem antes de Beatriz; por byte, o `B`
+   * maiúsculo (66) viria antes do `a` minúsculo (97). O teste logo abaixo
+   * afirma essa segunda parte separadamente, porque a collation do banco de
+   * desenvolvimento (`Portuguese_Brazil.1252`) já ignora caixa sozinha — sem
+   * ele, este cenário passaria igual com ou sem o `lower()`, e não estaria
+   * provando o que diz provar.
+   *
+   * A lista de casos está numa terceira ordem, nem a alfabética nem a esperada,
+   * para a ordem de cadastro não ser o que faz o teste passar.
+   */
+  const CENARIO_DE_ORDEM: ReadonlyArray<
+    readonly [string, string, StatusEncaminhamento | null]
+  > = [
+    [
+      "Ordem Ana",
+      "(date_trunc('month', CURRENT_DATE) + INTERVAL '2 months')::date",
+      null,
+    ],
+    [
+      "Ordem Beatriz",
+      "(date_trunc('month', CURRENT_DATE) + INTERVAL '1 month')::date",
+      "A vencer",
+    ],
+    [
+      "Ordem Zulmira",
+      "date_trunc('month', CURRENT_DATE)::date - 1",
+      "Vencido",
+    ],
+    [
+      "Ordem aurora",
+      "(date_trunc('month', CURRENT_DATE) + INTERVAL '1 month')::date",
+      "A vencer",
+    ],
+    [
+      "Ordem Yolanda",
+      "date_trunc('month', CURRENT_DATE)::date",
+      "Vence este mês",
+    ],
+  ];
+
+  it("lista por status (Vencido -> sem marcação) e, dentro dele, por lower(nome)", async () => {
+    const listagem = await comRollback(async (tx) => {
+      for (const [nome, expressaoDoAlvo] of CENARIO_DE_ORDEM) {
+        // Mesma inversa dos 180 dias das fronteiras: serve só para pousar o
+        // vencimento no mês pretendido. `$queryRawUnsafe` porque o que varia é
+        // SQL, não valor — as expressões são constantes deste arquivo.
+        const [datas] = await tx.$queryRawUnsafe<{ encaminhamento: string }[]>(
+          `SELECT ((${expressaoDoAlvo}) - 180)::text AS "encaminhamento"`,
+        );
+
+        const gravacao = await registrarEncaminhamentoNaTransacao(tx, {
+          pacienteNome: `${nome} ${SUFIXO}`,
+          dataEncaminhamento: datas.encaminhamento,
+        });
+
+        if (!gravacao.ok) {
+          throw new Error(`gravacao falhou: ${gravacao.erro}`);
+        }
+      }
+
+      // A consulta de verdade, a mesma que a página chama — é ela que está
+      // sendo testada, não uma cópia do `ORDER BY` montada aqui.
+      return listarEncaminhamentosNaTransacao(tx);
+    });
+
+    // O banco de desenvolvimento tem encaminhamentos de demonstração já
+    // commitados, e eles aparecem na listagem junto com os do cenário. Filtrar
+    // não enfraquece o teste: recortar linhas de uma sequência ordenada
+    // preserva a ordem relativa das que sobram.
+    const doCenario = listagem.filter(
+      (encaminhamento) =>
+        encaminhamento.pacienteNome.startsWith("Ordem ") &&
+        encaminhamento.pacienteNome.endsWith(SUFIXO),
+    );
+
+    expect(
+      doCenario.map((encaminhamento) => [
+        encaminhamento.pacienteNome.replace(` ${SUFIXO}`, ""),
+        encaminhamento.statusEncaminhamento,
+      ]),
+    ).toEqual([
+      ["Ordem Zulmira", "Vencido"],
+      ["Ordem Yolanda", "Vence este mês"],
+      ["Ordem aurora", "A vencer"],
+      ["Ordem Beatriz", "A vencer"],
+      ["Ordem Ana", null],
+    ]);
+  });
+
+  it("o par de desempate discorda da ordenação por byte", async () => {
+    // O controle do teste acima. Sem ele, "aurora antes de Beatriz" seria
+    // verdade por acidente: a collation do banco de desenvolvimento
+    // (`Portuguese_Brazil.1252`) já ordena ignorando caixa, e o `lower()` do
+    // `ORDER BY` não teria como aparecer. Aqui a comparação é feita
+    // explicitamente `COLLATE "C"` — byte a byte, a ordenação que um banco
+    // criado com outra collation daria — e o resultado precisa ser o
+    // **contrário** do que a listagem devolveu.
+    //
+    // Não precisa de linha gravada: são as duas strings, comparadas pelo
+    // Postgres.
+    const porByte = await comRollback((tx) =>
+      tx.$queryRaw<{ nome: string }[]>`
+        SELECT "nome"
+        FROM (VALUES (${`Ordem aurora ${SUFIXO}`}::text),
+                     (${`Ordem Beatriz ${SUFIXO}`}::text)) AS v("nome")
+        ORDER BY "nome" COLLATE "C"
+      `,
+    );
+
+    expect(porByte.map((linha) => linha.nome.replace(` ${SUFIXO}`, ""))).toEqual(
+      ["Ordem Beatriz", "Ordem aurora"],
+    );
+  });
 });

@@ -650,10 +650,27 @@ da requisição"` via `navigator.clipboard.writeText`. Aninhar um `<button>` den
     campo de data literalmente vazio obrigaria a redigitar o dia inteiro a cada paciente da
     fila, que é o contrário do que a tela existe para fazer. O nome do paciente, esse sim,
     volta vazio.
-  - **Ordem da lista: `data_encaminhamento DESC, id DESC`.** O painel ordena por nome; aqui
-    não. O registro recém-criado precisa aparecer no topo, logo abaixo do formulário, sem
-    rolagem — ordenar por nome esconderia no meio da lista a confirmação do que acabou de
-    ser digitado.
+  - **Ordem da lista: status primeiro, `lower(nome)` dentro dele.** A tela é olhada o dia
+    inteiro para responder "de quem eu preciso cuidar agora", e quem responde isso é o
+    status, não a ordem alfabética nem a de cadastro. O `ORDER BY` de
+    `listarEncaminhamentos` abre com um `CASE` que traduz o rótulo vindo da view em
+    prioridade — `Vencido` 1, `Vence este mês` 2, `A vencer` 3, `NULL` (sem marcação) 4,
+    a mesma sequência de `STATUS_DE_ENCAMINHAMENTO_EM_ORDEM` com o caso sem rótulo no fim
+    — e desempata por `lower(p."nome")`, a mesma expressão do índice
+    `UNIQUE (lower(nome))` e a mesma que o painel usa. Não sobra desempate a fazer depois:
+    um paciente tem um encaminhamento só e um nome só, então `lower(nome)` já é único
+    entre as linhas desta consulta.
+    O `CASE` vive **só no `ORDER BY`**: não virou coluna da consulta, nem coluna da view,
+    nem campo de `EncaminhamentoNaLista`. A view continua sendo quem diz *qual* é o
+    status; isto aqui só diz em que ordem os quatro casos aparecem — é ordenação de
+    leitura, e duplicar a classificação para poder ordená-la seria exatamente a segunda
+    fonte de verdade que a view existe para não ter. Pelo mesmo motivo a lista **não** é
+    reordenada em React: ela chega pronta do banco, e `ListaDeEncaminhamentos` só filtra
+    por nome.
+    Esta ordem substituiu `data_encaminhamento DESC, id DESC`, que existia para o registro
+    recém-cadastrado aparecer no topo, logo abaixo do formulário. Aquele papel ficou com a
+    mensagem que a própria action devolve ("cadastrado"/"atualizado" para X): ela confirma
+    o que acabou de ser digitado sem custar a ordem que serve para o resto do dia.
   - **Um encaminhamento por paciente, garantido por `UNIQUE`, não por `if`.** A regra
     (13 das obrigatórias) chegou depois da primeira versão da tela, que permitia várias
     linhas por paciente. Ela mora na migration
@@ -796,6 +813,11 @@ UPDATE` dentro de transação Prisma continua serializando corretamente no Supav
 - Não classificar o status de encaminhamento em TypeScript, nem por dias. A comparação é
   de **mês de calendário** e mora na view `encaminhamento_status`; TypeScript só conta o
   que ela classificou.
+- Não reordenar a listagem de encaminhamentos no cliente (`sort` em React, `useMemo` que
+  reordena). A ordem — status por prioridade, depois `lower(nome)` — vem do `ORDER BY` da
+  consulta; o componente só filtra. E não transformar aquele `CASE` de prioridade em
+  coluna da view nem em campo do tipo da linha: ele é ordenação de leitura, não
+  classificação.
 - Não permitir mais de um encaminhamento por paciente "resolvendo na aplicação" (apagar o
   antigo antes de inserir, checar existência e ramificar). A `UNIQUE (paciente_id)` é o
   que garante a regra, e é ela que dá arbítrio ao `ON CONFLICT` do upsert.
@@ -905,6 +927,29 @@ UPDATE` dentro de transação Prisma continua serializando corretamente no Supav
       status. Pelo caminho real da action, cadastrar para um paciente que já tinha
       substitui a linha e recalcula o vencimento. **Continua pendente** só a interação de
       navegador (digitar, filtrar, ver o toast)
+- [x] Encaminhamentos, ordenação por status (09/09/2026) — a listagem passou de
+      `data_encaminhamento DESC, id DESC` para **status por prioridade e, dentro dele,
+      `lower(nome)`**: Vencido, Vence este mês, A vencer, sem marcação. Mudou só o
+      `ORDER BY` de `listarEncaminhamentos` (um `CASE` sobre o rótulo que a view já
+      produz, usado só para ordenar) — nada de coluna nova, view alterada ou `sort` em
+      React. A consulta foi extraída para `listarEncaminhamentosComCliente`, com
+      `listarEncaminhamentosNaTransacao` ao lado, mesmo par de
+      `excluirAtendimentoComCliente`: é o que deixa o teste de integração ler a lista pela
+      consulta de verdade e desfazer tudo no fim. Dois testes novos: um monta os quatro
+      casos com nomes em ordem alfabética **invertida** em relação ao status (Zulmira
+      vencida, Ana sem marcação) mais um par na mesma categoria ("Ordem aurora" e
+      "Ordem Beatriz") e afirma a ordem exata; o outro é o controle desse par, comparando
+      as duas strings `COLLATE "C"` para mostrar que por byte a ordem seria a inversa —
+      sem ele o desempate passaria com ou sem `lower()`, porque a collation do banco local
+      (`Portuguese_Brazil.1252`) já ignora caixa. O primeiro teste foi conferido contra o
+      `ORDER BY` antigo: falha, como tem que falhar. `tsc --noEmit` limpo, `npm test` verde
+      (15 arquivos, 212 testes) e `npm run build` ok; `npm run lint` continua acusando só
+      o erro pré-existente de `acoes-da-guia.tsx`. A listagem também foi conferida contra
+      o banco de desenvolvimento pela função real, e volta na ordem certa com os seis
+      encaminhamentos de demonstração. **Pendente: a conferência visual no navegador**,
+      que ficou para o usuário — esta sessão não teve browser controlável. Ver "Ordem da
+      lista" nas decisões de implementação
+
 ## Pendências conhecidas (não bloqueiam o próximo passo, mas não esquecer)
 
 - Nome do cookie de sessão ainda é `klini_session` e o header interno é
@@ -937,7 +982,10 @@ UPDATE` dentro de transação Prisma continua serializando corretamente no Supav
   para um paciente **que já está na lista**, com data diferente, e confirmar que a linha
   antiga some (só uma linha para ele), que o vencimento foi recalculado e que o toast diz
   "atualizado", não "cadastrado"; e digitar no campo de busca para ver a lista filtrar sem
-  o resumo do topo se mexer.
+  o resumo do topo se mexer. Desde 09/09/2026 o roteiro ganhou mais um passo: conferir
+  a olho que a lista sai na ordem **Vencido -> Vence este mês -> A vencer -> sem
+  marcação**, e que dentro de cada bloco os nomes estão em ordem alfabética ignorando
+  caixa.
 - **O banco de desenvolvimento local ficou com cinco encaminhamentos de demonstração**
   ("Zoe Vencida Manual", "Bruno Este Mes Manual", "Carla Fim Deste Mes Manual", "Diego A
   Vencer Manual", "Elisa Longe Manual"), um em cada caso da classificação, criados para a

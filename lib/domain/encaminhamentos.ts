@@ -313,23 +313,19 @@ function comoStatusEncaminhamento(
 }
 
 /**
- * Todos os encaminhamentos, do mais recente para o mais antigo.
+ * A listagem em si, com o cliente recebido de fora.
  *
- * Lê da view `encaminhamento_status`, não da tabela: o status já vem
- * classificado de lá, como o painel lê `requisicao_terapia_saldo` em vez de
- * `requisicao_terapia`. A view carrega as colunas da tabela junto, então não há
- * junção com `encaminhamento` a fazer — só com `paciente`, pelo nome.
+ * Mesma forma de `excluirAtendimentoComCliente`: quem chama decide se entrega o
+ * cliente global ou o de uma transação já aberta, e a consulta — que é o que
+ * está sendo testado — é uma só. `Pick<..., "$queryRaw">` porque é tudo o que
+ * ela usa, e é o que o `PrismaClient` normal também oferece.
  *
- * A ordem é `data_encaminhamento DESC, id DESC` porque o uso esperado desta
- * tela é cadastrar vários em sequência: o registro recém-gravado precisa
- * aparecer no topo da lista, logo abaixo do formulário, sem rolagem. Ordenar
- * por nome (como o painel faz) esconderia no meio da lista a confirmação do que
- * acabou de ser digitado.
+ * A ordem e o porquê dela estão em {@link listarEncaminhamentos}.
  */
-export async function listarEncaminhamentos(): Promise<
-  EncaminhamentoNaLista[]
-> {
-  const linhas = await getPrismaClient().$queryRaw<LinhaDaListagem[]>`
+async function listarEncaminhamentosComCliente(
+  cliente: Pick<Prisma.TransactionClient, "$queryRaw">,
+): Promise<EncaminhamentoNaLista[]> {
+  const linhas = await cliente.$queryRaw<LinhaDaListagem[]>`
     SELECT
       s."id"                        AS "id",
       p."nome"                      AS "pacienteNome",
@@ -338,13 +334,84 @@ export async function listarEncaminhamentos(): Promise<
       s."status_encaminhamento"     AS "statusEncaminhamento"
     FROM "encaminhamento_status" s
     JOIN "paciente" p ON p."id" = s."paciente_id"
-    ORDER BY s."data_encaminhamento" DESC, s."id" DESC
+    ORDER BY
+      CASE s."status_encaminhamento"
+        WHEN 'Vencido'        THEN 1
+        WHEN 'Vence este mês' THEN 2
+        WHEN 'A vencer'       THEN 3
+        ELSE 4
+      END,
+      lower(p."nome")
   `;
 
   return linhas.map((linha) => ({
     ...linha,
     statusEncaminhamento: comoStatusEncaminhamento(linha.statusEncaminhamento),
   }));
+}
+
+/**
+ * Todos os encaminhamentos, do mais urgente para o menos.
+ *
+ * Lê da view `encaminhamento_status`, não da tabela: o status já vem
+ * classificado de lá, como o painel lê `requisicao_terapia_saldo` em vez de
+ * `requisicao_terapia`. A view carrega as colunas da tabela junto, então não há
+ * junção com `encaminhamento` a fazer — só com `paciente`, pelo nome.
+ *
+ * **A ordem é por status primeiro, e vem pronta do banco.** O `CASE` do
+ * `ORDER BY` traduz o rótulo que a view produziu em um número de prioridade:
+ *
+ *   1. Vencido
+ *   2. Vence este mês
+ *   3. A vencer
+ *   4. sem marcação (`NULL` — vencimento a dois ou mais meses)
+ *
+ * É a mesma sequência de {@link STATUS_DE_ENCAMINHAMENTO_EM_ORDEM}, com o
+ * quarto caso (o que não tem rótulo) no fim; aquela constante ordena os
+ * contadores do resumo, esta ordena as linhas da tabela.
+ *
+ * Dentro de cada grupo o desempate é `lower(p."nome")` — a mesma expressão do
+ * índice `UNIQUE (lower(nome))` de `paciente`, e o que faz "ana" e "Ana"
+ * ficarem lado a lado em vez de separadas por todas as maiúsculas do alfabeto,
+ * como a ordenação binária faria. Não sobra desempate a fazer depois: um
+ * paciente tem no máximo um encaminhamento (`UNIQUE` em `paciente_id`) e um
+ * nome só (`UNIQUE (lower(nome))`), então `lower(nome)` já é único entre as
+ * linhas desta consulta.
+ *
+ * O `CASE` mora **só no `ORDER BY`**: não vira coluna da consulta nem coluna da
+ * view. A classificação continua tendo uma fonte só — a view diz *qual* é o
+ * status, e isto aqui diz apenas em que ordem os quatro casos aparecem. Pelo
+ * mesmo motivo a lista não é reordenada em React: ela chega pronta do banco, e
+ * o componente só filtra por nome.
+ *
+ * O `ELSE 4` cobre o `NULL` do quarto caso. Um rótulo novo que a view passasse
+ * a produzir também cairia nele, mas não passaria despercebido:
+ * `comoStatusEncaminhamento` estoura na linha seguinte, antes de a lista virar
+ * tela.
+ *
+ * Esta ordem substituiu `data_encaminhamento DESC, id DESC`, que existia para o
+ * registro recém-cadastrado aparecer no topo. A confirmação do cadastro já é a
+ * mensagem que a própria action devolve; a lista voltou a servir para o que se
+ * olha nela o dia inteiro, que é quem está vencendo.
+ */
+export async function listarEncaminhamentos(): Promise<
+  EncaminhamentoNaLista[]
+> {
+  return listarEncaminhamentosComCliente(getPrismaClient());
+}
+
+/**
+ * Versão de {@link listarEncaminhamentos} que roda numa transação já aberta.
+ *
+ * Existe pelo mesmo motivo de {@link registrarEncaminhamentoNaTransacao}: é o
+ * que deixa o teste de integração montar o cenário, ler a lista pela consulta
+ * de verdade e desfazer tudo no fim. Em produção use
+ * {@link listarEncaminhamentos}.
+ */
+export async function listarEncaminhamentosNaTransacao(
+  tx: Prisma.TransactionClient,
+): Promise<EncaminhamentoNaLista[]> {
+  return listarEncaminhamentosComCliente(tx);
 }
 
 /**
