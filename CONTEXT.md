@@ -80,6 +80,11 @@ produção.
    nova, já que uma Server Action é alcançável por POST direto sem passar pelo proxy).
    Sessão órfã (usuário desativado/apagado com sessão ainda aberta) é detectada por essa
    segunda camada e limpa o cookie.
+   **Exceção: rotas sob `/api/cron/`.** Elas autenticam a si mesmas por Bearer token
+   (`CRON_SECRET`) e são chamadas servidor-a-servidor pelo Vercel Cron, que nunca tem
+   cookie de sessão. O `proxy.ts` as dispensa da triagem; a proteção continua sendo a
+   checagem do segredo dentro do route handler. Ver "Cron interceptado pelo proxy" nas
+   decisões de implementação.
 5. Criar requisição: get-or-create do paciente + criar `requisicao` + criar N linhas de
    `requisicao_terapia`, tudo em **uma transação atômica**.
 6. Só terapias com `saldo_restante > 0` aparecem na tela de lançar atendimento.
@@ -194,6 +199,35 @@ produção.
 - **`middleware.ts` → `proxy.ts`**: no Next 16, o arquivo de middleware foi renomeado para
   `proxy.ts`. Isso é só uma mudança de nome de arquivo/convenção da framework, não afeta
   nenhuma regra de negócio.
+- **Cron interceptado pelo proxy (bug de produção, corrigido em 09/09/2026)**: o
+  `/api/cron/relatorio-semanal` respondia **307 para `/login`** em produção, com e sem o
+  header `Authorization: Bearer $CRON_SECRET` — confirmado nos logs reais da Vercel. O
+  relatório semanal nunca foi enviado.
+  **Causa raiz:** o `matcher` do `proxy.ts` cobria tudo menos assets, e a lista de
+  dispensa era só `ROTAS_PUBLICAS = ["/login", "/api/auth"]`. `/api/cron/...` não estava
+  em nenhuma das duas, então o proxy rodava primeiro, não achava cookie de sessão e
+  redirecionava. A checagem de `CRON_SECRET` do `route.ts` **nunca chegava a executar** —
+  ela estava correta o tempo todo, só era inalcançável. O sintoma enganava: como o proxy
+  decide por caminho e não por header, a resposta era idêntica com e sem o Bearer, o que
+  parecia "segredo errado" e não "rota interceptada".
+  **Correção:** `ROTAS_COM_AUTENTICACAO_PROPRIA = ["/api/cron"]` no `proxy.ts`, dispensada
+  da triagem de sessão, mais a exclusão de `api/cron` no `matcher` para o proxy nem ser
+  invocado. A redundância é deliberada e está afirmada em teste, para as duas não saírem
+  de sincronia. A checagem de `CRON_SECRET` no `route.ts` foi mantida intacta — ela é, e
+  segue sendo, a única proteção real da rota. O conceito é distinto de "rota pública":
+  `/api/cron/` não é aberta, só não usa cookie.
+  **Por que os testes do Prompt 9 não pegaram:** `lib/relatorio/route.test.ts` importa
+  `GET` e chama a função direto, sem passar pelo `proxy.ts`. Testava a camada certa de
+  forma isolada e continua verde — o bug morava na composição das duas camadas, que não
+  tinha teste nenhum. O `lib/auth/proxy.test.ts` novo cobre essa junção: monta a
+  requisição sem cookie e com Bearer correto, afirma que o proxy **não** redireciona e só
+  então chama o `GET`, verificando que a rota é alcançada (200) e que o Bearer errado
+  ainda dá 401. O arquivo tem também um teste de controle (`/dashboard` sem sessão →
+  redirect), sem o qual uma asserção quebrada de "não redirecionou" passaria vazia.
+  **Achado no caminho:** o primeiro `matcher` da correção excluía `api/cron` sem delimitar
+  o fim do segmento, e com isso tirava `/api/cronicas` da triagem de sessão também — uma
+  rota futura com esse prefixo ficaria sem proxy. O teste de caminho parecido pegou antes
+  do commit; o padrão final é `api/cron(?:/|$)`.
 - **Dashboard (`/dashboard`)**: leitura em Server Component, mutação em Server
   Action. A consulta vive em `lib/domain/guias.ts` e usa `$queryRaw` com join da
   view `requisicao_terapia_saldo` com `requisicao`, `paciente` e `terapia` — o
@@ -782,6 +816,11 @@ produção.
       `/atendimentos/hoje`, usando `CURRENT_DATE` do banco e ordenação por nome
       do paciente, sem filtros extras
 - [x] Prompt 9 — Relatório semanal por e-mail
+- [x] Correção do cron do relatório semanal (09/09/2026) — `/api/cron/relatorio-semanal`
+      era interceptado pelo `proxy.ts` e redirecionado para `/login` (307) antes da
+      checagem de `CRON_SECRET`. Rotas sob `/api/cron/` passaram a dispensar a triagem de
+      sessão, com teste de regressão em `lib/auth/proxy.test.ts` cobrindo proxy + rota
+      juntos. Ver "Cron interceptado pelo proxy" nas decisões de implementação
 - [x] Passagem de design visual — sistema de design aplicado a login, painel, nova
       requisição, lançar atendimento, atendimentos de hoje e aos diálogos de
       histórico/edição/exclusão. Sem mudança de regra de negócio, Server Action ou
