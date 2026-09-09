@@ -830,6 +830,13 @@ UPDATE` dentro de transação Prisma continua serializando corretamente no Supav
 - Não declarar `encaminhamento.data_vencimento` no `schema.prisma` sem o
   `@default(dbgenerated(...))` exato da introspecção — sem ele o próximo `migrate dev`
   gera uma migration que o Postgres recusa.
+- Não versionar `lib/generated/prisma`. A pasta está no `.gitignore` e é refeita pelo
+  `postinstall` (`prisma generate`) em qualquer clone. Ela ficou rastreada por engano até
+  09/09/2026, de quando foi commitada antes da regra existir — `.gitignore` não afeta
+  arquivo já rastreado —, e o efeito era uma pasta meio-versionada: o
+  `models/Encaminhamento.ts` nunca entrou, e cada `prisma generate` sujava o `git status`
+  com dez arquivos que ninguém lê em revisão. Resolvido com `git rm --cached`, sem tocar
+  no disco.
 - Não colocar configuração específica do Supabase (RLS, grants, roles) em
   `prisma/migrations` — esse histórico é schema portável e roda também no Postgres local.
   Esse tipo de configuração vai em `scripts/supabase/`, rodado à mão.
