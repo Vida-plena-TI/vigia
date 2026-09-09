@@ -17,9 +17,12 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { getPrismaClient } from "@/lib/db";
 
+import { registrarEncaminhamentoNaTransacao } from "./encaminhamentos";
+import { obterOuCriarPaciente } from "./pacientes";
 import {
   criarRequisicao,
   criarRequisicaoNaTransacao,
+  ERRO_SEM_ENCAMINHAMENTO,
   ERRO_TERAPIA_INEXISTENTE,
   erroNumeroDuplicado,
 } from "./requisicoes";
@@ -82,6 +85,50 @@ async function criarTerapia(
   return terapia.id;
 }
 
+/**
+ * Data de encaminhamento que **não** está vencida hoje nem daqui a meses.
+ *
+ * Relativa ao `CURRENT_DATE` do banco, e não um literal: os 180 dias correm a
+ * partir dela, então uma data fixa faria estes testes começarem a exercitar o
+ * caso "vencido" sem ninguém notar — e o caso vencido tem teste próprio, que
+ * pede o contrário.
+ */
+async function dataDeEncaminhamentoEmDia(
+  tx: ClienteDaTransacao,
+): Promise<string> {
+  const [linha] = await tx.$queryRaw<{ data: string }[]>`
+    SELECT CURRENT_DATE::text AS "data"
+  `;
+
+  return linha.data;
+}
+
+/**
+ * Dá ao paciente (criando-o se preciso) um encaminhamento — o que a regra 15
+ * exige antes de qualquer requisição.
+ *
+ * Quase todo teste deste arquivo precisa disto no preparo, e nenhum deles é
+ * sobre isto: o que eles testam é a unicidade do número, o reaproveitamento do
+ * paciente e o rollback. Reaproveita `registrarEncaminhamentoNaTransacao` em
+ * vez de inserir na mão para o preparo passar pelo mesmo get-or-create do
+ * código de produção.
+ */
+async function comEncaminhamento(
+  tx: ClienteDaTransacao,
+  pacienteNome: string,
+  dataEncaminhamento?: string,
+): Promise<void> {
+  const resultado = await registrarEncaminhamentoNaTransacao(tx, {
+    pacienteNome,
+    dataEncaminhamento:
+      dataEncaminhamento ?? (await dataDeEncaminhamentoEmDia(tx)),
+  });
+
+  if (!resultado.ok) {
+    throw new Error(`preparo falhou: ${resultado.erro}`);
+  }
+}
+
 /** Quantos pacientes têm este nome, comparando como o índice compara. */
 async function contarPacientes(
   cliente: ClienteDaTransacao | ReturnType<typeof getPrismaClient>,
@@ -104,11 +151,16 @@ describe.skipIf(!temBanco)("cadastro de requisicao contra o banco real", () => {
     await getPrismaClient().$disconnect();
   });
 
-  it("cria o paciente quando ele ainda não existe", async () => {
+  it("pendura a requisição no paciente que o encaminhamento criou", async () => {
     const nome = `Paciente Novo ${SUFIXO}`;
 
     const resultado = await comRollback(async (tx) => {
       const terapiaId = await criarTerapia(tx, "novo");
+
+      // Desde a regra 15 este é o único caminho para um paciente novo receber
+      // requisição: o cadastro do encaminhamento é que o cria. Antes dela o
+      // teste começava com o banco vazio e esperava `pacienteCriado: true`.
+      await comEncaminhamento(tx, nome);
 
       const criacao = await criarRequisicaoNaTransacao(tx, {
         pacienteNome: nome,
@@ -128,7 +180,11 @@ describe.skipIf(!temBanco)("cadastro de requisicao contra o banco real", () => {
       return { criacao, pacientes, guias };
     });
 
-    expect(resultado.criacao).toMatchObject({ ok: true, pacienteCriado: true });
+    // `pacienteCriado: false` não é detalhe: sob a regra 15 ele **nunca** é
+    // `true` no sucesso. Um paciente recém-criado pelo get-or-create da
+    // requisição não teria como já ter encaminhamento, e seria recusado antes
+    // de chegar aqui.
+    expect(resultado.criacao).toMatchObject({ ok: true, pacienteCriado: false });
     expect(resultado.pacientes).toBe(1);
     expect(resultado.guias).toEqual([
       {
@@ -143,6 +199,8 @@ describe.skipIf(!temBanco)("cadastro de requisicao contra o banco real", () => {
 
     const resultado = await comRollback(async (tx) => {
       const terapiaId = await criarTerapia(tx, "existente");
+
+      await comEncaminhamento(tx, nome);
 
       const primeira = await criarRequisicaoNaTransacao(tx, {
         pacienteNome: nome,
@@ -174,7 +232,10 @@ describe.skipIf(!temBanco)("cadastro de requisicao contra o banco real", () => {
       return { primeira, segunda, pacientes, requisicoes };
     });
 
-    expect(resultado.primeira).toMatchObject({ ok: true, pacienteCriado: true });
+    expect(resultado.primeira).toMatchObject({
+      ok: true,
+      pacienteCriado: false,
+    });
     expect(resultado.segunda).toMatchObject({
       ok: true,
       pacienteCriado: false,
@@ -193,6 +254,8 @@ describe.skipIf(!temBanco)("cadastro de requisicao contra o banco real", () => {
 
     const resultado = await comRollback(async (tx) => {
       const terapiaId = await criarTerapia(tx, "dup");
+
+      await comEncaminhamento(tx, nome);
 
       const primeira = await criarRequisicaoNaTransacao(tx, {
         pacienteNome: nome,
@@ -229,6 +292,9 @@ describe.skipIf(!temBanco)("cadastro de requisicao contra o banco real", () => {
     const resultado = await comRollback(async (tx) => {
       const terapiaId = await criarTerapia(tx, "compart");
 
+      await comEncaminhamento(tx, `Paciente Um ${SUFIXO}`);
+      await comEncaminhamento(tx, `Paciente Outro ${SUFIXO}`);
+
       const deUm = await criarRequisicaoNaTransacao(tx, {
         pacienteNome: `Paciente Um ${SUFIXO}`,
         numeroRequisicao: numero,
@@ -255,48 +321,74 @@ describe.skipIf(!temBanco)("cadastro de requisicao contra o banco real", () => {
     expect(resultado.total).toBe(2);
   });
 
-  it("desfaz tudo — inclusive o paciente novo — se uma terapia falhar", async () => {
+  it("desfaz a requisição inteira se uma terapia falhar", async () => {
     const nome = `Paciente Orfao ${SUFIXO}`;
     const numero = `REQ-ORFAO-${SUFIXO}`;
 
     // Este caso NÃO roda dentro da transação do teste de propósito: o que está
     // sob teste é justamente a transação que `criarRequisicao` abre sozinha.
-    // Como ela termina em falha, nada é commitado — não há lixo para limpar.
-    const terapiaValida = await getPrismaClient().terapia.findFirst({
-      orderBy: { id: "asc" },
-      select: { id: true },
-    });
+    //
+    // O preparo, porém, precisa estar **commitado** — a regra 15 exige que o
+    // paciente já tenha encaminhamento, e um preparo dentro de uma transação
+    // que sofre rollback não seria visto pela transação de `criarRequisicao`.
+    // Daí o `finally` que limpa: é a única parte deste arquivo que escreve no
+    // banco para valer.
+    await getPrismaClient().$transaction(
+      (tx) => comEncaminhamento(tx, nome),
+      { maxWait: 30_000, timeout: 30_000 },
+    );
 
-    const linhas = [
-      // Uma linha boa antes da ruim (quando o seed tem alguma terapia), para o
-      // teste cobrir mesmo "parte da lista já passou" e não só "a lista toda
-      // era inválida".
-      ...(terapiaValida
-        ? [{ terapiaId: terapiaValida.id, qtdAutorizada: 5, validade: null }]
-        : []),
-      { terapiaId: TERAPIA_INEXISTENTE, qtdAutorizada: 5, validade: null },
-    ];
+    try {
+      const terapiaValida = await getPrismaClient().terapia.findFirst({
+        orderBy: { id: "asc" },
+        select: { id: true },
+      });
 
-    const resultado = await criarRequisicao({
-      pacienteNome: nome,
-      numeroRequisicao: numero,
-      linhas,
-    });
+      const linhas = [
+        // Uma linha boa antes da ruim (quando o seed tem alguma terapia), para
+        // o teste cobrir mesmo "parte da lista já passou" e não só "a lista
+        // toda era inválida".
+        ...(terapiaValida
+          ? [{ terapiaId: terapiaValida.id, qtdAutorizada: 5, validade: null }]
+          : []),
+        { terapiaId: TERAPIA_INEXISTENTE, qtdAutorizada: 5, validade: null },
+      ];
 
-    expect(resultado).toEqual({
-      ok: false,
-      erro: ERRO_TERAPIA_INEXISTENTE,
-      linha: linhas.length - 1,
-    });
+      const resultado = await criarRequisicao({
+        pacienteNome: nome,
+        numeroRequisicao: numero,
+        linhas,
+      });
 
-    // O ponto do teste: o paciente chegou a ser inserido dentro da transação e
-    // o rollback o levou junto. Se `criarNaTransacao` devolvesse `{ ok: false }`
-    // em vez de lançar, esta contagem seria 1.
-    expect(await contarPacientes(getPrismaClient(), nome)).toBe(0);
+      expect(resultado).toEqual({
+        ok: false,
+        erro: ERRO_TERAPIA_INEXISTENTE,
+        linha: linhas.length - 1,
+      });
 
-    expect(
-      await getPrismaClient().requisicao.count({ where: { numeroRequisicao: numero } }),
-    ).toBe(0);
+      // O ponto do teste: a primeira linha de terapia já tinha passado quando a
+      // segunda falhou, e o `throw` levou a requisição junto. Nada da transação
+      // que falhou sobrou.
+      expect(
+        await getPrismaClient().requisicao.count({
+          where: { numeroRequisicao: numero },
+        }),
+      ).toBe(0);
+
+      // E o rollback levou só o que aquela transação escreveu: o paciente é do
+      // preparo, commitado antes, e continua de pé.
+      expect(await contarPacientes(getPrismaClient(), nome)).toBe(1);
+    } finally {
+      await getPrismaClient().$executeRaw`
+        DELETE FROM "encaminhamento"
+        WHERE "paciente_id" IN (
+          SELECT "id" FROM "paciente" WHERE lower("nome") = lower(${nome})
+        )
+      `;
+      await getPrismaClient().$executeRaw`
+        DELETE FROM "paciente" WHERE lower("nome") = lower(${nome})
+      `;
+    }
   });
 
   it("recusa qtd_autorizada <= 0 antes de criar qualquer paciente", async () => {
@@ -312,5 +404,136 @@ describe.skipIf(!temBanco)("cadastro de requisicao contra o banco real", () => {
     // A CHECK `requisicao_terapia_qtd_autorizada_positiva` existe como backstop,
     // mas nem chega a ser exercitada: a validação recusa antes da transação.
     expect(await contarPacientes(getPrismaClient(), nome)).toBe(0);
+  });
+
+  describe("encaminhamento obrigatório (regra 15)", () => {
+    it("cria a requisição quando o encaminhamento está em dia", async () => {
+      const nome = `Regra15 Em Dia ${SUFIXO}`;
+
+      const resultado = await comRollback(async (tx) => {
+        const terapiaId = await criarTerapia(tx, "r15dia");
+
+        await comEncaminhamento(tx, nome);
+
+        const criacao = await criarRequisicaoNaTransacao(tx, {
+          pacienteNome: nome,
+          numeroRequisicao: `REQ-R15-DIA-${SUFIXO}`,
+          linhas: [{ terapiaId, qtdAutorizada: 8, validade: null }],
+        });
+
+        return { criacao };
+      });
+
+      expect(resultado.criacao).toMatchObject({ ok: true });
+    });
+
+    it("cria a requisição mesmo com o encaminhamento vencido", async () => {
+      const nome = `Regra15 Vencido ${SUFIXO}`;
+
+      const resultado = await comRollback(async (tx) => {
+        const terapiaId = await criarTerapia(tx, "r15venc");
+
+        // Literal, e bem no passado: 180 dias depois de 01/01/2020 é uma data
+        // que já passou e vai continuar passada para sempre. É o oposto do
+        // preparo padrão, que é relativo ao `CURRENT_DATE` justamente para
+        // nunca vencer.
+        await comEncaminhamento(tx, nome, "2020-01-01");
+
+        // A prova de que o cenário é mesmo o vencido vem da view, não de conta
+        // em JavaScript: se a classificação mudar, este teste para de dizer o
+        // que promete e é aqui que se descobre.
+        const [status] = await tx.$queryRaw<
+          { statusEncaminhamento: string | null }[]
+        >`
+          SELECT s."status_encaminhamento" AS "statusEncaminhamento"
+          FROM "encaminhamento_status" s
+          JOIN "paciente" p ON p."id" = s."paciente_id"
+          WHERE lower(p."nome") = lower(${nome})
+        `;
+
+        const criacao = await criarRequisicaoNaTransacao(tx, {
+          pacienteNome: nome,
+          numeroRequisicao: `REQ-R15-VENC-${SUFIXO}`,
+          linhas: [{ terapiaId, qtdAutorizada: 8, validade: null }],
+        });
+
+        return { criacao, status };
+      });
+
+      expect(resultado.status.statusEncaminhamento).toBe("Vencido");
+      // A regra é de existência, não de validade. Se um dia ela passar a exigir
+      // "em dia", é este teste que cai — e é a conversa que ele obriga a ter.
+      expect(resultado.criacao).toMatchObject({ ok: true });
+    });
+
+    it("recusa o paciente que já existe mas não tem encaminhamento", async () => {
+      const nome = `Regra15 Sem Encaminhamento ${SUFIXO}`;
+
+      const resultado = await comRollback(async (tx) => {
+        const terapiaId = await criarTerapia(tx, "r15sem");
+
+        // O paciente existe de verdade — só não tem encaminhamento. É o caso
+        // que separa "não achei o paciente" de "achei e ele não pode".
+        const paciente = await obterOuCriarPaciente(tx, nome);
+
+        const criacao = await criarRequisicaoNaTransacao(tx, {
+          pacienteNome: nome,
+          numeroRequisicao: `REQ-R15-SEM-${SUFIXO}`,
+          linhas: [{ terapiaId, qtdAutorizada: 8, validade: null }],
+        });
+
+        const requisicoes = await tx.requisicao.count({
+          where: { pacienteId: paciente.id },
+        });
+
+        return { criacao, requisicoes };
+      });
+
+      expect(resultado.criacao).toEqual({
+        ok: false,
+        erro: ERRO_SEM_ENCAMINHAMENTO,
+        linha: undefined,
+      });
+      expect(resultado.requisicoes).toBe(0);
+    });
+
+    it("recusa o nome novo sem criar o paciente", async () => {
+      const nome = `Regra15 Nome Nunca Visto ${SUFIXO}`;
+      const numero = `REQ-R15-NOVO-${SUFIXO}`;
+
+      // Pelo caminho real, com transação própria: o que está sob teste é o
+      // rollback. O get-or-create **chega a inserir** este paciente lá dentro,
+      // e é o `throw` do erro de negócio que o desfaz. Se a checagem devolvesse
+      // `{ ok: false }` educadamente, sobraria um paciente órfão — sem
+      // requisição, sem encaminhamento, e impedido de receber os dois.
+      const terapiaValida = await getPrismaClient().terapia.findFirst({
+        orderBy: { id: "asc" },
+        select: { id: true },
+      });
+
+      const resultado = await criarRequisicao({
+        pacienteNome: nome,
+        numeroRequisicao: numero,
+        linhas: [
+          {
+            terapiaId: terapiaValida?.id ?? TERAPIA_INEXISTENTE,
+            qtdAutorizada: 8,
+            validade: null,
+          },
+        ],
+      });
+
+      expect(resultado).toEqual({
+        ok: false,
+        erro: ERRO_SEM_ENCAMINHAMENTO,
+        linha: undefined,
+      });
+      expect(await contarPacientes(getPrismaClient(), nome)).toBe(0);
+      expect(
+        await getPrismaClient().requisicao.count({
+          where: { numeroRequisicao: numero },
+        }),
+      ).toBe(0);
+    });
   });
 });

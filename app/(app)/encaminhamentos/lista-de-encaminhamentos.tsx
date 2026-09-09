@@ -9,6 +9,7 @@ import { cn } from "@/lib/utils";
 import type { EncaminhamentoNaLista } from "@/lib/domain/encaminhamentos";
 
 import { formatarData, normalizarParaBusca } from "../dashboard/formato";
+import { ExcluirPaciente } from "./excluir-paciente";
 import {
   MARCADOR_POR_VENCIMENTO,
   MARCADOR_SEM_VENCIMENTO,
@@ -28,6 +29,10 @@ import {
  * Não há estado de seleção nem de recolhimento aqui: cada paciente tem no
  * máximo um encaminhamento, então a lista é plana e cada linha é um paciente.
  * É a mesma regra de unicidade do banco aparecendo na forma da tela.
+ *
+ * É por isso, aliás, que a coluna "Ações" exclui o **paciente** e não a linha
+ * de encaminhamento: uma linha aqui *é* um paciente. O que esse botão dispara
+ * não tem volta — a fricção que o cerca está em `excluir-paciente.tsx`.
  */
 export function ListaDeEncaminhamentos({
   encaminhamentos,
@@ -108,6 +113,9 @@ export function ListaDeEncaminhamentos({
                 <th scope="col" className={`${CLASSE_CABECALHO} w-44`}>
                   Situação
                 </th>
+                <th scope="col" className={`${CLASSE_CABECALHO} w-28 text-right`}>
+                  Ações
+                </th>
               </tr>
             </thead>
 
@@ -138,6 +146,12 @@ export function ListaDeEncaminhamentos({
                   <td className="px-3 py-2">
                     <SeloDeVencimento
                       status={encaminhamento.statusEncaminhamento}
+                    />
+                  </td>
+                  <td className="px-3 py-2 text-right">
+                    <ExcluirPaciente
+                      pacienteId={encaminhamento.pacienteId}
+                      pacienteNome={encaminhamento.pacienteNome}
                     />
                   </td>
                 </tr>
@@ -174,6 +188,12 @@ export function ListaDeEncaminhamentos({
                 <p className="text-xs text-muted-foreground">
                   Vence em {formatarData(encaminhamento.dataVencimento)}
                 </p>
+                <div className="mt-1 flex justify-end">
+                  <ExcluirPaciente
+                    pacienteId={encaminhamento.pacienteId}
+                    pacienteNome={encaminhamento.pacienteNome}
+                  />
+                </div>
               </li>
             ))}
           </ul>

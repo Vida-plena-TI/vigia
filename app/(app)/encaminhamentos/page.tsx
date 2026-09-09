@@ -52,7 +52,8 @@ export default async function EncaminhamentosPage() {
         <p className="max-w-prose text-sm text-muted-foreground">
           O vencimento é calculado pelo banco: 180 dias corridos depois da data
           do encaminhamento. Cada paciente tem um encaminhamento só — cadastrar
-          outro substitui o anterior.
+          outro substitui o anterior. Sem encaminhamento cadastrado, o paciente
+          não pode receber requisição.
         </p>
       </div>
 

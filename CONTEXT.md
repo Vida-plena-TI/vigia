@@ -50,6 +50,10 @@ atendimento → requisicao_terapia tem cascade — decisão já implementada e c
 teste manual (exclusão de guia com atendimentos: cascade ok; exclusão de requisição com
 guias vinculadas: falha, como esperado).
 
+A exclusão completa de um paciente (regra 16) percorre essa cadeia `RESTRICT` à mão, de
+baixo para cima, numa transação — e deixa os atendimentos para o único cascade que
+existe. Ver `excluirPacienteNaTransacao` em `lib/domain/pacientes.ts`.
+
 ## Campos calculados (guia) — vêm de uma view SQL, não de fórmula em TypeScript
 
 View: `requisicao_terapia_saldo`. Ordem de precedência dos status: **Esgotada > Renovar >
@@ -186,6 +190,23 @@ teste passar hoje e mentir no mês que vem.
     linha existia **antes** de gravar).
 14. Status de encaminhamento é comparação de **mês**, não de dias — ver "Status de
     encaminhamento" acima para os quatro limiares exatos.
+15. **Encaminhamento é pré-requisito de requisição.** Não se cria requisição para um
+    paciente que não tenha uma linha em `encaminhamento`. A checagem mora dentro da mesma
+    transação que faz o get-or-create do paciente (`lib/domain/requisicoes.ts`), depois de
+    resolver o `paciente_id` e antes de qualquer escrita de requisição; a recusa é lançada,
+    não devolvida, para o rollback levar junto um paciente que o get-or-create acabou de
+    criar. Vale igual para paciente já existente e para nome digitado pela primeira vez.
+    A exigência é de **existência, não de validade**: qualquer encaminhamento serve,
+    inclusive um já vencido — a consulta é à tabela `encaminhamento`, não à view
+    `encaminhamento_status`. Consequência silenciosa desta regra: `pacienteCriado` no
+    resultado de `criarRequisicao` **nunca é `true` num sucesso**, porque um paciente
+    recém-criado ali não teria como já ter encaminhamento. O campo continua existindo e
+    sendo relatado com honestidade; se um dia a regra mudar, ele volta a variar.
+16. **Exclusão de paciente é permanente, completa e sem desfazer.** A partir da listagem
+    de encaminhamentos, excluir apaga o paciente inteiro — encaminhamento, requisições,
+    guias e atendimentos — em `DELETE` real, numa única transação. Não há soft-delete,
+    arquivamento nem lixeira. Ver "Exclusão permanente de paciente" nas decisões de
+    implementação, inclusive a ressalva sobre guarda de prontuário.
 
 ## Decisões assumidas (perguntas em aberto no relatório de auditoria original)
 
@@ -794,6 +815,77 @@ UPDATE` dentro de transação Prisma continua serializando corretamente no Supav
     numa cópia descartável do arquivo: os dois testes falham como esperado, o `afterAll`
     completa sem estourar e o banco fica em 0 órfãos. A injeção foi revertida.
 
+### Exclusão permanente de paciente — e a ressalva sobre guarda de prontuário
+
+**O que o sistema faz:** na aba Encaminhamentos, o botão "Excluir" de uma linha apaga o
+**paciente inteiro** — a linha de `encaminhamento`, todas as `requisicao`, todas as
+`requisicao_terapia` e todos os `atendimento` que pendem delas. São `DELETE` de verdade,
+numa transação só, sem soft-delete, sem coluna `apagado_em`, sem tabela de arquivo morto e
+sem nenhuma forma de desfazer pela aplicação. Depois do commit, a única recuperação
+possível é backup do banco.
+
+**A ressalva, que foi levantada antes de a decisão ser tomada:** o CFM exige guarda de
+prontuário médico por no mínimo 20 anos a partir do último registro, com guarda
+**permanente** quando o prontuário está em meio digital. Um DELETE físico é incompatível
+com essa exigência — não é uma questão de configuração, é o oposto do que a norma pede.
+Isso foi dito ao usuário, que decidiu prosseguir assim mesmo, ciente da consequência. A
+decisão é dele e está registrada aqui para quem chegar depois não interpretar como
+descuido: **foi deliberado, não esquecido**. Se a exigência voltar à mesa, o caminho é
+soft-delete (coluna de exclusão lógica + filtro em toda leitura) ou uma tabela de arquivo
+morto — nenhum dos dois é o que está implementado hoje.
+
+**Por que a exclusão é do paciente e não do encaminhamento.** Ela nasce de uma linha da
+tela de encaminhamentos, mas apaga o cadastro inteiro por causa da regra 15: paciente sem
+encaminhamento não pode ter requisição. Apagar só o encaminhamento deixaria as requisições
+existentes num estado que o próprio sistema recusa criar — legais por terem nascido antes,
+ilegais para nascer agora. Uma linha daquela tela *é* um paciente (a `UNIQUE (paciente_id)`
+garante), então "excluir a linha" e "excluir o paciente" são a mesma frase dita de dois
+jeitos.
+
+**A ordem dos DELETE é do banco, não de gosto** (`excluirPacienteNaTransacao`, em
+`lib/domain/pacientes.ts`): `requisicao_terapia` -> `requisicao` -> `encaminhamento` ->
+`paciente`. As três FKs envolvidas são `ON DELETE RESTRICT`, então qualquer outra ordem é
+recusada pelo Postgres. Os `atendimento` **não** têm DELETE próprio: eles vão embora pelo
+`ON DELETE CASCADE` de `atendimento -> requisicao_terapia`, o único cascade do sistema
+(regra 10). Escrever o DELETE explícito também funcionaria e foi recusado de propósito —
+seria uma segunda descrição de uma regra que já mora no schema, e as duas divergiriam no
+primeiro ajuste que só uma delas recebesse.
+
+**O `FOR UPDATE` no paciente** não é só contra duas exclusões simultâneas. Ao inserir um
+filho, o Postgres pega `FOR KEY SHARE` na linha referenciada, e `FOR UPDATE` conflita com
+ele: uma criação de requisição concorrente para o mesmo paciente fica esperando a exclusão
+terminar e então falha na FK, em vez de escorregar entre a contagem e o `DELETE`.
+
+**A fricção da confirmação é o produto, não enfeite** (`excluir-paciente.tsx`). Três
+escolhas, todas por causa do tamanho do risco:
+
+1. **O clique no botão consulta o banco antes de abrir o diálogo.** As contagens de
+   requisições e atendimentos são lidas (`contarParaExclusao`), e a frase cita os números
+   reais: "Isso vai apagar permanentemente o cadastro de X, incluindo N requisição(ões) e
+   N atendimento(s). Essa ação não pode ser desfeita." "Todos os dados relacionados" seria
+   mais fácil de escrever e não diria nada — 0 atendimentos e 300 atendimentos são
+   decisões diferentes.
+2. **A confirmação é digitada.** O botão só habilita depois de a palavra `EXCLUIR` ser
+   escrita num campo dentro do diálogo. Dois cliques em "sim" seguidos são, na prática, um
+   gesto só. Foi escolhida uma palavra fixa em vez do nome do paciente porque o nome está
+   escrito na própria frase logo acima do campo: copiá-lo dali é reflexo, não leitura.
+3. **O diálogo não fecha no erro**, como o `ExcluirGuia` do painel: `preventDefault` no
+   clique impede o Radix de fechar, e a mensagem devolvida pela action aparece dentro do
+   diálogo.
+
+Nada disso é validação: o cliente é contornável. O que não é contornável é o
+`requireUsuario()` da Server Action (regra 4) e a validação do id no domínio. Um POST
+montado à mão com um id válido apaga o paciente — do mesmo jeito que um POST montado à mão
+exclui uma guia. A diferença é o tamanho da consequência, e ela está registrada acima.
+
+**O teste do rollback não usa gancho de teste no código de produção.** O parâmetro `tx`
+que `excluirPacienteNaTransacao` já recebia serve de costura: o teste passa um `Proxy` que
+estoura no segundo `$executeRaw`, com o cenário montado **commitado** (o único do
+`pacientes.integration.test.ts` que escreve no banco para valer, e limpa no `finally`).
+Sem transação, esse cenário perderia as guias e os atendimentos e manteria a requisição, o
+encaminhamento e o paciente — um prontuário mutilado, que é pior que um apagado por
+parecer íntegro na tela.
+
 ## Não fazer
 
 - Não recriar o campo `arquivada` em `requisicao_terapia` (foi removido no sistema
@@ -840,6 +932,24 @@ UPDATE` dentro de transação Prisma continua serializando corretamente no Supav
 - Não colocar configuração específica do Supabase (RLS, grants, roles) em
   `prisma/migrations` — esse histórico é schema portável e roda também no Postgres local.
   Esse tipo de configuração vai em `scripts/supabase/`, rodado à mão.
+- Não transformar a regra 15 em "encaminhamento em dia". A exigência é de **existência**:
+  um encaminhamento vencido conta. Se um dia a clínica quiser exigir vigência, isso é uma
+  conversa a ter, não uma dedução a fazer — e há teste de integração que cai de propósito
+  se alguém apertar a regra em silêncio.
+- Não checar o encaminhamento **antes** da transação de `criarRequisicao` (nem em
+  `validarEntrada`). Antes dela não existe `paciente_id`: um nome novo ainda não é
+  paciente nenhum. E não trocar o `throw` da recusa por um `return { ok: false }` — é o
+  `throw` que desfaz o paciente que o get-or-create acabou de criar.
+- Não acrescentar `DELETE FROM atendimento` à exclusão de paciente. Os atendimentos vão
+  pelo `ON DELETE CASCADE` que já existe no schema; o DELETE explícito seria uma segunda
+  descrição da mesma regra.
+- Não transformar a exclusão de paciente em soft-delete "só por segurança", nem
+  acrescentar lixeira, arquivo morto ou coluna `apagado_em` por conta própria. A exclusão
+  física é decisão registrada do usuário, tomada com a exigência de guarda de prontuário
+  já na mesa — mudá-la é conversa com ele, não refatoração.
+- Não afrouxar a confirmação da exclusão (habilitar o botão sem o campo digitado, estimar
+  as contagens em vez de consultá-las, fechar o diálogo no erro). A fricção é o produto
+  daquela tela, não um obstáculo a ser polido.
 
 ## Progresso
 
@@ -956,6 +1066,36 @@ UPDATE` dentro de transação Prisma continua serializando corretamente no Supav
       encaminhamentos de demonstração. **Pendente: a conferência visual no navegador**,
       que ficou para o usuário — esta sessão não teve browser controlável. Ver "Ordem da
       lista" nas decisões de implementação
+- [x] Encaminhamento obrigatório antes de requisição + exclusão permanente de paciente
+      (09/09/2026, branch `feat/exclusao-paciente-completa`) — duas mudanças ligadas pela
+      mesma regra nova. (1) **Regra 15**: `criarRequisicao` passou a exigir uma linha em
+      `encaminhamento` para o `paciente_id` resolvido, dentro da mesma transação e logo
+      depois do get-or-create; a recusa é lançada, então um nome novo digitado pela
+      primeira vez é rejeitado **sem deixar paciente órfão**. A exigência é só de
+      existência — encaminhamento vencido conta, e há teste que prova isso lendo o status
+      da view antes de criar. (2) **Exclusão permanente**: botão "Excluir" em cada linha
+      da listagem de encaminhamentos, que apaga o paciente inteiro
+      (`requisicao_terapia` -> `requisicao` -> `encaminhamento` -> `paciente`, com os
+      atendimentos indo por cascade) numa transação só, precedido de um diálogo que
+      **consulta o banco** para citar as contagens reais e exige digitar `EXCLUIR` para
+      habilitar o botão. Arquivos novos: `lib/domain/pacientes-mensagens.ts`,
+      `lib/domain/pacientes-actions.ts`, `app/(app)/encaminhamentos/excluir-paciente.tsx`,
+      `lib/domain/pacientes.integration.test.ts`. `EncaminhamentoNaLista` ganhou
+      `pacienteId` — a exclusão é do paciente, e resolver o paciente a partir do
+      encaminhamento seria depender de uma linha que some no mesmo instante.
+      Consequência registrada na regra 15: `pacienteCriado` nunca mais é `true` num
+      sucesso de `criarRequisicao`. `tsc --noEmit` limpo, `npm test` verde (16 arquivos,
+      226 testes), `npm run build` ok e `npm run lint` continua acusando só o erro
+      pré-existente de `acoes-da-guia.tsx`. Verificado sem navegador controlável (de novo:
+      nenhuma sessão até agora expôs um): um script pelo caminho real do domínio contra o
+      banco de desenvolvimento confirmou os seis passos — recusa do nome novo, zero
+      paciente órfão, requisição aceita depois do encaminhamento, contagem do diálogo
+      (1 requisição / 2 guias / 3 atendimentos) lida do banco, exclusão bem-sucedida e
+      zero linha restante nas cinco tabelas —, e a página foi **renderizada por HTTP** com
+      cookie de sessão selado à mão: 200, coluna "Ações" presente e um botão
+      `aria-label="Excluir cadastro de …"` por linha (tabela e lista móvel). Ver "Exclusão
+      permanente de paciente" nas decisões de implementação. **Pendente: a interação de
+      navegador** — ver o roteiro nas pendências conhecidas
 
 ## Pendências conhecidas (não bloqueiam o próximo passo, mas não esquecer)
 
@@ -993,6 +1133,30 @@ UPDATE` dentro de transação Prisma continua serializando corretamente no Supav
   a olho que a lista sai na ordem **Vencido -> Vence este mês -> A vencer -> sem
   marcação**, e que dentro de cada bloco os nomes estão em ordem alfabética ignorando
   caixa.
+- **Teste manual no navegador das duas mudanças de 09/09/2026** (regra 15 + exclusão
+  permanente) ainda não foi feito — de novo, nenhum browser controlável nesta sessão. O
+  que já foi verificado sem ele está no progresso. Roteiro, na ordem:
+  1. Em "Nova requisição", digitar um nome de paciente **que não esteja na lista de
+     encaminhamentos**, escolher uma terapia e enviar. Confirmar a mensagem "Paciente sem
+     encaminhamento cadastrado. Cadastre o encaminhamento antes de criar uma requisição."
+     e que o formulário continua na tela com o que foi digitado.
+  2. Conferir no banco (ou no `datalist` de pacientes, recarregando a página) que **esse
+     nome não virou paciente**. É o ponto do rollback.
+  3. Cadastrar o encaminhamento desse paciente e repetir a requisição: agora passa.
+  4. Lançar dois ou três atendimentos nas guias criadas, para o cenário ter contagem que
+     não seja zero.
+  5. Na aba Encaminhamentos, clicar em "Excluir" na linha desse paciente. Conferir que o
+     botão mostra "Verificando..." por um instante (é a consulta ao banco) e que a frase
+     do diálogo traz a contagem **exata** de requisições e atendimentos que foram
+     lançados — não um número redondo, não "todos os dados".
+  6. Conferir que o botão "Excluir tudo" começa **desabilitado**, que continua
+     desabilitado com o campo vazio ou com texto errado, e que só habilita depois de
+     `EXCLUIR` (aceita `excluir` e espaço nas pontas).
+  7. Confirmar. A linha some da lista, o resumo do topo se ajusta e o toast diz o que foi
+     apagado. Depois, procurar o paciente no painel e em "Nova requisição": ele não pode
+     aparecer em lugar nenhum.
+  8. Cancelar um diálogo antes de confirmar (Esc e botão "Cancelar") e conferir que nada
+     foi apagado e que o campo de confirmação volta vazio na próxima abertura.
 - **O banco de desenvolvimento local ficou com cinco encaminhamentos de demonstração**
   ("Zoe Vencida Manual", "Bruno Este Mes Manual", "Carla Fim Deste Mes Manual", "Diego A
   Vencer Manual", "Elisa Longe Manual"), um em cada caso da classificação, criados para a

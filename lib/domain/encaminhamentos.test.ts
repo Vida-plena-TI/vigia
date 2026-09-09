@@ -111,6 +111,7 @@ describe("contarPorStatusDeEncaminhamento", () => {
   ): EncaminhamentoNaLista {
     return {
       id,
+      pacienteId: id,
       pacienteNome: `Paciente ${id}`,
       dataEncaminhamento: "2026-01-01",
       dataVencimento: "2026-06-30",

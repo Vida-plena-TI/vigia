@@ -26,3 +26,13 @@ export function erroNumeroDuplicado(
 ): string {
   return `O paciente ${pacienteNome} já tem a requisição ${numeroRequisicao}. Use outro número.`;
 }
+
+/**
+ * Recusa do cadastro quando o paciente não tem encaminhamento (regra 15 do
+ * CONTEXT.md).
+ *
+ * A regra é só de **existência**: qualquer encaminhamento serve, inclusive um
+ * já vencido. "Estar em dia" é outra pergunta, e ela não é feita aqui.
+ */
+export const ERRO_SEM_ENCAMINHAMENTO =
+  "Paciente sem encaminhamento cadastrado. Cadastre o encaminhamento antes de criar uma requisição.";

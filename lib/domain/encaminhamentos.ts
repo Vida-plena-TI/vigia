@@ -72,6 +72,17 @@ export const STATUS_DE_ENCAMINHAMENTO_EM_ORDEM: readonly StatusEncaminhamento[] 
 /** Uma linha da listagem — três colunas de dado mais o status calculado. */
 export type EncaminhamentoNaLista = {
   id: number;
+  /**
+   * O paciente, não o encaminhamento.
+   *
+   * Está aqui porque a exclusão desta tela é **do paciente inteiro**, não da
+   * linha de encaminhamento (ver `excluirPacienteNaTransacao` em
+   * `lib/domain/pacientes.ts`). Mandar o `id` do encaminhamento e resolver o
+   * paciente a partir dele no servidor daria o mesmo resultado por um caminho
+   * mais longo, e um caminho que deixa de existir exatamente no momento em que
+   * a linha some.
+   */
+  pacienteId: number;
   pacienteNome: string;
   /** "AAAA-MM-DD". */
   dataEncaminhamento: string;
@@ -328,6 +339,7 @@ async function listarEncaminhamentosComCliente(
   const linhas = await cliente.$queryRaw<LinhaDaListagem[]>`
     SELECT
       s."id"                        AS "id",
+      p."id"                        AS "pacienteId",
       p."nome"                      AS "pacienteNome",
       s."data_encaminhamento"::text AS "dataEncaminhamento",
       s."data_vencimento"::text     AS "dataVencimento",

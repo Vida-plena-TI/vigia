@@ -20,6 +20,14 @@ const mocks = vi.hoisted(() => {
     paciente: { id: 10, nome: "José Silva", criado: true },
     /** `true` quando já existe requisição com o número pedido. */
     numeroJaExiste: false,
+    /**
+     * `true` quando o paciente resolvido já tem encaminhamento (regra 15).
+     *
+     * O padrão é `true` porque o caminho feliz de todo teste deste arquivo
+     * pressupõe um paciente que pode receber requisição; quem testa a recusa
+     * é que vira a chave.
+     */
+    temEncaminhamento: true,
     /** Ids de terapia que existem no banco. */
     terapiasExistentes: [1, 2],
   };
@@ -34,6 +42,10 @@ const mocks = vi.hoisted(() => {
 
   const buscarRequisicao = vi.fn(async () =>
     banco.numeroJaExiste ? { id: 42 } : null,
+  );
+
+  const buscarEncaminhamento = vi.fn(async () =>
+    banco.temEncaminhamento ? { id: 7 } : null,
   );
 
   const buscarTerapias = vi.fn(async (args: { where: { id: { in: number[] } } }) =>
@@ -72,6 +84,7 @@ const mocks = vi.hoisted(() => {
     try {
       return await executar({
         $queryRaw: consultar,
+        encaminhamento: { findFirst: buscarEncaminhamento },
         requisicao: { findFirst: buscarRequisicao, create: criarRequisicao },
         terapia: { findMany: buscarTerapias },
       });
@@ -87,6 +100,7 @@ const mocks = vi.hoisted(() => {
 
   return {
     banco,
+    buscarEncaminhamento,
     buscarRequisicao,
     buscarTerapias,
     consultar,
@@ -113,6 +127,7 @@ import {
   ERRO_NUMERO_OBRIGATORIO,
   ERRO_PACIENTE_OBRIGATORIO,
   ERRO_QTD_INVALIDA,
+  ERRO_SEM_ENCAMINHAMENTO,
   ERRO_SEM_TERAPIA,
   ERRO_TERAPIA_INEXISTENTE,
   ERRO_TERAPIA_OBRIGATORIA,
@@ -138,6 +153,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   mocks.banco.paciente = { id: 10, nome: "José Silva", criado: true };
   mocks.banco.numeroJaExiste = false;
+  mocks.banco.temEncaminhamento = true;
   mocks.banco.terapiasExistentes = [1, 2];
   mocks.escritas.length = 0;
 });
@@ -307,6 +323,48 @@ describe("criarRequisicao — rollback quando uma linha falha", () => {
 
     expect(resultado).toEqual({ ok: false, erro: ERRO_QTD_INVALIDA, linha: 0 });
     expect(mocks.transacao).not.toHaveBeenCalled();
+  });
+});
+
+describe("criarRequisicao — encaminhamento obrigatório (regra 15)", () => {
+  it("recusa o paciente que não tem encaminhamento", async () => {
+    mocks.banco.temEncaminhamento = false;
+
+    const resultado = await criarRequisicao(entrada());
+
+    expect(resultado).toEqual({ ok: false, erro: ERRO_SEM_ENCAMINHAMENTO });
+  });
+
+  it("não deixa paciente órfão quando o nome era novo", async () => {
+    mocks.banco.temEncaminhamento = false;
+    mocks.banco.paciente = { id: 77, nome: "Nome Nunca Visto", criado: true };
+
+    await criarRequisicao(entrada({ pacienteNome: "Nome Nunca Visto" }));
+
+    // O get-or-create chegou a escrever o paciente; o `throw` o desfez junto
+    // com a transação. É a diferença entre lançar e devolver `{ ok: false }`.
+    expect(mocks.escritas).toEqual([]);
+    expect(mocks.criarRequisicao).not.toHaveBeenCalled();
+  });
+
+  it("pergunta pelo paciente resolvido, não pelo nome digitado", async () => {
+    mocks.banco.paciente = { id: 33, nome: "José Silva", criado: false };
+
+    await criarRequisicao(entrada());
+
+    expect(mocks.buscarEncaminhamento).toHaveBeenCalledWith({
+      where: { pacienteId: 33 },
+      select: { id: true },
+    });
+  });
+
+  it("checa o encaminhamento antes de gastar consulta com o número", async () => {
+    mocks.banco.temEncaminhamento = false;
+
+    await criarRequisicao(entrada());
+
+    expect(mocks.buscarRequisicao).not.toHaveBeenCalled();
+    expect(mocks.buscarTerapias).not.toHaveBeenCalled();
   });
 });
 

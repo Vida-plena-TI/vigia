@@ -10,6 +10,11 @@
  * cadastro de encaminhamento passou a precisar dele também — inclusive a
  * explicação de por que a comparação de nome é `lower(nome) = lower($1)`, a
  * mesma expressão do índice `UNIQUE (lower(nome))`.
+ *
+ * Desde 09/09/2026 a transação também é o lugar onde a regra 15 é aplicada:
+ * **não se cria requisição para paciente sem encaminhamento cadastrado**. Ver
+ * {@link criarNaTransacao} para o porquê de a checagem morar dentro da
+ * transação, e não antes dela.
  */
 import { getPrismaClient } from "@/lib/db";
 import { OPCOES_DE_TRANSACAO } from "@/lib/db/transacao";
@@ -20,6 +25,7 @@ import {
   ERRO_NUMERO_OBRIGATORIO,
   ERRO_PACIENTE_OBRIGATORIO,
   ERRO_QTD_INVALIDA,
+  ERRO_SEM_ENCAMINHAMENTO,
   ERRO_SEM_TERAPIA,
   ERRO_TERAPIA_INEXISTENTE,
   ERRO_TERAPIA_OBRIGATORIA,
@@ -169,6 +175,30 @@ async function criarNaTransacao(
   const numeroRequisicao = entrada.numeroRequisicao.trim();
 
   const paciente = await obterOuCriarPaciente(tx, pacienteNome);
+
+  // Regra 15: sem encaminhamento cadastrado não há requisição.
+  //
+  // A checagem só pode acontecer **aqui dentro**, depois do get-or-create, por
+  // dois motivos que se somam. O primeiro é que antes da transação não existe
+  // `paciente_id` a consultar: um nome digitado pela primeira vez ainda não é
+  // paciente nenhum. O segundo é o que o `throw` faz — um nome novo chega até
+  // esta linha já **criado** pelo get-or-create, e devolver `{ ok: false }`
+  // educadamente deixaria esse paciente órfão no banco, sem requisição e sem
+  // encaminhamento. É o mesmo raciocínio de `ERRO_TERAPIA_INEXISTENTE`, e por
+  // isso a mesma forma: lançar, para o Postgres desfazer.
+  //
+  // A pergunta é de **existência**, não de validade: qualquer linha serve,
+  // inclusive uma cujo `data_vencimento` já passou. É por isso que a consulta é
+  // à tabela `encaminhamento` e não à view `encaminhamento_status` — a view
+  // classifica o vencimento, e classificar não é o que está sendo perguntado.
+  const encaminhamento = await tx.encaminhamento.findFirst({
+    where: { pacienteId: paciente.id },
+    select: { id: true },
+  });
+
+  if (!encaminhamento) {
+    throw new ErroDeNegocio(ERRO_SEM_ENCAMINHAMENTO);
+  }
 
   // Pré-checagem para o usuário ver uma mensagem em vez de uma exceção. Ela
   // tem uma janela de corrida (outro cadastro pode entrar entre o SELECT e o
