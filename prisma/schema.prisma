@@ -20,10 +20,50 @@ model Paciente {
   id   Int    @id @default(autoincrement())
   nome String
 
-  requisicoes Requisicao[]
+  requisicoes     Requisicao[]
+  encaminhamentos Encaminhamento[]
 
   @@index([nome])
   @@map("paciente")
+}
+
+/// Encaminhamento medico de um paciente.
+///
+/// `data_vencimento` NAO e um campo comum: e uma coluna gerada pelo Postgres
+/// (`(data_encaminhamento + INTERVAL '180 days')::date`, ver a migration
+/// `20260909130000_encaminhamento`). A regra dos 180 dias corridos vive so no
+/// banco, do mesmo jeito que o saldo/status de guia vive so na view
+/// `requisicao_terapia_saldo` — nenhum TypeScript recalcula esse vencimento.
+///
+/// O Prisma nao tem sintaxe para coluna gerada, entao a declaracao abaixo e o
+/// mais perto que da para chegar — e ela precisa ser exatamente essa, senao o
+/// proximo `migrate dev` gera uma migration quebrada:
+///
+///   * `@default(dbgenerated(...))` com a expressao **literalmente como o
+///     Postgres a normaliza**. A introspeccao le a expressao de geracao do
+///     `pg_attrdef` e a devolve como se fosse um default; sem ela aqui, o
+///     `migrate dev` diff-a schema contra banco, ve um default sobrando e
+///     escreve `ALTER COLUMN "data_vencimento" DROP DEFAULT` — comando que o
+///     Postgres recusa em coluna gerada (o correto seria `DROP EXPRESSION`).
+///     Isso foi observado, nao suposto. Se a expressao da migration mudar, este
+///     texto tem de mudar junto; `prisma db pull --print` mostra a forma exata.
+///   * `DateTime?` (opcional) para bater com a coluna NULLABLE do banco e nao
+///     entrar nos campos obrigatorios do `create`. Na pratica ela nunca e nula.
+///
+/// Escrever nela nao e "desaconselhado", e impossivel: o `GENERATED ALWAYS` faz
+/// o Postgres recusar o INSERT/UPDATE, e ha teste de integracao afirmando isso.
+/// O cadastro usa SQL cru com `RETURNING`, e as leituras trazem as duas datas
+/// como texto "AAAA-MM-DD".
+model Encaminhamento {
+  id                 Int       @id @default(autoincrement())
+  pacienteId         Int       @map("paciente_id")
+  dataEncaminhamento DateTime  @map("data_encaminhamento") @db.Date
+  dataVencimento     DateTime? @default(dbgenerated("((data_encaminhamento + '180 days'::interval))::date")) @map("data_vencimento") @db.Date
+
+  paciente Paciente @relation(fields: [pacienteId], references: [id])
+
+  @@index([pacienteId])
+  @@map("encaminhamento")
 }
 
 /// Usuario do sistema. Nao existem perfis: ou o usuario esta autenticado e

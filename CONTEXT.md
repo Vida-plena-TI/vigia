@@ -37,6 +37,11 @@ existe apenas "usuário autenticado e ativo" ou "não autenticado".
 - **atendimento**: id, data_atendimento (date), creditos_consumidos (int, default 1,
   CHECK >= 0), observacao (texto, opcional), requisicao_terapia_id (FK,
   **ON DELETE CASCADE**).
+- **encaminhamento**: id, paciente_id (FK, `RESTRICT` como as demais),
+  data_encaminhamento (date, NOT NULL), data_vencimento (date, **coluna gerada pelo
+  Postgres** — ver "Vencimento de encaminhamento" abaixo). Um encaminhamento sempre
+  pertence a um paciente já existente ou recém-criado pelo mesmo get-or-create por nome
+  das requisições.
 
 Demais FKs (ex: requisicao → paciente) ficam no padrão `RESTRICT`. Só o caminho
 atendimento → requisicao_terapia tem cascade — decisão já implementada e confirmada por
@@ -60,6 +65,26 @@ Regular**.
 As mesmas fórmulas existem em TypeScript (`lib/domain/saldo.ts`) só para uso em testes
 que comparam o resultado da view com o cálculo em código — nunca como fonte de verdade em
 produção.
+
+## Campo calculado (encaminhamento) — vem de uma coluna gerada, não de fórmula em TypeScript
+
+`encaminhamento.data_vencimento` é uma coluna `GENERATED ALWAYS ... STORED`:
+
+```sql
+"data_vencimento" DATE GENERATED ALWAYS AS
+    (("data_encaminhamento" + INTERVAL '180 days')::date) STORED
+```
+
+Mesma filosofia da view `requisicao_terapia_saldo`: cálculo derivado mora numa única
+fonte de verdade no banco, não replicado em código de aplicação. Aqui a garantia é ainda
+mais forte que a da view — o `GENERATED ALWAYS` faz o Postgres **recusar** qualquer
+INSERT/UPDATE que tente gravar valor nessa coluna, então uma tentativa futura de calcular
+o vencimento em TypeScript falha alto em vez de produzir uma linha errada em silêncio.
+Há teste de integração afirmando exatamente isso.
+
+Diferente do saldo, **não existe espelho em TypeScript nem para teste**: as datas
+esperadas dos testes são literais conferidas à mão, para o teste não repetir a fórmula
+que ele deveria estar verificando.
 
 ## Regras de negócio obrigatórias
 
@@ -106,6 +131,11 @@ produção.
 10. Exclusão de guia apaga os atendimentos filhos via `ON DELETE CASCADE` no banco.
 11. Relatório semanal: agrupa guias por paciente, mantém só pacientes com pelo menos uma
     guia `Renovar` ou `Esgotada`. Se a lista final estiver vazia, não envia e-mail.
+12. Encaminhamento vence **180 dias corridos** depois de `data_encaminhamento`. Regra fixa
+    e confirmada. **Não são seis meses de calendário** — ver "Os 180 dias não são seis
+    meses" nas decisões de implementação, que registra por que os dois divergem da
+    planilha de referência do usuário. O cálculo é do banco (coluna gerada), nunca de
+    TypeScript.
 
 ## Decisões assumidas (perguntas em aberto no relatório de auditoria original)
 
@@ -504,6 +534,87 @@ da requisição"` via `navigator.clipboard.writeText`. Aninhar um `<button>` den
     é `node`. Montar esse aparato só para esta tela não se paga agora — se um dia entrar,
     é aqui que estes casos devem virar teste automatizado.
 
+- **Encaminhamentos (`/encaminhamentos`)**: cadastro e listagem na **mesma** tela, sem
+  rota `/novo` e sem diálogo. Decisões do caminho:
+  - **Os 180 dias não são seis meses — e a divergência é deliberada.** A planilha de
+    referência do usuário usa **seis meses de calendário**; o sistema usa **180 dias
+    corridos**, escolha confirmada. Os dois quase nunca coincidem: um encaminhamento de
+    `2026-01-01` vence em `2026-06-30` pela regra do sistema e em `2026-07-01` pela regra
+    da planilha (o primeiro semestre de um ano não bissexto tem 181 dias). Este parágrafo
+    existe para que ninguém "conserte" a migration ao comparar as duas fontes daqui a um
+    ano. Se a regra mudar um dia, ela muda **na migration**, não em código de aplicação —
+    e o teste que trava a mudança acidental é o que compara, no mesmo `SELECT`, a coluna
+    gerada com `+ INTERVAL '6 months'` e afirma que as duas discordam.
+  - **O vencimento é coluna gerada, não view.** A view foi a ferramenta certa para o saldo
+    porque ele agrega atendimentos de outras tabelas; aqui a derivação é de uma coluna só
+    da própria linha, e `GENERATED ALWAYS ... STORED` é a forma mais barata e mais estrita
+    de dizer isso. Estrita porque o Postgres passa a **recusar** a escrita: quem um dia
+    tentar mandar o vencimento calculado em TypeScript no INSERT recebe erro `428C9`, não
+    uma linha errada. O INSERT do domínio nem menciona a coluna; o valor volta pelo
+    `RETURNING`.
+  - **`date + interval` devolve `timestamp`, não `date`** — daí o `::date` explícito na
+    expressão da migration, para ela caber na coluna sem depender de cast de atribuição
+    implícito.
+  - **O Prisma não tem sintaxe para coluna gerada, e a declaração do schema precisa ser
+    exatamente a que a introspecção produz.** A primeira versão declarava
+    `dataVencimento DateTime? @db.Date` e nada mais — schema válido, testes verdes, e um
+    `prisma migrate dev` futuro gerando `ALTER TABLE "encaminhamento" ALTER COLUMN
+"data_vencimento" DROP DEFAULT`, comando que o Postgres **recusa** em coluna gerada (o
+    equivalente correto seria `DROP EXPRESSION`). A causa: o Postgres guarda a expressão
+    de geração no `pg_attrdef`, o mesmo lugar dos defaults, e a introspecção do Prisma a
+    lê como se fosse um `@default`. Sem ele no schema, o diff vê um default sobrando e
+    tenta removê-lo. A correção é copiar a forma **normalizada pelo Postgres**:
+    `@default(dbgenerated("((data_encaminhamento + '180 days'::interval))::date"))`.
+    Isso foi observado, não suposto — `prisma migrate dev --create-only` gerava a migration
+    quebrada antes e passou a gerar migration vazia depois. Se a expressão da migration
+    mudar, `prisma db pull --print` mostra a forma exata que o schema tem de repetir.
+  - **`DateTime?` (opcional) dos dois lados**: a coluna é declarada NULLABLE na migration
+    de propósito. Ela nunca é nula na prática, mas declará-la NOT NULL faria o modelo
+    Prisma precisar ser obrigatório, e um campo obrigatório entra nos argumentos exigidos
+    pelo `create` — pedindo justamente o valor que ninguém pode fornecer.
+  - **Get-or-create de paciente subiu para `lib/domain/pacientes.ts`.** Ele morava em
+    `requisicoes.ts` enquanto tinha um consumidor só; com o segundo, foi movido em vez de
+    copiado — duas cópias divergiriam, e é justamente a expressão de comparação
+    (`lower(nome) = lower($1)`, a mesma do índice `UNIQUE (lower(nome))`) que precisa ser
+    idêntica em todo lugar. `listarNomesDePacientes` foi junto, pelo mesmo motivo: os dois
+    formulários alimentam o mesmo `datalist`. Nenhum comportamento mudou na mudança de
+    arquivo, e os testes de integração de requisição continuam verdes por cima dele.
+  - **Formulário inline no topo da própria listagem.** Não há `/encaminhamentos/novo` nem
+    diálogo: o formulário é uma faixa no topo e a lista vem logo abaixo. Ao enviar, a
+    Server Action chama `refresh()` — o Server Component da página redesenha e o registro
+    novo aparece na lista sem navegação — e o formulário se limpa e devolve o foco ao campo
+    de nome. É o mesmo desenho de "Lançar atendimento" (sucesso não navega), pelo mesmo
+    motivo: cadastrar vários pacientes em sequência rápida é o uso esperado aqui também.
+    O botão de submit usa `useFormStatus` e por isso vive num componente à parte — o hook
+    só enxerga o formulário de cima.
+  - **A data volta para "hoje", não para vazio.** "Limpar os campos" depois do sucesso
+    devolve o formulário ao estado inicial, e o estado inicial da data é o `CURRENT_DATE`
+    do banco (não o relógio do navegador, pelo mesmo motivo de "Lançar atendimento"). Um
+    campo de data literalmente vazio obrigaria a redigitar o dia inteiro a cada paciente da
+    fila, que é o contrário do que a tela existe para fazer. O nome do paciente, esse sim,
+    volta vazio.
+  - **Ordem da lista: `data_encaminhamento DESC, id DESC`.** O painel ordena por nome; aqui
+    não. O registro recém-criado precisa aparecer no topo, logo abaixo do formulário, sem
+    rolagem — ordenar por nome esconderia no meio da lista a confirmação do que acabou de
+    ser digitado.
+  - **Três colunas visíveis, e o "vencido" não é a quarta.** A tabela mostra paciente, data
+    do encaminhamento e vencimento. Quando o vencimento já passou, a **própria data** ganha
+    o tratamento que o sistema de design reserva para "o número é o alerta" — carmim em
+    negrito, o mesmo do `saldo_restante <= 0` no painel — mais a palavra "vencido" na mesma
+    célula, porque cor sozinha nunca é canal único aqui. **O `StatusBadge` foi deixado de
+    fora de propósito**: ele escreve o rótulo literal ("Regular" / "Renovar" / "Esgotada"),
+    e nenhum dos três diz o que se quer dizer sobre um encaminhamento — reaproveitá-lo
+    gastaria um vocabulário que significa outra coisa em todas as outras telas.
+  - **`vencido` é decidido em SQL**, contra o `CURRENT_DATE` do banco, não comparando datas
+    em JavaScript: é o mesmo relógio que a view de saldo usa para o alerta de validade, e o
+    relógio do Node (UTC na Vercel) discordaria dele à noite no horário de Brasília.
+  - **Largura `max-w-5xl`**, a de "Atendimentos de hoje", não a de formulário
+    (`max-w-[46rem]`): a tela é majoritariamente uma lista, e o formulário é uma faixa
+    dentro dela.
+  - **As duas colunas `DATE` viajam como texto** `"AAAA-MM-DD"`, como `validade` e
+    `data_atendimento`, e são formatadas para `DD/MM/AAAA` só na tela pelo `formatarData`
+    que já existia.
+
 - **Deploy Vercel + Supabase Postgres (verificado em 01/09/2026)**:
   - URLs confirmadas sem expor segredo: `DATABASE_URL` está em
     `postgresql://vigia_app.[project-ref]:[senha]@aws-0-us-west-2.pooler.supabase.com:6543/postgres?pgbouncer=true&connection_limit=1`;
@@ -571,6 +682,17 @@ UPDATE` dentro de transação Prisma continua serializando corretamente no Supav
   `DATABASE_SUPERUSER_URL`.
 - Não replicar a fórmula de saldo/status em mais de um lugar em TypeScript como fonte de
   verdade — a view SQL é a fonte de verdade; TypeScript só espelha para testes.
+- Não calcular o vencimento de encaminhamento em TypeScript em lugar nenhum — nem em
+  produção, nem como espelho de teste. A coluna gerada é a única fonte, e o banco recusa
+  a escrita de qualquer jeito.
+- Não trocar os 180 dias corridos por seis meses de calendário para "bater com a
+  planilha" — a divergência é deliberada e está registrada nas decisões de implementação.
+- Não reimplementar busca/criação de paciente por nome: use `obterOuCriarPaciente` de
+  `lib/domain/pacientes.ts`. Uma segunda implementação com outra regra de comparação
+  discordaria do índice `UNIQUE (lower(nome))`.
+- Não declarar `encaminhamento.data_vencimento` no `schema.prisma` sem o
+  `@default(dbgenerated(...))` exato da introspecção — sem ele o próximo `migrate dev`
+  gera uma migration que o Postgres recusa.
 - Não colocar configuração específica do Supabase (RLS, grants, roles) em
   `prisma/migrations` — esse histórico é schema portável e roda também no Postgres local.
   Esse tipo de configuração vai em `scripts/supabase/`, rodado à mão.
@@ -637,6 +759,19 @@ UPDATE` dentro de transação Prisma continua serializando corretamente no Supav
       padrão de 2s do Prisma é menor que os ~2,4s que uma conexão nova ao Supabase leva
       para abrir, o que fazia a própria asserção de bloqueio falhar de forma intermitente.
       Ver "Revalidação de concorrência refeita em 02/09/2026" no bloco de deploy
+- [x] Encaminhamentos (`/encaminhamentos`) — tabela `encaminhamento` com
+      `data_vencimento` como coluna gerada (`data_encaminhamento + INTERVAL '180 days'`),
+      tela única com formulário inline no topo (autocomplete de paciente + data), listagem
+      de três colunas abaixo, `requireUsuario()` na Server Action e link novo no menu.
+      Reaproveita o get-or-create de paciente, movido para `lib/domain/pacientes.ts`.
+      `tsc --noEmit` limpo, `npm test` verde (15 arquivos, 198 testes) e `npm run build`
+      ok. **Pendente: teste manual no navegador** — esta sessão não expôs um browser
+      controlável, do mesmo jeito que aconteceu no Prompt 7. O que foi verificado sem
+      navegador: a rota responde e é protegida pelo proxy (307 para
+      `/login?next=%2Fencaminhamentos`), e três cadastros em sequência pelo caminho real
+      da action (`criarEncaminhamento` -> `listarEncaminhamentos`) gravam, aparecem na
+      lista e trazem o vencimento exato do banco. Ver "Encaminhamentos" nas decisões de
+      implementação
 
 ## Pendências conhecidas (não bloqueiam o próximo passo, mas não esquecer)
 
@@ -659,3 +794,8 @@ UPDATE` dentro de transação Prisma continua serializando corretamente no Supav
   `CREATE UNIQUE INDEX ... ON paciente (lower(nome COLLATE "pt-BR-x-icu"))` (ou criar o
   banco com a collation certa) — e a mesma expressão precisa ser usada no get-or-create de
   `lib/domain/requisicoes.ts`, senão busca e constraint voltam a discordar.
+- **Teste manual do navegador na tela de encaminhamentos** ainda não foi feito (ver o
+  item correspondente no progresso). O roteiro é: cadastrar dois ou três encaminhamentos
+  em sequência pelo formulário do topo sem recarregar a página, confirmando que cada um
+  aparece na lista, que o formulário limpa o nome e devolve o foco, e que a data de
+  vencimento exibida é `data_encaminhamento + 180 dias` exatos.

@@ -1,9 +1,7 @@
 import type { Metadata } from "next";
 
-import {
-  listarNomesDePacientes,
-  listarTerapias,
-} from "@/lib/domain/requisicoes";
+import { listarNomesDePacientes } from "@/lib/domain/pacientes";
+import { listarTerapias } from "@/lib/domain/requisicoes";
 
 import { FormularioDeRequisicao } from "./formulario-de-requisicao";
 

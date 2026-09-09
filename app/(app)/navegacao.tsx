@@ -16,6 +16,7 @@ const ITENS = [
   { href: "/requisicoes/nova", rotulo: "Nova requisição" },
   { href: "/atendimentos/novo", rotulo: "Lançar atendimento" },
   { href: "/atendimentos/hoje", rotulo: "Atendimentos de hoje" },
+  { href: "/encaminhamentos", rotulo: "Encaminhamentos" },
 ] as const;
 
 /**
@@ -31,7 +32,7 @@ export function Navegacao() {
   return (
     <nav
       aria-label="Seções do VIGIA"
-      // A rolagem horizontal é o que salva a faixa no celular: os quatro
+      // A rolagem horizontal é o que salva a faixa no celular: os cinco
       // rótulos não cabem em 360px e quebrar linha empurraria o conteúdo.
       className="-mx-5 overflow-x-auto px-5 sm:mx-0 sm:overflow-visible sm:px-0"
     >
