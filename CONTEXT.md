@@ -107,16 +107,13 @@ produção.
 11. Relatório semanal: agrupa guias por paciente, mantém só pacientes com pelo menos uma
     guia `Renovar` ou `Esgotada`. Se a lista final estiver vazia, não envia e-mail.
 
-## Decisões assumidas (o relatório de auditoria deixou como perguntas em aberto — revise se divergir do que você quer)
+## Decisões assumidas (perguntas em aberto no relatório de auditoria original)
 
-- `paciente.nome`: **único case-insensitive** no banco (índice `UNIQUE` sobre
-  `lower(nome)`), para eliminar duplicados por corrida — o sistema antigo não tinha isso.
-- `numero_requisicao`: único **por paciente** (não globalmente único), permitindo reuso de
-  numeração entre pacientes diferentes mas não duplicata para o mesmo paciente.
-- `qtd_autorizada`: deve ser **> 0** na criação da guia (rejeitar 0 no formulário); guias
-  existentes com saldo zerado continuam caindo em `"Esgotada"` normalmente.
-- Exclusão de guia `"Regular"` bloqueada no backend (ver regra 9 acima), não só na UI.
-- Edição de atendimento para 0 créditos continua permitida (mantido do sistema original).
+- `paciente.nome`: único case-insensitive no banco.
+- `numero_requisicao`: único por paciente, não globalmente.
+- `qtd_autorizada`: deve ser > 0 na criação da guia.
+- Exclusão de guia `"Regular"` bloqueada no backend.
+- Edição de atendimento para 0 créditos continua permitida.
 
 ## Decisões tomadas durante a implementação (não estavam no relatório original)
 
@@ -152,44 +149,6 @@ produção.
   admin (`scripts/create-admin.ts`) instanciam `PrismaClient` com `@prisma/adapter-pg`.
   Isso também é a escolha compatível com Supavisor em modo transação, porque o adapter usa
   o driver `pg` e recebe a connection string pooled do ambiente da aplicação.
-- **O cliente Prisma é criado preguiçosamente, e `lib/db` não exporta mais um `prisma`**
-  (03/09/2026). A checagem de `DATABASE_URL` e a abertura do pool moravam no topo de
-  `lib/db/index.ts` (`export const prisma = ... ?? createPrismaClient()`), então **só
-  importar o módulo já podia estourar**. Quem chama `getPrismaClient()` agora é cada
-  função de domínio e cada Server Action, dentro do corpo.
-  - **O que isso quebrava**: o `next build` falha na fase **"Collecting page data"**. Essa
-    fase carrega os módulos de cada rota só para ler a configuração deles (`revalidate`,
-    `runtime`, `dynamic`) e não executa consulta nenhuma — mas importar a rota importa a
-    cadeia inteira até `lib/db`, e o `throw` do topo derrubava o build inteiro. O erro sai
-    como `Failed to collect page data for /api/cron/relatorio-semanal`, com a mensagem de
-    `DATABASE_URL` pendurada em `cause` — o que faz parecer problema da rota do cron, e
-    não do módulo de banco. Reproduzido localmente em 03/09/2026 renomeando o `.env`.
-  - **Onde dói**: qualquer ambiente que compile sem a variável. Na prática o **Preview da
-    Vercel**, onde é comum a `DATABASE_URL` não estar configurada. Build não precisa de
-    banco; runtime precisa. Amarrar os dois transforma uma variável de runtime ausente em
-    build quebrado.
-  - **O que a lazy não faz**: ela não perdoa ambiente mal configurado. Um Preview sem
-    `DATABASE_URL` continua falhando — só que na primeira consulta de verdade, com uma
-    mensagem que diz explicitamente que o banco só é tocado em runtime e onde configurar
-    a variável (`.env` local ou o ambiente correspondente na Vercel). Verificado nas duas
-    pontas: `/login` responde 200 sem a variável (o import não estoura) e a tentativa de
-    autenticar falha em `getPrismaClient` com essa mensagem.
-  - **`getPrismaClient()` é barato de chamar quantas vezes for.** A primeira chamada cria
-    o cliente e memoiza; as seguintes devolvem o mesmo. Em desenvolvimento ele também é
-    publicado no `globalThis`, como antes e pelo mesmo motivo: o Next reavalia os módulos
-    a cada hot reload, e sem isso cada alteração abriria um pool novo até esgotar os slots
-    do Postgres.
-  - **A armadilha ao escrever código novo**: `const prisma = getPrismaClient()` no topo de
-    um módulo reintroduz exatamente o problema, porque volta a ser trabalho de import. A
-    chamada tem que estar dentro da função que consulta. É por isso que o `prisma`
-    exportado foi removido em vez de mantido por compatibilidade — ele é justamente a
-    forma que não se pode ter.
-  - **Efeito colateral bem-vindo nos testes**: os quatro `*.integration.test.ts` já tinham
-    um `temBanco = Boolean(process.env.DATABASE_URL)` para se auto-pular sem banco, mas o
-    `import { prisma }` estourava antes do skip chegar a valer. Com o import sem efeito
-    colateral, o skip finalmente funciona como estava escrito.
-  - Nenhuma regra de negócio mudou: a troca é mecânica (`prisma.x` → `getPrismaClient().x`)
-    e o cliente devolvido é idêntico, `@prisma/adapter-pg` e `log` incluídos.
 - **Runner de teste: Vitest**. Não havia nenhum configurado; o Vitest entra sem
   transpilador extra (lê TypeScript direto) e reaproveita o alias `@/` do `tsconfig` via
   `vitest.config.mts`. O teste de integração de saldo se auto-pula quando `DATABASE_URL`
@@ -283,7 +242,7 @@ produção.
   terapias) em Server Component; o formulário é Client Component porque a lista de
   terapias cresce e encolhe por estado do React. Decisões do caminho:
   - **Get-or-create do paciente em uma consulta só**: `INSERT ... ON CONFLICT
-    (lower("nome")) DO NOTHING RETURNING ...` dentro de uma CTE, com `UNION ALL` para o
+(lower("nome")) DO NOTHING RETURNING ...` dentro de uma CTE, com `UNION ALL` para o
     `SELECT` do já existente. Um `SELECT` seguido de `INSERT` deixaria aberta a corrida
     entre dois cadastros simultâneos do mesmo nome. A comparação é
     `lower(nome) = lower($1)` — **a mesma expressão do índice**; usar outra regra
@@ -318,32 +277,11 @@ produção.
     import de banco. O formulário (cliente) e a validação (servidor) importam dele para
     mostrarem o mesmo texto; importar `lib/domain/requisicoes.ts` do cliente arrastaria o
     Prisma para o bundle do navegador.
-  - **Sucesso não navega**: a rotina real é cadastrar várias requisições em sequência,
-    então a Server Action permanece na página e devolve um `sucesso` com token único pelo
-    `useActionState`, no mesmo padrão do lançamento de atendimento. O formulário guarda o
-    último token tratado para não repetir a limpeza no StrictMode nem confundir duas
-    criações com dados parecidos.
-  - **Limpeza pós-sucesso**: paciente, número da requisição e terapias são limpos ali
-    mesmo; a lista de terapias volta para uma única linha nova (já com a quantidade
-    padrão), o aviso curto "Requisição criada para [paciente]" aparece no próprio
-    formulário/toast, e o foco volta automaticamente para o campo de nome do paciente.
-  - **"Qtd. autorizada" nasce em `4`** (`QTD_AUTORIZADA_PADRAO`, no mesmo molde do
-    `CREDITOS_PADRAO` do lançamento de atendimento), tanto na primeira linha quanto em
-    cada linha criada pelo "Adicionar outra terapia" e na linha que sobra depois da
-    limpeza pós-sucesso. É a quantidade autorizada na esmagadora maioria das requisições,
-    então o padrão poupa digitação no caso comum. **É só valor inicial, não regra**: o
-    campo continua livre para ser apagado e redigitado, e a validação de inteiro > 0 (no
-    cliente e na Server Action) não conhece esse número — quem digita `7` grava `7`. Por
-    isso a função que monta a linha se chama `linhaNova`, não `linhaVazia`: ela deixou de
-    devolver uma linha em branco.
-  - **`refresh()` em vez de `revalidatePath`**: nada é cacheado (a página é dinâmica por
-    causa da sessão), mas depois de criar um paciente novo o `datalist` precisa incluir o
-    nome recém-criado caso outra requisição dele seja cadastrada logo em seguida. O
-    `refresh()` redesenha o Server Component sem derrubar o estado client-side que acabou
-    de ser limpo.
-  - **Botão de submit com `useFormStatus`**: o botão lê o `pending` do formulário, fica
-    desabilitado durante o envio e troca o texto para "Salvando...", evitando duplo clique
-    no cadastro em lote.
+  - **Toast de sucesso viaja pela URL**: o `redirect` da Server Action troca a página
+    inteira, então o aviso vai como `?criada=<numero>&paciente=<nome>`; o dashboard
+    dispara o toast (`sonner`) e apaga a query com `router.replace`, para o aviso não
+    voltar a cada recarga. Não há `revalidatePath`: o dashboard é dinâmico (depende da
+    sessão) e o `redirect` já entrega a página recém-renderizada.
   - **`sonner` + `next-themes`**: `npx shadcn add sonner` trouxe `next-themes` junto. O
     projeto não tem alternador de tema, e o componente sobrescreve as cores com as
     variáveis CSS da aplicação (`--popover`, `--border`), então o `theme` do sonner não
@@ -362,7 +300,7 @@ produção.
     duas consultas são invertidas — foi verificado.
   - **O lock é em `requisicao_terapia`, não na view**: `FOR UPDATE` não se aplica a view
     com agregação, e inserir em `atendimento` não toca em `requisicao_terapia`. A linha
-    da guia funciona como ponto de encontro combinado: vale porque *todo* caminho que
+    da guia funciona como ponto de encontro combinado: vale porque _todo_ caminho que
     mexe no saldo passa por ela — `excluirGuiaNaTransacao` trava as mesmas linhas pelo
     mesmo motivo.
   - **`ORDER BY "id"` no `FOR UPDATE` é o antideadlock**: no plano do Postgres o nó
@@ -389,9 +327,10 @@ produção.
     um checkbox não marcado não é enviado, e um campo `disabled` também não. Assim
     `requisicaoTerapiaId` e `creditosConsumidos` chegam com o mesmo tamanho e a mesma
     ordem, e o índice do erro devolvido pelo servidor aponta a linha certa na tela.
-  - **Sucesso não navega**: o formulário se limpa ali mesmo e mostra o toast, para lançar
-    o próximo paciente sem esperar uma navegação — o mesmo padrão usado no cadastro de
-    requisição. Como não há `redirect`, o aviso não precisa viajar pela URL: o
+  - **Sucesso não navega** (diferente do cadastro de requisição, que redireciona): o
+    formulário se limpa ali mesmo e mostra o toast, para lançar o próximo paciente sem
+    esperar uma navegação — é o comportamento do sistema Worker atual, melhor que o do
+    legado nesse ponto. Como não há `redirect`, o aviso não precisa viajar pela URL: o
     `useActionState` devolve um `sucesso` com um token único, e o formulário guarda o
     último token tratado para não repetir a limpeza no StrictMode nem confundir dois
     lotes de números idênticos.
@@ -408,7 +347,7 @@ produção.
     escondido que o `FormData` enxerga de forma menos previsível.
   - **O teste de concorrência commita de verdade e limpa no `afterAll`**: o padrão de
     rollback dos outros testes de integração não serve aqui, já que o ponto é uma
-    transação enxergar o *commit* da outra. A interleaving é forçada com um portão (a
+    transação enxergar o _commit_ da outra. A interleaving é forçada com um portão (a
     transação A para com o lock de pé até o teste liberar) e o bloqueio de B é
     confirmado no `pg_stat_activity` — não é um `sleep` esperançoso.
   - **O portão tem de ser aberto num `finally`.** Como o teste commita, a limpeza depende
@@ -423,20 +362,17 @@ produção.
     sai num `console.error` com o id da linha. Este teste roda contra o banco de produção;
     lixo esquecido lá só some se alguém enxergar qual é.
   - **O pool é aquecido antes de abrir a transação A** (`aquecerPool`, quatro
-    `pg_sleep` em paralelo). A transação B é a função de *produção*, que usa o `maxWait`
+    `pg_sleep` em paralelo). A transação B é a função de _produção_, que usa o `maxWait`
     padrão do Prisma (2s) para conseguir a conexão — e abrir uma conexão nova contra o
     Supabase remoto custa ~2,4s, medido. Sem aquecer, B morre com `P2028` **antes** de
     chegar ao `SELECT ... FOR UPDATE`: nenhuma conexão aparece esperando lock e o teste
     acusa "não bloqueou" sem ter chegado a exercitar o lock que ele existe para provar.
   - **Todo `$transaction` dos testes de integração leva `maxWait: 30_000` junto do
-    `timeout: 30_000`.** `timeout` é o tempo *dentro* da transação; `maxWait` é o tempo
-    para *consegui-la*, e o padrão de 2s é curto demais quando os 12 arquivos de teste
+    `timeout: 30_000`.** `timeout` é o tempo _dentro_ da transação; `maxWait` é o tempo
+    para _consegui-la_, e o padrão de 2s é curto demais quando os 12 arquivos de teste
     rodam em paralelo contra a pooled do Supabase. Sem isso a suíte falha de forma
     intermitente com `P2028 Unable to start a transaction in the given time`, em arquivos
     diferentes a cada rodada — parece flakiness de concorrência e não é.
-    A mesma medição vale para produção, onde uma conexão fria sozinha já estoura o padrão;
-    a regra completa está em "Convenções de acesso ao banco", que é a fonte única — este
-    bullet é só o registro de onde ela apareceu primeiro.
 
 - **Sistema de design (passagem visual, aplicada a todas as telas do Prompt 2 ao 8)**.
   Vale para as telas novas dos Prompts 8-9 e para qualquer tela futura: seguir o que está
@@ -538,7 +474,7 @@ produção.
     fechado, e um aberto à mão continua aberto depois de limpar a busca — a escolha
     explícita sempre ganha do padrão.
   - **Copiar é um irmão do botão de expandir, não um filho.** `"Nome do paciente - Número
-    da requisição"` via `navigator.clipboard.writeText`. Aninhar um `<button>` dentro do
+da requisição"` via `navigator.clipboard.writeText`. Aninhar um `<button>` dentro do
     outro é HTML inválido, e mesmo com `stopPropagation` o clique em copiar acabaria
     abrindo o paciente sem querer; por isso o cabeçalho é uma linha com dois controles
     independentes, e o de copiar aparece igual recolhido ou expandido.
@@ -568,60 +504,6 @@ produção.
     é `node`. Montar esse aparato só para esta tela não se paga agora — se um dia entrar,
     é aqui que estes casos devem virar teste automatizado.
 
-- **Seleção múltipla e "Copiar selecionados" no painel** (03/09/2026 — de novo só camada
-  de apresentação: nenhuma Server Action, consulta ou regra de negócio foi tocada).
-  - **Os dois botões de copiar convivem, e não são alternativas.** O de ícone em cada
-    linha continua sendo o atalho de um paciente só, sem marcar nada; o do lote existe para
-    quem precisa montar uma lista. Os dois passam pelo mesmo
-    `useCopiaParaAreaDeTransferencia` e pelo mesmo `textoDeCopia`, então o texto de um
-    paciente é idêntico pelos dois caminhos — não há um "formato do lote" separado que
-    possa divergir do individual.
-  - **O checkbox é o terceiro controle irmão do cabeçalho**, pelo mesmo motivo já
-    documentado para o botão de copiar: fora da área clicável de expandir. Se estivesse
-    dentro, marcar um paciente abriria a tabela dele junto. Ele é `<input
-    type="checkbox">` nativo com `aria-label` que inclui o nome ("Selecionar Fulano para
-    copiar") — numa lista de pacientes, "Selecionar" sozinho não diz de quem, e é botão a
-    botão que o leitor de tela anda. O `<label>` sem texto em volta existe só para o alvo
-    de toque cobrir a altura da linha.
-  - **A seleção mora em `ListaDeGuias`, não na linha, e é guardada por id.** É o que a faz
-    sobreviver ao filtro de busca: a lista renderizada é a filtrada, então uma marca que
-    vivesse dentro de `PacienteRecolhivel` evaporaria junto com o paciente que sai do
-    resultado. Consequência intencional: **copiar durante uma busca leva também quem está
-    fora do filtro** — o filtro é temporário e não deveria decidir o conteúdo da área de
-    transferência.
-  - **A ordem do texto é a da lista, não a dos cliques.** `selecionadosNaOrdemDaLista`
-    filtra `pacientes` (a lista inteira, já ordenada por `lower(nome)` no banco) em vez de
-    acumular os ids na ordem em que foram marcados. Colar sai na mesma ordem que se lê na
-    tela, sem nenhum `sort` no cliente — a ordenação continua sendo uma decisão só, a da
-    consulta.
-  - **`textoDeCopiaEmLote` junta com `\n` e não deixa quebra sobrando no fim.** Uma linha
-    em branco pendurada é justamente o que se percebe ao colar numa mensagem. Observação de
-    plataforma: o Windows converte o `\n` para `\r\n` ao colocar o texto na área de
-    transferência do sistema — o que a aplicação escreve é LF, o que se cola no Bloco de
-    Notas é CRLF, e nos dois casos são N linhas sem linha vazia no fim.
-  - **A seleção não é limpa depois de copiar.** O usuário confere o que colou, ajusta e
-    copia de novo; limpar sozinho obrigaria a remarcar tudo por causa de um paciente
-    errado. Quem quer zerar usa o "Limpar seleção" ao lado, que só existe enquanto há algo
-    marcado — botão explícito em vez de efeito colateral.
-  - **A barra é `sticky top-0` e é `.folha`, não uma faixa colorida.** Marcar é gesto de
-    rolagem: quem desce o livro-razão marcando precisa do botão ao alcance. E ela é
-    superfície de dado em grafite e papel porque cor no painel significa `status_alerta` —
-    uma barra de ação colorida roubaria o canal. O realce da linha marcada, pelo mesmo
-    motivo, é `bg-secondary` (mais fundo), não outra cor.
-  - **O rótulo do botão mantém a contagem mesmo durante a confirmação** ("Copiar 3
-    selecionados" o tempo todo). O aviso de "copiou" continua sendo só a troca de silhueta
-    do ícone (`Copy` -> `Check`, 2s) mais a região `role="status"`, como no botão
-    individual — trocar o texto por "Copiado" apagaria justamente o número que o botão
-    precisa dizer.
-  - **`useCopiaParaAreaDeTransferencia` (`app/(app)/dashboard/usar-copia.ts`)** é onde a
-    regra de copiar mora: checagem de contexto seguro, toast só na falha e os 2s de
-    confirmação. Foi extraído do `BotaoDeCopiar` quando o segundo botão apareceu — duas
-    cópias disso acabariam divergindo no detalhe que menos se testa, que é o erro.
-  - **Cobertura**: `textoDeCopiaEmLote` tem teste unitário
-    (`lib/domain/guias-apresentacao.test.ts`, agora 20 casos) para ordem, formato exato,
-    ausência de quebra no fim e o caso defensivo do número por linha. O comportamento de
-    interface foi verificado no navegador, pelo mesmo motivo já registrado acima.
-
 - **Deploy Vercel + Supabase Postgres (verificado em 01/09/2026)**:
   - URLs confirmadas sem expor segredo: `DATABASE_URL` está em
     `postgresql://vigia_app.[project-ref]:[senha]@aws-0-us-west-2.pooler.supabase.com:6543/postgres?pgbouncer=true&connection_limit=1`;
@@ -649,7 +531,7 @@ produção.
   - Revalidação obrigatória contra a pooled real do Supabase:
     `npm test -- atendimentos.integration guias.integration` passou com 2 arquivos e 18
     testes. Os testes de portão + `pg_stat_activity` confirmaram que `SELECT ... FOR
-    UPDATE` dentro de transação Prisma continua serializando corretamente no Supavisor em
+UPDATE` dentro de transação Prisma continua serializando corretamente no Supavisor em
     modo transação: no lançamento concorrente só o primeiro lote é aceito, e em duas
     edições concorrentes só a primeira edição que cabe no saldo é aceita. A integração de
     exclusão de guia também passou contra o mesmo banco. Depois disso, a suíte completa
@@ -673,97 +555,10 @@ produção.
   - Resultado da revalidação: `npm test` passou 4 vezes seguidas contra o Supabase real,
     12 arquivos e 166 testes, sem nenhuma falha intermitente. Os dois blocos de corrida
     confirmam o bloqueio real de B pelo `pg_stat_activity` (fora do pool do Prisma), o
-    saldo final correto (`qtd_utilizada = 2` na guia de 3; `qtd_utilizada = 4` na guia de
-    5) e uma varredura do banco depois de cada rodada devolveu 0 linhas residuais. A
+    saldo final correto (`qtd_utilizada = 2` na guia de 3; `qtd_utilizada = 4` na guia de 5) e uma varredura do banco depois de cada rodada devolveu 0 linhas residuais. A
     correção da limpeza foi validada injetando uma falha logo após a asserção de bloqueio,
     numa cópia descartável do arquivo: os dois testes falham como esperado, o `afterAll`
     completa sem estourar e o banco fica em 0 órfãos. A injeção foi revertida.
-
-## Convenções de acesso ao banco
-
-- **Todo `prisma.$transaction` — de produção ou de teste — precisa de `maxWait` explícito,
-  maior que o padrão do Prisma.** `maxWait` é o tempo para *conseguir* a transação (abrir
-  ou pegar do pool a conexão em que ela vai rodar); `timeout` é o orçamento de trabalho
-  *dentro* dela. São coisas diferentes e só a primeira está em jogo aqui.
-  - **De onde veio a exigência**: a investigação que corrigiu a flakiness dos testes de
-    concorrência contra a pooled do Supabase (02/09/2026, descrita em detalhe nas decisões
-    de implementação do Prompt 6 e no bloco de deploy). Ela instrumentou o custo de abrir
-    uma conexão nova contra o Supabase: **~2,4s**, contra os **2000ms** do `maxWait` padrão
-    do Prisma. O padrão perde por uma margem estreita e constante, e o sintoma é
-    `P2028 Unable to start a transaction in the given time`.
-  - **Isso não é um problema só de teste.** Sem concorrência nenhuma, toda função
-    serverless da Vercel que precise abrir a primeira conexão paga esses ~2,4s — ou seja,
-    qualquer conexão fria em produção estourava o padrão. Foi por isso que a exigência
-    virou convenção em vez de continuar como comentário local.
-  - **Produção**: `OPCOES_DE_TRANSACAO` em `lib/db/transacao.ts` (`maxWait: 10_000`, ~4x de
-    folga sobre os 2,4s medidos). É o que as quatro transações de produção usam —
-    `lancarLote` e `editarAtendimentoPeloId` (`atendimentos.ts`), `excluirGuiaPeloId`
-    (`guias.ts`) e `criarRequisicao` (`requisicoes.ts`). Transação nova em produção importa
-    essa constante em vez de repetir o número.
-  - **Testes de integração**: `{ maxWait: 30_000, timeout: 30_000 }`. O valor é maior que o
-    de produção porque os 12 arquivos da suíte disputam a mesma pooled em paralelo — carga
-    que uma requisição de produção não tem. Ali o `timeout` também sobe, porque os blocos
-    de corrida seguram lock de propósito.
-  - **O `timeout` de produção fica no padrão do Prisma (5s), de propósito.** O que estava
-    errado era a espera *pela* conexão, não o trabalho dentro da transação; e o teste de
-    corrida de `lancarLote` conta com esses 5s para dimensionar a janela em que observa B
-    bloqueada no `pg_stat_activity`.
-  - **Por que isso não aparece no Postgres local**: lá a conexão abre em milissegundos, o
-    `maxWait` padrão nunca estoura e o defeito fica invisível. Só a pooled remota exercita
-    esse caminho — foi assim que ele passou despercebido até a revalidação de deploy.
-
-## Decisões de implementação
-
-- **RLS (Row Level Security) no Supabase**: o RLS foi ativado nas 6 tabelas do projeto
-  (`paciente`, `usuario`, `terapia`, `requisicao`, `requisicao_terapia`, `atendimento`).
-  Em vez de escrever policies ou desativar o RLS, o role de produção usado por
-  `DATABASE_URL` (`vigia_app`) recebeu `BYPASSRLS` diretamente. É o equivalente ao
-  `service_role` do Supabase, mas aplicado ao role próprio da aplicação, já que a conexão
-  é feita via Postgres direto pelo Prisma — e não pela API REST/PostgREST, que é onde o
-  modelo de policies do Supabase faz sentido. O RLS permanece ativado como rede de
-  segurança: qualquer conexão futura que não use explicitamente esse role continua sujeita
-  às regras de RLS.
-- **"Marcar todas" no lançamento de atendimento é estado derivado, não um `useState`
-  próprio.** O checkbox mestre de `app/(app)/atendimentos/novo` lê `selecoes`: marcado
-  quando todas as guias do paciente estão marcadas, indeterminado quando só algumas estão.
-  Guardar um booleano separado obrigaria a lembrar de zerá-lo na troca de paciente e na
-  limpeza pós-sucesso — exatamente o tipo de estado obsoleto que o smoke test do Prompt 6
-  já tinha pego ao trocar de paciente no meio do preenchimento. Derivando, o mestre reseta
-  de graça junto com `selecoes` e nunca mente sobre o que está de fato marcado. Detalhes
-  que valem para qualquer checkbox mestre futuro:
-  - `indeterminate` só existe como **propriedade do DOM** (não há atributo HTML nem prop do
-    React), então um `useEffect` com `ref` a mantém em dia; `aria-checked="mixed"` é o par
-    disso para leitor de tela, e sai do DOM quando o estado não é misto.
-  - O mestre **não tem `name`**. O que o servidor lê continua sendo o checkbox de cada
-    linha; um `name` a mais desalinharia os vetores que a Server Action costura por índice
-    com `formData.getAll`.
-  - Marcar todas **preserva o crédito já digitado à mão** na linha e só aplica o padrão (1)
-    a quem não tinha valor. Desmarcar mantém os valores guardados, igual ao que já
-    acontecia ao desmarcar uma linha sozinha.
-  - Nenhuma validação de lote (lote vazio, guia repetida, créditos > 0) nem a Server Action
-    foram tocadas — é camada de interação do formulário.
-- **Favicon são dois arquivos em `public/`, escolhidos por `prefers-color-scheme` — não
-  um ícone fixo.** `public/icon-light.png` e `public/icon-dark.png` (512x512) são
-  declarados em `metadata.icons.icon` de `app/layout.tsx`, cada um com sua `media`, e o
-  navegador troca sozinho conforme o tema do sistema. A motivação é a mesma de sempre com
-  marca em barra de aba: um ícone só desaparece contra um dos dois fundos.
-  - **Por que não a convenção de arquivo do Next** (`app/icon.png`, que era o que existia
-    antes): ela gera o `<link>` automaticamente, mas não aceita `media`, então não dá para
-    condicionar por tema. A API baseada em arquivo e a `metadata.icons` não se somam bem
-    aqui — por isso `app/favicon.ico` e `app/icon.png` foram removidos. Se algum deles
-    voltar para `app/`, volta a competir com esta configuração.
-  - **Nomes fora da convenção não são servidos de dentro de `app/`.** O Next só reconhece
-    `icon.png`, `icon1.png`, etc.; `app/icon-light.png` não vira rota nenhuma e a URL
-    `/icon-light.png` daria 404. Os dois arquivos precisam estar em `public/`.
-  - **O Turbopack guarda o ícone antigo em `.next`.** Trocar ou remover ícone e recarregar
-    a página costuma não refletir nada — inclusive `.next/server/app/favicon.ico` sobrevive
-    à remoção do arquivo de origem. O caminho confiável é matar o dev server, `rm -rf
-    .next` e subir de novo. Cache de favicon do próprio navegador é uma segunda camada:
-    vale conferir o `<link>` no HTML (`curl -s localhost:3000/ | grep 'rel="icon"'`) antes
-    de suspeitar do código.
-  - Os PNGs são pesados para favicon (378 KB o claro, 151 KB o escuro, ambos 512x512).
-    Funciona, e a aba é servida uma vez só, mas se um dia incomodar a saída é gerar
-    versões 32x32/48x48 — não mexer na estratégia dos dois arquivos.
 
 ## Não fazer
 
@@ -776,9 +571,6 @@ produção.
   `DATABASE_SUPERUSER_URL`.
 - Não replicar a fórmula de saldo/status em mais de um lugar em TypeScript como fonte de
   verdade — a view SQL é a fonte de verdade; TypeScript só espelha para testes.
-- Não abrir `prisma.$transaction` sem `maxWait` explícito. O padrão do Prisma (2s) é
-  menor que o custo medido de uma conexão fria contra o Supabase (~2,4s) e vira `P2028`
-  em produção. Ver "Convenções de acesso ao banco".
 - Não colocar configuração específica do Supabase (RLS, grants, roles) em
   `prisma/migrations` — esse histórico é schema portável e roda também no Postgres local.
   Esse tipo de configuração vai em `scripts/supabase/`, rodado à mão.
@@ -799,8 +591,7 @@ produção.
       autocomplete de paciente (`datalist`), lista dinâmica de terapias, validação no
       cliente e no servidor, Server Action transacional com get-or-create
       case-insensitive do paciente e unicidade de `numero_requisicao` por paciente,
-      sucesso sem navegação com `refresh()`, confirmação no próprio formulário/toast,
-      limpeza dos campos e foco de volta no nome do paciente
+      redirect para o dashboard com toast de sucesso
 - [x] Prompt 6 — Lançamento de atendimento (`/atendimentos/novo`): formulário com
       seleção de paciente, data padrão vinda do `CURRENT_DATE` do banco, observação
       opcional e carga sob demanda das guias com `saldo_restante > 0`; Server Action
@@ -809,7 +600,7 @@ produção.
       ou <= 0, guia inexistente e saldo insuficiente; sucesso limpa o formulário sem
       navegar. Teste de integração força duas transações concorrentes na mesma guia e
       confirma que só uma passa
-- [ ] Prompt 7 — Histórico, edição e exclusão de atendimento — implementação e
+- [x] Prompt 7 — Histórico, edição e exclusão de atendimento — implementação e
       testes prontos; pendente teste manual no navegador porque esta sessão não expôs
       um browser controlável
 - [x] Prompt 8 — Página "Atendimentos de hoje": lista simples em
@@ -846,59 +637,6 @@ produção.
       padrão de 2s do Prisma é menor que os ~2,4s que uma conexão nova ao Supabase leva
       para abrir, o que fazia a própria asserção de bloqueio falhar de forma intermitente.
       Ver "Revalidação de concorrência refeita em 02/09/2026" no bloco de deploy
-- [x] Catálogo real de terapias (`scripts/seed-terapias.ts`, `npm run seed:terapias`) —
-      as 8 terapias da clínica com o código TISS de cada uma, no mesmo molde idempotente
-      de `scripts/create-admin.ts`: upsert por `nome` (a coluna única), sem apagar nem
-      duplicar terapia cadastrada à mão. Lê a `DATABASE_URL` do ambiente, sem provedor
-      hardcoded — o mesmo script serve para o Postgres local e para o Supabase, conforme
-      qual `DATABASE_URL` estiver ativa na sessão do terminal. Documentado no README como
-      parte do passo 3 do primeiro deploy, ao lado de `npm run create-admin`.
-      `Psicomotricidade` e `Fisioterapia` compartilham o código `50000171` — é o dado
-      real da clínica, `codigo_tiss` não é único no banco e não deve ser "corrigido"
-- [x] Checkbox "Marcar todas" no lançamento de atendimento (03/09/2026) — só aparece
-      depois do paciente escolhido e da lista de guias carregada, marca todas preenchendo
-      o crédito padrão sem sobrescrever valor digitado à mão, desmarca todas, cai para
-      indeterminado quando uma linha é desmarcada na mão e reseta na troca de paciente.
-      Estado derivado de `selecoes` — ver "Marcar todas ... é estado derivado" nas decisões
-      de implementação. Testado no navegador (Chrome, dev local): 13/13 verificações,
-      incluindo operação por teclado (espaço), `aria-checked="mixed"` no estado misto e um
-      lote de 4 atendimentos lançado pelo mestre com o crédito 3 digitado à mão preservado.
-      Sem mudança na validação de lote nem na Server Action
-- [x] "Qtd. autorizada" já vem preenchida com 4 em `/requisicoes/nova` (03/09/2026) — na
-      primeira linha, em cada linha do "Adicionar outra terapia" e na linha que sobra
-      depois do sucesso. Só valor inicial: nada mudou na validação (inteiro > 0 continua
-      no cliente e na Server Action) nem no schema. Ver `QTD_AUTORIZADA_PADRAO` e
-      a decisão "Qtd. autorizada nasce em 4" nas decisões de implementação. Testado no
-      navegador (Chrome, dev local): 6/6 verificações — primeira linha em `4`, segunda
-      linha adicionada em `4`, campo apagado e redigitado como `7`, requisição salva e
-      conferida no banco com `qtd_autorizada` 4 e 7 (o valor editado ganhou do padrão),
-      formulário limpo voltando em `4`, e `0` ainda recusado com a mensagem de sempre
-- [x] Seleção múltipla no painel com "Copiar N selecionados" (03/09/2026) — um checkbox por
-      paciente ao lado do botão de copiar individual (os dois convivem), barra `sticky` no
-      topo da lista com "Copiar N selecionados" e "Limpar seleção", uma linha
-      `"Nome - Número da requisição"` por paciente em ordem alfabética, seleção que
-      atravessa o filtro de busca e não é limpa depois de copiar. Só apresentação — nenhuma
-      Server Action, consulta ou regra de negócio tocada. Ver "Seleção múltipla e 'Copiar
-      selecionados' no painel" nas decisões de implementação. Testado no navegador (Chrome
-      152, headless via CDP, dev local): 31/31 verificações, incluindo o texto lido de volta
-      da área de transferência de verdade nos três cenários (3 marcados, 2 marcados, e
-      copiando com a busca filtrando), o texto cru escrito pela aplicação (LF puro, sem
-      quebra no fim), marcar por espaço no teclado, marcar sem expandir o paciente, e o
-      botão individual continuando a copiar só a linha dele. `npm test` do módulo de
-      apresentação verde (20 casos) e `tsc --noEmit` limpo
-- [x] Cliente Prisma com inicialização preguiçosa (03/09/2026) — `lib/db/index.ts` deixou
-      de exportar `prisma` e passou a exportar `getPrismaClient()`, chamado de dentro de
-      cada função de domínio e Server Action. Resolve a falha de `next build` na fase
-      "Collecting page data" em ambiente sem `DATABASE_URL` (Preview da Vercel). Ver "O
-      cliente Prisma é criado preguiçosamente" nas decisões de implementação. Verificado
-      localmente: com o `.env` renomeado o build **falhava** em
-      `Failed to collect page data for /api/cron/relatorio-semanal` e passou a **buildar
-      com sucesso**; com `.env` completo menos a linha da `DATABASE_URL`, `/login` responde
-      200 e só a tentativa de autenticar falha, em `getPrismaClient`, com a mensagem que
-      diz onde configurar a variável; com o `.env` restaurado, `npm run dev` navegado no
-      Chrome cobriu as 4 telas que consultam o banco (7/7 verificações). `tsc --noEmit`
-      limpo, `npm run build` verde e `npm test` verde (12 arquivos, 173 testes, incluindo
-      os de integração contra o Postgres local — não pulados)
 
 ## Pendências conhecidas (não bloqueiam o próximo passo, mas não esquecer)
 
@@ -912,15 +650,6 @@ produção.
   estado, não estilo — mas `npm run lint` falha por causa dele.
 - `ADMIN_PASSWORD` de produção deve ficar só no terminal local ao rodar
   `npm run create-admin`; não versionar e não configurar na Vercel.
-- **`prisma/seed.ts` e `scripts/seed-terapias.ts` discordam sobre o `codigo_tiss` de três
-  terapias.** O seed de desenvolvimento cria `Fonoaudiologia`, `Terapia Ocupacional` e
-  `Psicologia` com códigos inventados (`50000470`, `50000560`, `50000586`) e também faz
-  upsert por `nome` — então rodar `npm run db:seed` depois de `npm run seed:terapias`
-  sobrescreve os códigos reais por esses três no banco em que rodar. Em desenvolvimento é
-  inofensivo; em produção o `db:seed` não deve ser rodado de jeito nenhum (ele também cria
-  pacientes e atendimentos fictícios). Se um dia incomodar, a saída é alinhar os três
-  códigos de `prisma/seed.ts` com o catálogo real — os nomes dos pacientes de demonstração
-  continuam fictícios do mesmo jeito.
 - **A unicidade case-insensitive de `paciente.nome` depende da collation da instalação.**
   O banco local verificado em 31/08/2026 usa `Portuguese_Brazil.1252`; o Supabase de
   produção verificado em 01/09/2026 usa `en_US.UTF-8`. Nenhum dos dois é `C/POSIX`.
