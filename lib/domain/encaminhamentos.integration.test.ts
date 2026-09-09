@@ -1,17 +1,24 @@
 /**
  * O cadastro de encaminhamento contra o Postgres real.
  *
- * Este arquivo carrega a prova da única regra de negócio da feature: o
- * vencimento é **180 dias corridos** depois do encaminhamento, e não seis meses
- * de calendário. A distinção não é acadêmica — a planilha de referência do
- * usuário usa seis meses, e os dois resultados são datas diferentes na maior
- * parte do ano. Por isso um dos testes compara, no mesmo SELECT, o que a coluna
- * gerada produziu com o que `+ INTERVAL '6 months'` produziria: se alguém um dia
- * "corrigir" a migration para bater com a planilha, é este teste que cai.
+ * Este arquivo carrega a prova das três regras da feature, e as três moram no
+ * banco — nenhuma expectativa aqui é calculada em JavaScript:
  *
- * Nenhuma expectativa aqui é calculada em JavaScript. As datas esperadas são
- * literais conferidas à mão, justamente para o teste não repetir a fórmula que
- * ele deveria estar verificando.
+ *   1. **180 dias corridos**, não seis meses de calendário (coluna gerada
+ *      `data_vencimento`). A distinção não é acadêmica: a planilha de
+ *      referência do usuário usa seis meses, e os dois resultados são datas
+ *      diferentes na maior parte do ano. Por isso um dos testes compara, no
+ *      mesmo SELECT, o que a coluna gerada produziu com o que
+ *      `+ INTERVAL '6 months'` produziria — se alguém um dia "corrigir" a
+ *      migration para bater com a planilha, é este teste que cai. As datas
+ *      esperadas são literais conferidas à mão, para o teste não repetir a
+ *      fórmula que ele deveria estar verificando.
+ *   2. **Um encaminhamento por paciente**: cadastrar outro substitui o
+ *      anterior (UNIQUE em `paciente_id` + `ON CONFLICT DO UPDATE`).
+ *   3. **Status por mês de calendário**, não por dias (view
+ *      `encaminhamento_status`). As fronteiras de mês são testadas
+ *      explicitamente, e relativas ao `CURRENT_DATE` do banco — um teste com
+ *      datas fixas passaria a mentir no mês seguinte.
  *
  * Como roda (mesmo contrato de `requisicoes.integration.test.ts`):
  *   - precisa de DATABASE_URL com as migrations aplicadas; sem ela o bloco é
@@ -23,7 +30,10 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { getPrismaClient } from "@/lib/db";
 
-import { criarEncaminhamentoNaTransacao } from "./encaminhamentos";
+import {
+  registrarEncaminhamentoNaTransacao,
+  type StatusEncaminhamento,
+} from "./encaminhamentos";
 
 const temBanco = Boolean(process.env.DATABASE_URL);
 
@@ -76,6 +86,39 @@ async function contarPacientes(
   return linha.n;
 }
 
+/** As linhas de encaminhamento que pertencem ao paciente de nome `nome`. */
+async function encaminhamentosDoPaciente(
+  tx: ClienteDaTransacao,
+  nome: string,
+): Promise<
+  { id: number; dataEncaminhamento: string; dataVencimento: string }[]
+> {
+  return tx.$queryRaw`
+    SELECT
+      e."id"                        AS "id",
+      e."data_encaminhamento"::text AS "dataEncaminhamento",
+      e."data_vencimento"::text     AS "dataVencimento"
+    FROM "encaminhamento" e
+    JOIN "paciente" p ON p."id" = e."paciente_id"
+    WHERE lower(p."nome") = lower(${nome})
+    ORDER BY e."id"
+  `;
+}
+
+/** O status que a view atribuiu a uma linha já gravada. */
+async function statusDaView(
+  tx: ClienteDaTransacao,
+  id: number,
+): Promise<string | null> {
+  const [linha] = await tx.$queryRaw<{ status: string | null }[]>`
+    SELECT "status_encaminhamento" AS "status"
+    FROM "encaminhamento_status"
+    WHERE "id" = ${id}
+  `;
+
+  return linha.status;
+}
+
 describe.skipIf(!temBanco)("encaminhamento contra o banco real", () => {
   beforeAll(async () => {
     // Abre a conexão fora do relógio da primeira transação.
@@ -113,7 +156,7 @@ describe.skipIf(!temBanco)("encaminhamento contra o banco real", () => {
     "a coluna gerada soma 180 dias corridos (%s)",
     async (rotulo, dataEncaminhamento, vencimentoEsperado) => {
       const resultado = await comRollback((tx) =>
-        criarEncaminhamentoNaTransacao(tx, {
+        registrarEncaminhamentoNaTransacao(tx, {
           pacienteNome: `Encaminhado ${rotulo} ${SUFIXO}`,
           dataEncaminhamento,
         }),
@@ -133,13 +176,13 @@ describe.skipIf(!temBanco)("encaminhamento contra o banco real", () => {
     // JavaScript aqui não soma nada, só confere que as duas discordam e que a
     // que vale é a de 180 dias.
     const linhas = await comRollback(async (tx) => {
-      const criacao = await criarEncaminhamentoNaTransacao(tx, {
+      const gravacao = await registrarEncaminhamentoNaTransacao(tx, {
         pacienteNome: `Encaminhado Seis Meses ${SUFIXO}`,
         dataEncaminhamento: "2026-01-01",
       });
 
-      if (!criacao.ok) {
-        throw new Error(`criacao falhou: ${criacao.erro}`);
+      if (!gravacao.ok) {
+        throw new Error(`gravacao falhou: ${gravacao.erro}`);
       }
 
       return tx.$queryRaw<
@@ -154,7 +197,7 @@ describe.skipIf(!temBanco)("encaminhamento contra o banco real", () => {
           ("data_encaminhamento" + INTERVAL '6 months')::date::text   AS "seisMeses",
           ("data_encaminhamento" + INTERVAL '180 days')::date::text   AS "centoEOitentaDias"
         FROM "encaminhamento"
-        WHERE "id" = ${criacao.id}
+        WHERE "id" = ${gravacao.id}
       `;
     });
 
@@ -201,18 +244,19 @@ describe.skipIf(!temBanco)("encaminhamento contra o banco real", () => {
     const nome = `Encaminhado Paciente Novo ${SUFIXO}`;
 
     const resultado = await comRollback(async (tx) => {
-      const criacao = await criarEncaminhamentoNaTransacao(tx, {
+      const gravacao = await registrarEncaminhamentoNaTransacao(tx, {
         pacienteNome: nome,
         dataEncaminhamento: "2026-11-15",
       });
 
-      return { criacao, pacientes: await contarPacientes(tx, nome) };
+      return { gravacao, pacientes: await contarPacientes(tx, nome) };
     });
 
-    expect(resultado.criacao).toMatchObject({
+    expect(resultado.gravacao).toMatchObject({
       ok: true,
       pacienteNome: nome,
       pacienteCriado: true,
+      substituiuAnterior: false,
       dataVencimento: "2027-05-14",
     });
     expect(resultado.pacientes).toBe(1);
@@ -222,7 +266,7 @@ describe.skipIf(!temBanco)("encaminhamento contra o banco real", () => {
     const nome = `Encaminhado Paciente Existente ${SUFIXO}`;
 
     const resultado = await comRollback(async (tx) => {
-      const primeiro = await criarEncaminhamentoNaTransacao(tx, {
+      const primeiro = await registrarEncaminhamentoNaTransacao(tx, {
         pacienteNome: nome,
         dataEncaminhamento: "2026-11-15",
       });
@@ -231,7 +275,7 @@ describe.skipIf(!temBanco)("encaminhamento contra o banco real", () => {
       // comparação `lower(nome) = lower($1)` — a mesma do índice — que precisa
       // reconhecê-la. É o get-or-create de `lib/domain/pacientes.ts`, o mesmo
       // que o cadastro de requisição usa.
-      const segundo = await criarEncaminhamentoNaTransacao(tx, {
+      const segundo = await registrarEncaminhamentoNaTransacao(tx, {
         pacienteNome: `  ${nome.toUpperCase()}  `,
         dataEncaminhamento: "2026-12-01",
       });
@@ -243,24 +287,219 @@ describe.skipIf(!temBanco)("encaminhamento contra o banco real", () => {
         WHERE lower(p."nome") = lower(${nome})
       `;
 
-      return { primeiro, segundo, donos, pacientes: await contarPacientes(tx, nome) };
+      return {
+        primeiro,
+        segundo,
+        donos,
+        pacientes: await contarPacientes(tx, nome),
+      };
     });
 
     expect(resultado.primeiro).toMatchObject({
       ok: true,
       pacienteCriado: true,
+      substituiuAnterior: false,
       dataVencimento: "2027-05-14",
     });
     // O nome devolvido é o que já estava no banco, não o que foi digitado em
-    // caixa alta: o get-or-create reaproveitou a linha existente.
+    // caixa alta: o get-or-create reaproveitou a linha existente. E, como o
+    // paciente é o mesmo, o segundo cadastro *substituiu* o primeiro.
     expect(resultado.segundo).toMatchObject({
       ok: true,
       pacienteNome: nome,
       pacienteCriado: false,
+      substituiuAnterior: true,
       dataVencimento: "2027-05-30",
     });
-    // Uma linha só de paciente, e os dois encaminhamentos pendurados nela.
+    // Uma linha só de paciente, e um encaminhamento só pendurado nela.
     expect(resultado.pacientes).toBe(1);
     expect(resultado.donos).toHaveLength(1);
   });
+
+  it("o segundo encaminhamento do mesmo paciente substitui o primeiro", async () => {
+    const nome = `Encaminhado Substituicao ${SUFIXO}`;
+
+    const resultado = await comRollback(async (tx) => {
+      const primeiro = await registrarEncaminhamentoNaTransacao(tx, {
+        pacienteNome: nome,
+        dataEncaminhamento: "2026-01-01",
+      });
+
+      const segundo = await registrarEncaminhamentoNaTransacao(tx, {
+        pacienteNome: nome,
+        dataEncaminhamento: "2026-11-15",
+      });
+
+      return { primeiro, segundo, linhas: await encaminhamentosDoPaciente(tx, nome) };
+    });
+
+    expect(resultado.primeiro).toMatchObject({
+      ok: true,
+      substituiuAnterior: false,
+      dataEncaminhamento: "2026-01-01",
+      dataVencimento: "2026-06-30",
+    });
+
+    expect(resultado.segundo).toMatchObject({
+      ok: true,
+      substituiuAnterior: true,
+      dataEncaminhamento: "2026-11-15",
+      // Vencimento **recalculado** pelo banco: o UPDATE só toca em
+      // `data_encaminhamento`, e a coluna gerada se refaz sozinha. Literal
+      // conferido à mão, como os demais.
+      dataVencimento: "2027-05-14",
+    });
+
+    // O ponto do teste: sobra **exatamente uma** linha para aquele paciente, e
+    // é a do cadastro mais recente. Não é a aplicação que garante isso — é a
+    // UNIQUE em `paciente_id`, que faz o segundo INSERT virar UPDATE.
+    expect(resultado.linhas).toHaveLength(1);
+    expect(resultado.linhas[0]).toMatchObject({
+      dataEncaminhamento: "2026-11-15",
+      dataVencimento: "2027-05-14",
+    });
+  });
+
+  it("dois pacientes diferentes têm cada um o seu, sem conflito", async () => {
+    // A UNIQUE é por paciente, não global: substituir o encaminhamento de um
+    // não pode encostar no do outro. O caso importa porque a chave de conflito
+    // do upsert é `paciente_id` — se ela fosse mais ampla por engano, é aqui
+    // que apareceria.
+    const primeiroNome = `Encaminhado Vizinho A ${SUFIXO}`;
+    const segundoNome = `Encaminhado Vizinho B ${SUFIXO}`;
+
+    const resultado = await comRollback(async (tx) => {
+      const a = await registrarEncaminhamentoNaTransacao(tx, {
+        pacienteNome: primeiroNome,
+        dataEncaminhamento: "2026-01-01",
+      });
+
+      const b = await registrarEncaminhamentoNaTransacao(tx, {
+        pacienteNome: segundoNome,
+        dataEncaminhamento: "2026-11-15",
+      });
+
+      // E o de A ainda pode ser substituído sem afetar o de B.
+      const aDeNovo = await registrarEncaminhamentoNaTransacao(tx, {
+        pacienteNome: primeiroNome,
+        dataEncaminhamento: "2028-02-29",
+      });
+
+      return {
+        a,
+        b,
+        aDeNovo,
+        linhasDeA: await encaminhamentosDoPaciente(tx, primeiroNome),
+        linhasDeB: await encaminhamentosDoPaciente(tx, segundoNome),
+      };
+    });
+
+    expect(resultado.a).toMatchObject({ ok: true, substituiuAnterior: false });
+    expect(resultado.b).toMatchObject({ ok: true, substituiuAnterior: false });
+    expect(resultado.aDeNovo).toMatchObject({
+      ok: true,
+      substituiuAnterior: true,
+    });
+
+    expect(resultado.linhasDeA).toHaveLength(1);
+    expect(resultado.linhasDeA[0]).toMatchObject({
+      dataEncaminhamento: "2028-02-29",
+      dataVencimento: "2028-08-27",
+    });
+
+    // B ficou intacto: nem a data nem o vencimento se moveram.
+    expect(resultado.linhasDeB).toHaveLength(1);
+    expect(resultado.linhasDeB[0]).toMatchObject({
+      dataEncaminhamento: "2026-11-15",
+      dataVencimento: "2027-05-14",
+    });
+  });
+
+  /**
+   * As fronteiras de mês do `status_encaminhamento`.
+   *
+   * O status compara **mês de calendário**, não número de dias — é a diferença
+   * entre esta view e o alerta de validade da guia, que conta dias. As
+   * fronteiras que importam são todas relativas ao mês atual, então os alvos
+   * são calculados pelo próprio banco a partir do `CURRENT_DATE`: datas fixas
+   * fariam o teste passar hoje e mentir no mês que vem.
+   *
+   * Cada caso é `[rótulo, expressão SQL do vencimento alvo, status esperado]`.
+   * O primeiro e o último dia do mês atual estão os dois na lista de propósito:
+   * eles estão a quase um mês de distância um do outro e mesmo assim precisam
+   * dar a **mesma** resposta — é justamente isso que uma comparação por dias
+   * erraria.
+   */
+  const FRONTEIRAS: ReadonlyArray<
+    readonly [string, string, StatusEncaminhamento | null]
+  > = [
+    [
+      "último dia do mês anterior",
+      "date_trunc('month', CURRENT_DATE)::date - 1",
+      "Vencido",
+    ],
+    [
+      "primeiro dia do mês atual",
+      "date_trunc('month', CURRENT_DATE)::date",
+      "Vence este mês",
+    ],
+    [
+      "último dia do mês atual",
+      "(date_trunc('month', CURRENT_DATE) + INTERVAL '1 month')::date - 1",
+      "Vence este mês",
+    ],
+    [
+      "primeiro dia do mês seguinte",
+      "(date_trunc('month', CURRENT_DATE) + INTERVAL '1 month')::date",
+      "A vencer",
+    ],
+    [
+      "primeiro dia de dois meses à frente",
+      "(date_trunc('month', CURRENT_DATE) + INTERVAL '2 months')::date",
+      null,
+    ],
+  ];
+
+  it.each(FRONTEIRAS)(
+    "classifica pelo mês do vencimento (%s)",
+    async (rotulo, expressaoDoAlvo, statusEsperado) => {
+      const resultado = await comRollback(async (tx) => {
+        // Para pousar o vencimento num dia específico é preciso andar para
+        // trás os mesmos 180 dias — é a inversa da regra da coluna gerada, e
+        // ela serve só para *posicionar* a linha. O teste não confia nessa
+        // conta: logo abaixo ele confere que o `data_vencimento` que o banco
+        // gerou caiu exatamente no alvo. Se a regra dos 180 dias mudar, esta
+        // asserção cai antes da do status, em vez de o teste passar a
+        // classificar silenciosamente um mês que não é o pretendido.
+        //
+        // `$queryRawUnsafe` porque o que varia é um pedaço de **SQL**, não um
+        // valor: `expressaoDoAlvo` é uma constante do próprio arquivo de
+        // teste, nunca entrada de usuário.
+        const [datas] = await tx.$queryRawUnsafe<
+          { alvo: string; encaminhamento: string }[]
+        >(
+          `SELECT (${expressaoDoAlvo})::text        AS "alvo",
+                  ((${expressaoDoAlvo}) - 180)::text AS "encaminhamento"`,
+        );
+
+        const gravacao = await registrarEncaminhamentoNaTransacao(tx, {
+          pacienteNome: `Encaminhado Fronteira ${rotulo} ${SUFIXO}`,
+          dataEncaminhamento: datas.encaminhamento,
+        });
+
+        if (!gravacao.ok) {
+          throw new Error(`gravacao falhou: ${gravacao.erro}`);
+        }
+
+        return {
+          alvo: datas.alvo,
+          dataVencimento: gravacao.dataVencimento,
+          status: await statusDaView(tx, gravacao.id),
+        };
+      });
+
+      expect(resultado.dataVencimento).toBe(resultado.alvo);
+      expect(resultado.status).toBe(statusEsperado);
+    },
+  );
 });

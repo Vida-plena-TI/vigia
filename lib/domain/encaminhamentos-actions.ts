@@ -8,10 +8,16 @@
  * qualquer leitura do formulário, e a validação de verdade mora em
  * `lib/domain/encaminhamentos.ts`, não no JavaScript da página.
  *
+ * Gravar aqui é **upsert**: um paciente tem no máximo um encaminhamento, e
+ * cadastrar outro substitui o anterior. Por isso o estado de sucesso carrega
+ * `substituiuAnterior` — o formulário precisa dizer "atualizado" ou
+ * "cadastrado", que são eventos diferentes para quem digitou.
+ *
  * Sucesso não navega: `refresh()` redesenha o Server Component da própria
- * página, e a listagem logo abaixo do formulário já volta com o registro novo.
- * É o mesmo desenho de "Lançar atendimento" — quem cadastra vários seguidos não
- * deveria esperar uma navegação entre um e outro.
+ * página, e a listagem logo abaixo do formulário já volta com o registro novo —
+ * e, no caso da substituição, sem a linha antiga. É o mesmo desenho de "Lançar
+ * atendimento" — quem cadastra vários seguidos não deveria esperar uma
+ * navegação entre um e outro.
  */
 
 import { refresh } from "next/cache";
@@ -19,7 +25,7 @@ import { refresh } from "next/cache";
 import { requireUsuario } from "@/lib/auth/current-user";
 
 import {
-  criarEncaminhamento,
+  registrarEncaminhamento,
   type EntradaNovoEncaminhamento,
 } from "./encaminhamentos";
 
@@ -33,8 +39,10 @@ export type EstadoNovoEncaminhamento = {
     dataEncaminhamento: string;
     /** "AAAA-MM-DD", vinda da coluna gerada pelo banco. */
     dataVencimento: string;
+    /** `true` quando este encaminhamento substituiu um que já existia. */
+    substituiuAnterior: boolean;
     /**
-     * Identificador da criação, único por submissão.
+     * Identificador da gravação, único por submissão.
      *
      * O formulário guarda o último token já tratado para não repetir a limpeza
      * no StrictMode nem confundir dois cadastros idênticos no shape.
@@ -54,7 +62,7 @@ export async function criarEncaminhamentoAction(
     dataEncaminhamento: String(formData.get("dataEncaminhamento") ?? ""),
   };
 
-  const resultado = await criarEncaminhamento(entrada);
+  const resultado = await registrarEncaminhamento(entrada);
 
   if (!resultado.ok) {
     return { erro: resultado.erro };
@@ -67,6 +75,7 @@ export async function criarEncaminhamentoAction(
       pacienteNome: resultado.pacienteNome,
       dataEncaminhamento: resultado.dataEncaminhamento,
       dataVencimento: resultado.dataVencimento,
+      substituiuAnterior: resultado.substituiuAnterior,
       token: crypto.randomUUID(),
     },
   };

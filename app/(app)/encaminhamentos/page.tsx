@@ -1,11 +1,15 @@
 import type { Metadata } from "next";
 
 import { dataDeHoje } from "@/lib/domain/atendimentos";
-import { listarEncaminhamentos } from "@/lib/domain/encaminhamentos";
+import {
+  contarPorStatusDeEncaminhamento,
+  listarEncaminhamentos,
+} from "@/lib/domain/encaminhamentos";
 import { listarNomesDePacientes } from "@/lib/domain/pacientes";
 
-import { formatarData } from "../dashboard/formato";
 import { FormularioDeEncaminhamento } from "./formulario-de-encaminhamento";
+import { ListaDeEncaminhamentos } from "./lista-de-encaminhamentos";
+import { ResumoDeVencimentos } from "./resumo-de-vencimentos";
 
 export const metadata: Metadata = {
   title: "Encaminhamentos | VIGIA",
@@ -16,7 +20,13 @@ export const metadata: Metadata = {
  *
  * Não há rota `/novo` nem diálogo. O formulário fica inline no topo e a
  * listagem logo abaixo; ao enviar, a Server Action chama `refresh()` e esta
- * página redesenha com o registro novo já no topo da lista, sem navegação.
+ * página redesenha com o registro novo já no topo da lista, sem navegação — e,
+ * quando o paciente já tinha um encaminhamento, sem a linha antiga, que o
+ * upsert substituiu.
+ *
+ * A ordem vertical é a mesma do painel: resumo de contagem, depois a lista. O
+ * formulário vem antes dos dois porque digitar é o que se faz aqui com mais
+ * frequência, e ele é uma faixa curta.
  *
  * A largura é a das telas densas modestas (`max-w-5xl`, a mesma de
  * "Atendimentos de hoje"), não a de formulário (`max-w-[46rem]`): a tela é
@@ -41,7 +51,8 @@ export default async function EncaminhamentosPage() {
         <h1 className="text-2xl font-semibold">Encaminhamentos</h1>
         <p className="max-w-prose text-sm text-muted-foreground">
           O vencimento é calculado pelo banco: 180 dias corridos depois da data
-          do encaminhamento.
+          do encaminhamento. Cada paciente tem um encaminhamento só — cadastrar
+          outro substitui o anterior.
         </p>
       </div>
 
@@ -62,107 +73,12 @@ export default async function EncaminhamentosPage() {
           </span>
         </h2>
 
-        {encaminhamentos.length === 0 ? (
-          <p className="folha px-4 py-8 text-center text-sm text-muted-foreground">
-            Nenhum encaminhamento registrado ainda.
-          </p>
-        ) : (
-          <div className="folha overflow-hidden">
-            <table className="hidden w-full border-collapse text-sm sm:table">
-              <thead>
-                <tr className="border-b border-regua-forte bg-secondary/60">
-                  <th scope="col" className={CLASSE_CABECALHO}>
-                    Paciente
-                  </th>
-                  <th scope="col" className={`${CLASSE_CABECALHO} w-48`}>
-                    Data do encaminhamento
-                  </th>
-                  <th scope="col" className={`${CLASSE_CABECALHO} w-48`}>
-                    Vencimento
-                  </th>
-                </tr>
-              </thead>
+        <ResumoDeVencimentos
+          resumo={contarPorStatusDeEncaminhamento(encaminhamentos)}
+        />
 
-              <tbody>
-                {encaminhamentos.map((encaminhamento) => (
-                  <tr
-                    key={encaminhamento.id}
-                    className="border-b border-regua last:border-b-0 hover:bg-secondary/40"
-                  >
-                    <td className="px-3 py-2 font-medium">
-                      {encaminhamento.pacienteNome}
-                    </td>
-                    <td className="px-3 py-2">
-                      {formatarData(encaminhamento.dataEncaminhamento)}
-                    </td>
-                    <td className="px-3 py-2">
-                      <Vencimento
-                        data={encaminhamento.dataVencimento}
-                        vencido={encaminhamento.vencido}
-                      />
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-
-            {/* Abaixo de `sm` as três colunas viram blocos, como no painel. */}
-            <ul className="divide-y divide-regua sm:hidden">
-              {encaminhamentos.map((encaminhamento) => (
-                <li
-                  key={encaminhamento.id}
-                  className="flex flex-col gap-1 px-4 py-3"
-                >
-                  <p className="text-sm font-medium">
-                    {encaminhamento.pacienteNome}
-                  </p>
-                  <p className="text-xs text-muted-foreground">
-                    Encaminhado em{" "}
-                    {formatarData(encaminhamento.dataEncaminhamento)}
-                  </p>
-                  <p className="text-xs text-muted-foreground">
-                    Vence em{" "}
-                    <Vencimento
-                      data={encaminhamento.dataVencimento}
-                      vencido={encaminhamento.vencido}
-                    />
-                  </p>
-                </li>
-              ))}
-            </ul>
-          </div>
-        )}
+        <ListaDeEncaminhamentos encaminhamentos={encaminhamentos} />
       </section>
     </div>
   );
 }
-
-/**
- * A data de vencimento, com destaque quando já passou.
- *
- * Não é uma quarta coluna nem um selo novo: é a mesma coluna de sempre, com o
- * tratamento que o sistema de design já reserva para "o próprio número é o
- * alerta" — o mesmo que o `saldo_restante <= 0` recebe no painel (carmim em
- * negrito). O `StatusBadge` foi deixado de fora de propósito: ele escreve o
- * rótulo literal ("Regular" / "Renovar" / "Esgotada"), e nenhum dos três diz o
- * que se quer dizer aqui.
- *
- * Como no resto do sistema, a cor não é o único canal: a palavra "vencido" vai
- * junto, dentro da mesma célula.
- */
-function Vencimento({ data, vencido }: { data: string; vencido: boolean }) {
-  if (!vencido) {
-    return <>{formatarData(data)}</>;
-  }
-
-  return (
-    <span className="font-semibold text-esgotada">
-      {formatarData(data)}
-      <span className="ml-1.5 text-2xs font-medium">vencido</span>
-    </span>
-  );
-}
-
-/** Mesmo cabeçalho de coluna do painel: peso 500, cinza, caixa normal. */
-const CLASSE_CABECALHO =
-  "px-3 py-1.5 text-left text-2xs font-medium text-muted-foreground";

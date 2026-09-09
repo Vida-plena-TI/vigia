@@ -37,11 +37,13 @@ existe apenas "usuário autenticado e ativo" ou "não autenticado".
 - **atendimento**: id, data_atendimento (date), creditos_consumidos (int, default 1,
   CHECK >= 0), observacao (texto, opcional), requisicao_terapia_id (FK,
   **ON DELETE CASCADE**).
-- **encaminhamento**: id, paciente_id (FK, `RESTRICT` como as demais),
+- **encaminhamento**: id, paciente_id (FK, `RESTRICT` como as demais, **`UNIQUE`**),
   data_encaminhamento (date, NOT NULL), data_vencimento (date, **coluna gerada pelo
   Postgres** — ver "Vencimento de encaminhamento" abaixo). Um encaminhamento sempre
   pertence a um paciente já existente ou recém-criado pelo mesmo get-or-create por nome
-  das requisições.
+  das requisições. **Um paciente tem no máximo um encaminhamento**: cadastrar outro
+  substitui o anterior (regra 13). O status de vencimento não é coluna — vem da view
+  `encaminhamento_status`.
 
 Demais FKs (ex: requisicao → paciente) ficam no padrão `RESTRICT`. Só o caminho
 atendimento → requisicao_terapia tem cascade — decisão já implementada e confirmada por
@@ -85,6 +87,43 @@ Há teste de integração afirmando exatamente isso.
 Diferente do saldo, **não existe espelho em TypeScript nem para teste**: as datas
 esperadas dos testes são literais conferidas à mão, para o teste não repetir a fórmula
 que ele deveria estar verificando.
+
+## Status de encaminhamento — vem de uma view, e compara MESES, não dias
+
+View: `encaminhamento_status` (migration `20260909140100_view_encaminhamento_status`).
+Ela expõe as colunas da tabela mais `status_encaminhamento`, e é dela que a listagem lê —
+como o painel lê `requisicao_terapia_saldo` em vez de `requisicao_terapia`.
+
+A comparação é entre o **mês de calendário** de `data_vencimento` e o mês atual, via
+`date_trunc('month', ...)` dos dois lados — **não** pelo número de dias restantes. Essa é
+a diferença de unidade em relação ao alerta de validade da guia, que conta dias
+(`validade <= CURRENT_DATE + 7 days`): aqui um vencimento no dia 01 e outro no dia 31 do
+mesmo mês dizem a mesma coisa para quem opera a clínica, embora estejam a 30 dias um do
+outro. Os limiares exatos:
+
+| mês de `data_vencimento` vs. mês atual | `status_encaminhamento` |
+| --- | --- |
+| anterior ao mês atual | `"Vencido"` |
+| igual ao mês atual | `"Vence este mês"` |
+| mês seguinte ao atual | `"A vencer"` |
+| dois ou mais meses à frente | `NULL` — **nenhuma marcação** |
+
+`NULL` é um dos quatro casos, não ausência de dado: a linha fica com a célula neutra, sem
+selo nenhum. Um quarto rótulo ("Em dia") gastaria atenção com exatamente a linha que não
+pede nenhuma.
+
+O "mês atual" é o do `CURRENT_DATE` do banco, o mesmo relógio da view de saldo — o do Node
+(UTC na Vercel) discordaria dele à noite no horário de Brasília, e na virada do mês essa
+diferença trocaria o status de todas as linhas de uma vez.
+
+Como no vencimento, **não existe espelho em TypeScript nem para teste**. O que existe em
+TypeScript é `contarPorStatusDeEncaminhamento`, que só **conta** o que a view classificou
+(o mesmo papel de `contarPorStatus` no painel). As fronteiras de mês são cobertas por
+teste de integração, com os alvos calculados pelo banco a partir do `CURRENT_DATE`: último
+dia do mês anterior (`Vencido`), primeiro **e** último dia do mês atual (os dois
+`"Vence este mês"` — é o par que uma comparação por dias erraria), primeiro dia do mês
+seguinte (`A vencer`) e primeiro dia de dois meses à frente (`NULL`). Datas fixas fariam o
+teste passar hoje e mentir no mês que vem.
 
 ## Regras de negócio obrigatórias
 
@@ -136,6 +175,17 @@ que ele deveria estar verificando.
     meses" nas decisões de implementação, que registra por que os dois divergem da
     planilha de referência do usuário. O cálculo é do banco (coluna gerada), nunca de
     TypeScript.
+13. **Um encaminhamento por paciente.** Cadastrar um encaminhamento para um paciente que
+    já tem um **substitui** o antigo — nunca sobra mais de uma linha por `paciente_id`.
+    Quem garante é a `UNIQUE (paciente_id)`; a Server Action faz
+    `INSERT ... ON CONFLICT ("paciente_id") DO UPDATE SET data_encaminhamento = ...`, e o
+    Postgres recalcula `data_vencimento` sozinho (coluna gerada). A confirmação distingue
+    os dois casos: "Encaminhamento atualizado para X" quando substituiu, "Encaminhamento
+    cadastrado para X" quando não havia nada — mesma distinção que
+    `scripts/seed-terapias.ts` faz no upsert do catálogo, e pelo mesmo caminho (olhar se a
+    linha existia **antes** de gravar).
+14. Status de encaminhamento é comparação de **mês**, não de dias — ver "Status de
+    encaminhamento" acima para os quatro limiares exatos.
 
 ## Decisões assumidas (perguntas em aberto no relatório de auditoria original)
 
@@ -431,6 +481,13 @@ que ele deveria estar verificando.
     tabela (`MARCADOR_POR_STATUS`). Em escala de cinza os três continuam inconfundíveis.
     **Ao acrescentar tela nova, usar `StatusBadge` e `MARCADOR_POR_STATUS` — não recriar a
     cor à mão**, senão os cinco canais deixam de andar juntos.
+    **Quando o vocabulário não servir**, o que se reaproveita é a *forma*, não as
+    palavras: `components/selo-de-status.tsx` guarda a geometria do selo (retângulo de
+    canto curto, `text-2xs`, ícone de 12px, gap) e recebe rótulo, cor e ícone de fora, num
+    `ApresentacaoDeSelo`. Foi o que a tela de encaminhamentos usou para ter os três
+    rótulos dela sem tomar emprestado "Regular/Renovar/Esgotada" — ver "Encaminhamentos"
+    nas decisões. Continua valendo: **nenhuma cor saturada nova entra no sistema**; a
+    diferença de urgência dentro de uma mesma cor se faz por preenchimento e peso.
   - **O saldo é o número da decisão.** Autorizada e utilizada ficam em `muted-foreground`;
     só `saldo_restante` fica na tinta cheia, e vira carmim em negrito quando `<= 0`, porque
     aí o próprio número já é o alerta.
@@ -597,17 +654,66 @@ da requisição"` via `navigator.clipboard.writeText`. Aninhar um `<button>` den
     não. O registro recém-criado precisa aparecer no topo, logo abaixo do formulário, sem
     rolagem — ordenar por nome esconderia no meio da lista a confirmação do que acabou de
     ser digitado.
-  - **Três colunas visíveis, e o "vencido" não é a quarta.** A tabela mostra paciente, data
-    do encaminhamento e vencimento. Quando o vencimento já passou, a **própria data** ganha
-    o tratamento que o sistema de design reserva para "o número é o alerta" — carmim em
-    negrito, o mesmo do `saldo_restante <= 0` no painel — mais a palavra "vencido" na mesma
-    célula, porque cor sozinha nunca é canal único aqui. **O `StatusBadge` foi deixado de
-    fora de propósito**: ele escreve o rótulo literal ("Regular" / "Renovar" / "Esgotada"),
-    e nenhum dos três diz o que se quer dizer sobre um encaminhamento — reaproveitá-lo
-    gastaria um vocabulário que significa outra coisa em todas as outras telas.
-  - **`vencido` é decidido em SQL**, contra o `CURRENT_DATE` do banco, não comparando datas
-    em JavaScript: é o mesmo relógio que a view de saldo usa para o alerta de validade, e o
-    relógio do Node (UTC na Vercel) discordaria dele à noite no horário de Brasília.
+  - **Um encaminhamento por paciente, garantido por `UNIQUE`, não por `if`.** A regra
+    (13 das obrigatórias) chegou depois da primeira versão da tela, que permitia várias
+    linhas por paciente. Ela mora na migration
+    `20260909140000_encaminhamento_unico_por_paciente`, e a Server Action passou de
+    `INSERT` para `INSERT ... ON CONFLICT ("paciente_id") DO UPDATE`. A constraint **não é
+    cinto de segurança redundante**: sem um índice único naquela coluna o `ON CONFLICT`
+    nem é aceito pelo Postgres, então a regra e o upsert são a mesma peça vista de dois
+    lados. A migration deduplica antes de criar o índice (mantém a linha de
+    `data_encaminhamento` mais recente por paciente, desempate pelo maior `id`) — mesmo
+    padrão do dedup de `paciente.nome`; na base real não havia duplicata, o que era o
+    esperado numa feature recém-lançada, mas a migration precisa poder rodar sobre dados.
+  - **O `SET` do upsert só toca em `data_encaminhamento`.** O vencimento se refaz sozinho:
+    é coluna gerada, e o Postgres recusaria uma tentativa de escrevê-la também no ramo de
+    update. Substituir um encaminhamento por outro de data diferente recalcula o
+    vencimento sem uma linha de aritmética em TypeScript.
+  - **"Atualizado" e "cadastrado" são palavras diferentes porque são eventos diferentes.**
+    A action devolve `substituiuAnterior`, e a confirmação diz qual dos dois aconteceu. Sem
+    isso, a linha antiga sumindo da lista logo abaixo do formulário pareceria bug. O sinal
+    vem de olhar se a linha existia **antes** de gravar (`SELECT ... FOR UPDATE`, que de
+    quebra serializa dois cadastros simultâneos do mesmo paciente) — não de adivinhar pelo
+    resultado do upsert. É a mesma distinção de `scripts/seed-terapias.ts`.
+  - **Quatro colunas: paciente, data, vencimento e situação.** A versão anterior desta tela
+    tinha três, e pintava a *própria data* de carmim quando o vencimento já tinha passado.
+    Isso foi substituído pelo selo, porque o que se comunica agora não é um sinal binário
+    ("passou / não passou") e sim quatro estados; a data voltou a ser dado neutro, e o
+    status tem coluna própria.
+  - **Selo generalizado, não o `StatusBadge` antigo.** `StatusBadge` escreve o rótulo
+    literal ("Regular" / "Renovar" / "Esgotada"), e nenhum dos três diz o que se quer dizer
+    sobre um encaminhamento — reaproveitá-lo gastaria um vocabulário que significa outra
+    coisa em todas as outras telas. **Essa decisão continua de pé**; o que mudou é que a
+    *forma* do selo subiu para `components/selo-de-status.tsx` (geometria, sem
+    vocabulário), e as duas telas passaram a montar o próprio mapa de apresentação em cima
+    dela — `APRESENTACAO` no painel, `APRESENTACAO_DE_VENCIMENTO` em
+    `selo-de-vencimento.tsx`. Mesma decisão, e pelo mesmo motivo, do get-or-create que
+    subiu para `lib/domain/pacientes.ts` ao ganhar o segundo consumidor.
+  - **Os três rótulos, e por que só duas cores.** "Vencido" é carmim sólido com texto
+    branco e peso 700 — o mesmo tratamento do "Esgotada", o status crítico do sistema.
+    "Vence este mês" e "A vencer" são os dois âmbar: **nenhuma quarta cor saturada entrou
+    no sistema**. A urgência entre eles se distingue por preenchimento e peso, o mesmo
+    recurso que já separa "Renovar" de "Regular" — "Vence este mês" é fundo preenchido com
+    anel, "A vencer" é só contorno sobre papel. Ícones distintos (`OctagonAlert`,
+    `TriangleAlert`, `CalendarClock`) e o filete de margem de 3px
+    (`MARCADOR_POR_VENCIMENTO`, com âmbar rebaixado no "A vencer") completam os canais
+    redundantes.
+  - **Sem selo é uma resposta, não um vazio.** Vencimento a dois ou mais meses fica com a
+    célula neutra e o filete transparente. Um quarto rótulo ("Em dia") cobraria atenção
+    justamente da linha que não precisa de nenhuma.
+  - **Resumo de contagem no topo, igual ao do painel.** Mesma folha dividida por filete,
+    mesmos contadores em serifada 44px, mesma legenda embaixo (`ResumoDeVencimentos`).
+    Reflete a lista inteira, não o filtro de busca — é painel de alerta, não resultado de
+    consulta. Os sem-status não entram em contador nenhum.
+  - **Busca por nome, o mesmo filtro do painel**: client-side sobre a lista já renderizada,
+    com `normalizarParaBusca` (sem acento, sem caixa) para "Joao" achar "João". Se um dia
+    a lista pesar, os dois viram `searchParams` + consulta no banco ao mesmo tempo. A lista
+    é plana, sem recolher nem selecionar: cada paciente tem no máximo um encaminhamento, e
+    a forma da tela é a regra de unicidade aparecendo na interface.
+  - **O status é decidido em SQL**, na view `encaminhamento_status`, contra o
+    `CURRENT_DATE` do banco — não comparando datas em JavaScript: é o mesmo relógio que a
+    view de saldo usa para o alerta de validade, e o do Node (UTC na Vercel) discordaria
+    dele à noite no horário de Brasília.
   - **Largura `max-w-5xl`**, a de "Atendimentos de hoje", não a de formulário
     (`max-w-[46rem]`): a tela é majoritariamente uma lista, e o formulário é uma faixa
     dentro dela.
@@ -687,6 +793,15 @@ UPDATE` dentro de transação Prisma continua serializando corretamente no Supav
   a escrita de qualquer jeito.
 - Não trocar os 180 dias corridos por seis meses de calendário para "bater com a
   planilha" — a divergência é deliberada e está registrada nas decisões de implementação.
+- Não classificar o status de encaminhamento em TypeScript, nem por dias. A comparação é
+  de **mês de calendário** e mora na view `encaminhamento_status`; TypeScript só conta o
+  que ela classificou.
+- Não permitir mais de um encaminhamento por paciente "resolvendo na aplicação" (apagar o
+  antigo antes de inserir, checar existência e ramificar). A `UNIQUE (paciente_id)` é o
+  que garante a regra, e é ela que dá arbítrio ao `ON CONFLICT` do upsert.
+- Não usar `StatusBadge` (nem os rótulos Regular/Renovar/Esgotada) fora do vocabulário de
+  `status_alerta`. Para uma tela com outro vocabulário, montar um mapa de apresentação em
+  cima de `components/selo-de-status.tsx` — e sem introduzir cor saturada nova.
 - Não reimplementar busca/criação de paciente por nome: use `obterOuCriarPaciente` de
   `lib/domain/pacientes.ts`. Uma segunda implementação com outra regra de comparação
   discordaria do índice `UNIQUE (lower(nome))`.
@@ -772,7 +887,24 @@ UPDATE` dentro de transação Prisma continua serializando corretamente no Supav
       da action (`criarEncaminhamento` -> `listarEncaminhamentos`) gravam, aparecem na
       lista e trazem o vencimento exato do banco. Ver "Encaminhamentos" nas decisões de
       implementação
-
+- [x] Encaminhamentos, segunda passagem (09/09/2026) — três mudanças na mesma tela:
+      (1) **unicidade por paciente**, com `UNIQUE (paciente_id)` na migration
+      `20260909140000_encaminhamento_unico_por_paciente` (dedup antes de criar o índice;
+      não havia duplicata na base) e a action passando de `INSERT` para upsert, com a
+      confirmação distinguindo "atualizado" de "cadastrado"; (2) **status por mês de
+      calendário** na view `encaminhamento_status`
+      (`20260909140100_view_encaminhamento_status`), lido pronto pela listagem; (3)
+      **passagem visual** — selo generalizado (`components/selo-de-status.tsx`), coluna de
+      situação, resumo de contagem no topo e busca por nome, todos no vocabulário do
+      painel. `tsc --noEmit` limpo, `npm test` verde (15 arquivos, 210 testes) e
+      `npm run build` ok; `npm run lint` continua acusando só o erro pré-existente de
+      `acoes-da-guia.tsx`. Verificação sem navegador controlável, de novo, mas mais funda
+      que a da vez anterior: a página foi **renderizada de verdade** (dev server + cookie
+      de sessão selado à mão) com uma linha em cada um dos quatro casos, e o HTML traz o
+      resumo (1 / 2 / 1), os selos com as classes certas e as células neutras onde não há
+      status. Pelo caminho real da action, cadastrar para um paciente que já tinha
+      substitui a linha e recalcula o vencimento. **Continua pendente** só a interação de
+      navegador (digitar, filtrar, ver o toast)
 ## Pendências conhecidas (não bloqueiam o próximo passo, mas não esquecer)
 
 - Nome do cookie de sessão ainda é `klini_session` e o header interno é
@@ -793,9 +925,23 @@ UPDATE` dentro de transação Prisma continua serializando corretamente no Supav
   isso aparecer em um ambiente novo, a saída é trocar o índice para
   `CREATE UNIQUE INDEX ... ON paciente (lower(nome COLLATE "pt-BR-x-icu"))` (ou criar o
   banco com a collation certa) — e a mesma expressão precisa ser usada no get-or-create de
-  `lib/domain/requisicoes.ts`, senão busca e constraint voltam a discordar.
-- **Teste manual do navegador na tela de encaminhamentos** ainda não foi feito (ver o
-  item correspondente no progresso). O roteiro é: cadastrar dois ou três encaminhamentos
-  em sequência pelo formulário do topo sem recarregar a página, confirmando que cada um
+  `lib/domain/pacientes.ts` (ele morava em `requisicoes.ts` quando esta nota foi escrita),
+  senão busca e constraint voltam a discordar.
+- **Teste manual do navegador na tela de encaminhamentos** ainda não foi feito — nenhuma
+  sessão até agora expôs um browser controlável. O que já foi verificado sem ele está no
+  progresso (a página renderizada por HTTP, com os quatro casos e as classes certas); o
+  que falta é a parte interativa. Roteiro: cadastrar dois ou três encaminhamentos em
+  sequência pelo formulário do topo sem recarregar a página, confirmando que cada um
   aparece na lista, que o formulário limpa o nome e devolve o foco, e que a data de
-  vencimento exibida é `data_encaminhamento + 180 dias` exatos.
+  vencimento exibida é `data_encaminhamento + 180 dias` exatos; depois cadastrar de novo
+  para um paciente **que já está na lista**, com data diferente, e confirmar que a linha
+  antiga some (só uma linha para ele), que o vencimento foi recalculado e que o toast diz
+  "atualizado", não "cadastrado"; e digitar no campo de busca para ver a lista filtrar sem
+  o resumo do topo se mexer.
+- **O banco de desenvolvimento local ficou com cinco encaminhamentos de demonstração**
+  ("Zoe Vencida Manual", "Bruno Este Mes Manual", "Carla Fim Deste Mes Manual", "Diego A
+  Vencer Manual", "Elisa Longe Manual"), um em cada caso da classificação, criados para a
+  verificação de 09/09/2026 e deixados de pé justamente para esse teste manual de
+  navegador. As datas foram miradas a partir do `CURRENT_DATE`, então **elas envelhecem**:
+  daqui a um mês os status já não são os que os nomes dizem. Apagar quando o roteiro
+  acima for cumprido; nada disso existe em produção.

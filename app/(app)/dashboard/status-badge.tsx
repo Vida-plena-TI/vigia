@@ -1,10 +1,20 @@
-import { Check, OctagonAlert, TriangleAlert, type LucideIcon } from "lucide-react";
+import { Check, OctagonAlert, TriangleAlert } from "lucide-react";
 
-import { cn } from "@/lib/utils";
+import {
+  IconeDeStatus,
+  SeloDeStatus,
+  type ApresentacaoDeSelo,
+} from "@/components/selo-de-status";
 import type { StatusAlerta } from "@/lib/domain/saldo";
 
 /**
  * Selo do `status_alerta` — a informação mais importante do painel.
+ *
+ * A geometria do selo (retângulo de canto curto, `text-2xs`, ícone de 12px)
+ * mora em `components/selo-de-status.tsx` desde que a tela de encaminhamentos
+ * passou a precisar da mesma forma com outro vocabulário. Aqui fica só o
+ * vocabulário do painel: os três rótulos do `status_alerta` e a apresentação de
+ * cada um.
  *
  * Confundir "Esgotada" com "Regular" tem consequência no atendimento, então o
  * status não é comunicado só por cor. São cinco canais redundantes:
@@ -23,10 +33,7 @@ import type { StatusAlerta } from "@/lib/domain/saldo";
  * Contraste medido sobre a própria base: teal 5,3:1, âmbar 5,5:1, branco
  * sobre carmim 7,4:1 — AA em texto normal, não só em texto grande.
  */
-const APRESENTACAO: Record<
-  StatusAlerta,
-  { icone: LucideIcon; classe: string }
-> = {
+export const APRESENTACAO: Record<StatusAlerta, ApresentacaoDeSelo> = {
   Regular: {
     icone: Check,
     classe: "bg-card text-regular ring-1 ring-regular/35 font-medium",
@@ -48,22 +55,12 @@ export function StatusBadge({
   status: StatusAlerta;
   className?: string;
 }) {
-  const { icone: Icone, classe } = APRESENTACAO[status];
-
   return (
-    <span
-      data-status={status}
-      className={cn(
-        // Retângulo, não pílula: uma pílula lê como etiqueta decorativa; um
-        // retângulo de canto curto lê como carimbo de prontuário.
-        "inline-flex shrink-0 items-center gap-1 rounded-[3px] px-1.5 py-0.5 text-2xs whitespace-nowrap",
-        classe,
-        className,
-      )}
-    >
-      <Icone aria-hidden className="size-3 shrink-0" strokeWidth={2.5} />
-      {status}
-    </span>
+    <SeloDeStatus
+      rotulo={status}
+      apresentacao={APRESENTACAO[status]}
+      className={className}
+    />
   );
 }
 
@@ -75,7 +72,7 @@ export function StatusIcone({
   status: StatusAlerta;
   className?: string;
 }) {
-  const { icone: Icone } = APRESENTACAO[status];
-
-  return <Icone aria-hidden className={cn("size-3.5", className)} strokeWidth={2.5} />;
+  return (
+    <IconeDeStatus apresentacao={APRESENTACAO[status]} className={className} />
+  );
 }

@@ -14,6 +14,7 @@ import {
 import {
   ERRO_DATA_OBRIGATORIA,
   ERRO_PACIENTE_OBRIGATORIO,
+  mensagemDeCadastro,
 } from "@/lib/domain/encaminhamentos-mensagens";
 
 import { formatarData } from "../dashboard/formato";
@@ -78,11 +79,20 @@ export function FormularioDeEncaminhamento({
 
     tokenTratado.current = sucesso.token;
 
-    const mensagem = `Encaminhamento de ${sucesso.pacienteNome} registrado.`;
+    // "Atualizado" e "cadastrado" são eventos diferentes: um paciente tem no
+    // máximo um encaminhamento, e o segundo cadastro apaga o primeiro. Quem
+    // digitou precisa saber qual dos dois aconteceu — a linha antiga some da
+    // lista logo abaixo, e sem essa palavra a substituição pareceria um bug.
+    const mensagem = mensagemDeCadastro(
+      sucesso.pacienteNome,
+      sucesso.substituiuAnterior,
+    );
 
     toast.success(mensagem, {
       // A data de vencimento exibida aqui é a que o banco devolveu no
-      // `RETURNING` da coluna gerada — não uma soma feita no navegador.
+      // `RETURNING` da coluna gerada — não uma soma feita no navegador. No
+      // caso da substituição ela é o vencimento **recalculado**: mudar a
+      // `data_encaminhamento` faz o Postgres refazer a coluna gerada sozinho.
       description: `Vence em ${formatarData(sucesso.dataVencimento)}.`,
     });
 

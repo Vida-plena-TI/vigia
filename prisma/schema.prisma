@@ -20,8 +20,11 @@ model Paciente {
   id   Int    @id @default(autoincrement())
   nome String
 
-  requisicoes     Requisicao[]
-  encaminhamentos Encaminhamento[]
+  requisicoes    Requisicao[]
+  /// Singular e opcional de proposito: `encaminhamento.paciente_id` e UNIQUE,
+  /// entao a relacao e 1-para-no-maximo-1. Cadastrar um encaminhamento novo
+  /// substitui o anterior.
+  encaminhamento Encaminhamento?
 
   @@index([nome])
   @@map("paciente")
@@ -54,15 +57,27 @@ model Paciente {
 /// o Postgres recusar o INSERT/UPDATE, e ha teste de integracao afirmando isso.
 /// O cadastro usa SQL cru com `RETURNING`, e as leituras trazem as duas datas
 /// como texto "AAAA-MM-DD".
+///
+/// `pacienteId` e **unico**: um paciente tem no maximo um encaminhamento, e
+/// cadastrar outro substitui o anterior (migration
+/// `20260909140000_encaminhamento_unico_por_paciente`). O `@unique` aqui nao e
+/// so documentacao — e o indice que da arbitro ao `ON CONFLICT ("paciente_id")`
+/// do upsert em `lib/domain/encaminhamentos.ts`. Ele substitui o `@@index`
+/// antigo: indice unico ja serve de indice de busca, manter os dois seria
+/// pagar duas vezes.
+///
+/// O status de vencimento (Vencido / Vence este mes / A vencer / nenhum) nao
+/// aparece aqui: ele e comparacao de **mes de calendario** e vive na view
+/// `encaminhamento_status`, do mesmo jeito que saldo e status_alerta vivem na
+/// view `requisicao_terapia_saldo` e nao no modelo da guia.
 model Encaminhamento {
   id                 Int       @id @default(autoincrement())
-  pacienteId         Int       @map("paciente_id")
+  pacienteId         Int       @unique @map("paciente_id")
   dataEncaminhamento DateTime  @map("data_encaminhamento") @db.Date
   dataVencimento     DateTime? @default(dbgenerated("((data_encaminhamento + '180 days'::interval))::date")) @map("data_vencimento") @db.Date
 
   paciente Paciente @relation(fields: [pacienteId], references: [id])
 
-  @@index([pacienteId])
   @@map("encaminhamento")
 }
 
