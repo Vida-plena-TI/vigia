@@ -2,11 +2,12 @@
  * Cadastro de requisição com o banco dublado.
  *
  * O que está sob teste é a decisão do nosso código: quando reaproveitar um
- * paciente, quando recusar um número repetido, e — o ponto principal — que a
- * falha de uma linha de terapia **lança** de dentro da transação, em vez de
- * devolver `{ ok: false }` educadamente. Devolver seria pior do que parece: o
- * paciente recém-criado ficaria no banco, órfão, porque nada teria mandado o
- * Postgres desfazer.
+ * paciente, qual dos dois desfechos tomar diante de um número que aquele
+ * paciente já tem (criar a requisição ou acrescentar terapias à que existe), e
+ * — o ponto principal — que a falha de uma linha de terapia **lança** de dentro
+ * da transação, em vez de devolver `{ ok: false }` educadamente. Devolver seria
+ * pior do que parece: o paciente recém-criado ficaria no banco, órfão, porque
+ * nada teria mandado o Postgres desfazer.
  *
  * O SQL propriamente dito (o `ON CONFLICT (lower(nome))`, a unique do número)
  * é problema de `requisicoes.integration.test.ts`.
@@ -18,7 +19,12 @@ const mocks = vi.hoisted(() => {
   const banco = {
     /** Paciente devolvido pelo get-or-create. */
     paciente: { id: 10, nome: "José Silva", criado: true },
-    /** `true` quando já existe requisição com o número pedido. */
+    /**
+     * `true` quando o paciente já tem requisição com o número pedido.
+     *
+     * Não é mais um caso de recusa: é o que escolhe o desfecho "acrescenta as
+     * terapias à requisição existente".
+     */
     numeroJaExiste: false,
     /**
      * `true` quando o paciente resolvido já tem encaminhamento (regra 15).
@@ -43,6 +49,12 @@ const mocks = vi.hoisted(() => {
   const buscarRequisicao = vi.fn(async () =>
     banco.numeroJaExiste ? { id: 42 } : null,
   );
+
+  /** O insert em lote do ramo que acrescenta terapias a uma pasta existente. */
+  const criarGuias = vi.fn(async (args: { data: unknown[] }) => {
+    escritas.push("requisicao_terapia");
+    return { count: args.data.length };
+  });
 
   const buscarEncaminhamento = vi.fn(async () =>
     banco.temEncaminhamento ? { id: 7 } : null,
@@ -86,6 +98,7 @@ const mocks = vi.hoisted(() => {
         $queryRaw: consultar,
         encaminhamento: { findFirst: buscarEncaminhamento },
         requisicao: { findFirst: buscarRequisicao, create: criarRequisicao },
+        requisicaoTerapia: { createMany: criarGuias },
         terapia: { findMany: buscarTerapias },
       });
     } catch (erro) {
@@ -104,6 +117,7 @@ const mocks = vi.hoisted(() => {
     buscarRequisicao,
     buscarTerapias,
     consultar,
+    criarGuias,
     criarRequisicao,
     escritas,
     refresh,
@@ -132,7 +146,8 @@ import {
   ERRO_TERAPIA_INEXISTENTE,
   ERRO_TERAPIA_OBRIGATORIA,
   ERRO_VALIDADE_INVALIDA,
-  erroNumeroDuplicado,
+  erroCorridaNaRequisicao,
+  mensagemDeCriacao,
   type EntradaNovaRequisicao,
 } from "./requisicoes";
 import { criarRequisicaoAction } from "./requisicoes-actions";
@@ -170,6 +185,8 @@ describe("criarRequisicao — paciente novo vs. existente", () => {
       numeroRequisicao: "2026-001",
       pacienteNome: "José Silva",
       pacienteCriado: true,
+      requisicaoCriada: true,
+      terapiasAdicionadas: 1,
     });
   });
 
@@ -215,35 +232,102 @@ describe("criarRequisicao — paciente novo vs. existente", () => {
   });
 });
 
-describe("criarRequisicao — número de requisição duplicado", () => {
-  it("recusa o número já usado pelo mesmo paciente", async () => {
+describe("criarRequisicao — número que o paciente já tem", () => {
+  it("acrescenta as terapias à requisição existente em vez de recusar", async () => {
     mocks.banco.numeroJaExiste = true;
 
-    const resultado = await criarRequisicao(entrada());
+    const resultado = await criarRequisicao(
+      entrada({
+        linhas: [
+          { terapiaId: 1, qtdAutorizada: 10, validade: null },
+          { terapiaId: 2, qtdAutorizada: 4, validade: "2026-06-30" },
+        ],
+      }),
+    );
 
+    // O `requisicaoId` é o da pasta que já existia (42), não um novo: a
+    // requisição não foi recriada.
     expect(resultado).toEqual({
-      ok: false,
-      erro: erroNumeroDuplicado("2026-001", "José Silva"),
-      linha: undefined,
+      ok: true,
+      requisicaoId: 42,
+      numeroRequisicao: "2026-001",
+      pacienteNome: "José Silva",
+      pacienteCriado: true,
+      requisicaoCriada: false,
+      terapiasAdicionadas: 2,
     });
-    expect(mocks.criarRequisicao).not.toHaveBeenCalled();
   });
 
-  it("não deixa paciente órfão quando o número é duplicado", async () => {
+  it("não tenta criar uma segunda linha de requisicao", async () => {
     mocks.banco.numeroJaExiste = true;
 
     await criarRequisicao(entrada());
 
-    // O paciente chegou a ser criado antes da checagem do número; o rollback
-    // é o que impede que ele fique no banco sem requisição nenhuma.
+    // Era exatamente este INSERT que estourava a unique
+    // `(paciente_id, numero_requisicao)`. O ramo que acrescenta nem chega a
+    // tentá-lo — não há duplicata a evitar, há um INSERT que não acontece.
+    expect(mocks.criarRequisicao).not.toHaveBeenCalled();
+    expect(mocks.escritas).toEqual(["paciente", "requisicao_terapia"]);
+  });
+
+  it("grava as linhas novas sob o requisicao_id que já existia", async () => {
+    mocks.banco.numeroJaExiste = true;
+
+    await criarRequisicao(
+      entrada({
+        linhas: [
+          { terapiaId: 1, qtdAutorizada: 5, validade: null },
+          // Mesma terapia da linha acima, com outra quantidade e outra
+          // validade: é a segunda autorização, e ela **não** é descartada.
+          { terapiaId: 1, qtdAutorizada: 8, validade: "2027-01-31" },
+          { terapiaId: 2, qtdAutorizada: 3, validade: null },
+        ],
+      }),
+    );
+
+    expect(mocks.criarGuias).toHaveBeenCalledWith({
+      data: [
+        { requisicaoId: 42, terapiaId: 1, qtdAutorizada: 5, validade: null },
+        {
+          requisicaoId: 42,
+          terapiaId: 1,
+          qtdAutorizada: 8,
+          // A validade é por linha de `requisicao_terapia`: cada terapia
+          // acrescentada carrega a sua, independente das que já estavam na
+          // requisição.
+          validade: new Date("2027-01-31T00:00:00.000Z"),
+        },
+        { requisicaoId: 42, terapiaId: 2, qtdAutorizada: 3, validade: null },
+      ],
+    });
+  });
+
+  it("recusa a terapia inexistente sem gravar nenhuma das linhas novas", async () => {
+    mocks.banco.numeroJaExiste = true;
+    mocks.banco.terapiasExistentes = [1];
+
+    const resultado = await criarRequisicao(
+      entrada({
+        linhas: [
+          { terapiaId: 1, qtdAutorizada: 10, validade: null },
+          { terapiaId: 404, qtdAutorizada: 4, validade: null },
+        ],
+      }),
+    );
+
+    expect(resultado).toMatchObject({ ok: false, linha: 1 });
+    // Nem a linha boa entrou: a conferência acontece antes de qualquer insert,
+    // e o `throw` desfaz a transação inteira.
+    expect(mocks.criarGuias).not.toHaveBeenCalled();
     expect(mocks.escritas).toEqual([]);
   });
 
   it("procura o número dentro do paciente, não no sistema inteiro", async () => {
     await criarRequisicao(entrada());
 
-    // A unicidade é por paciente (CONTEXT.md): sem o `pacienteId` no filtro, o
-    // mesmo número em outro paciente seria recusado por engano.
+    // A unicidade é por paciente (CONTEXT.md): sem o `pacienteId` no filtro, as
+    // terapias acabariam penduradas na requisição de outra pessoa que por acaso
+    // usa o mesmo número.
     expect(mocks.buscarRequisicao).toHaveBeenCalledWith({
       where: { pacienteId: 10, numeroRequisicao: "2026-001" },
       select: { id: true },
@@ -264,7 +348,7 @@ describe("criarRequisicao — número de requisição duplicado", () => {
 
     expect(resultado).toEqual({
       ok: false,
-      erro: erroNumeroDuplicado("2026-001", "José Silva"),
+      erro: erroCorridaNaRequisicao("2026-001", "José Silva"),
     });
   });
 
@@ -510,6 +594,8 @@ describe("criarRequisicaoAction (Server Action)", () => {
       sucesso: {
         pacienteNome: "José Silva",
         numeroRequisicao: "2026-001",
+        requisicaoCriada: true,
+        terapiasAdicionadas: 1,
         token: expect.any(String),
       },
     });
@@ -528,15 +614,36 @@ describe("criarRequisicaoAction (Server Action)", () => {
   });
 
   it("devolve o erro para o formulário em vez de sinalizar sucesso", async () => {
-    mocks.banco.numeroJaExiste = true;
+    mocks.banco.temEncaminhamento = false;
 
     const estado = await criarRequisicaoAction({}, formulario());
 
     expect(estado).toEqual({
-      erro: erroNumeroDuplicado("2026-001", "José Silva"),
+      erro: ERRO_SEM_ENCAMINHAMENTO,
       linha: undefined,
     });
     expect(mocks.refresh).not.toHaveBeenCalled();
+  });
+
+  it("conta as terapias acrescentadas quando o número já existia", async () => {
+    mocks.banco.numeroJaExiste = true;
+
+    const estado = await criarRequisicaoAction(
+      {},
+      formulario({
+        linhas: [
+          { terapiaId: "1", qtdAutorizada: "10", validade: "" },
+          { terapiaId: "2", qtdAutorizada: "4", validade: "" },
+        ],
+      }),
+    );
+
+    // O formulário monta a confirmação com estes dois campos; sem eles, um
+    // envio que só acrescentou terapias diria "Requisição criada".
+    expect(estado.sucesso).toMatchObject({
+      requisicaoCriada: false,
+      terapiasAdicionadas: 2,
+    });
   });
 
   it("costura as linhas repetidas do formulário na ordem do DOM", async () => {
@@ -609,5 +716,27 @@ describe("criarRequisicaoAction (Server Action)", () => {
     // A segunda linha fica sem quantidade e é recusada, em vez de herdar em
     // silêncio a quantidade da primeira.
     expect(estado).toEqual({ erro: ERRO_QTD_INVALIDA, linha: 1 });
+  });
+});
+
+describe("mensagemDeCriacao", () => {
+  it("anuncia a requisição nova pelo paciente", () => {
+    expect(mensagemDeCriacao("José Silva", "2026-001", 3, true)).toBe(
+      "Requisição criada para José Silva.",
+    );
+  });
+
+  it("anuncia a terapia acrescentada no singular", () => {
+    expect(mensagemDeCriacao("José Silva", "2026-001", 1, false)).toBe(
+      "1 terapia adicionada à requisição 2026-001 de José Silva.",
+    );
+  });
+
+  it("anuncia as terapias acrescentadas no plural", () => {
+    // Os dois desfechos são sucesso, e a frase é o único lugar onde eles se
+    // distinguem para quem digitou.
+    expect(mensagemDeCriacao("José Silva", "2026-001", 3, false)).toBe(
+      "3 terapias adicionadas à requisição 2026-001 de José Silva.",
+    );
   });
 });

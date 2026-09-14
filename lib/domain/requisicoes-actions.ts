@@ -11,6 +11,11 @@
  * As linhas de terapia viajam como campos repetidos (`terapiaId`,
  * `qtdAutorizada`, `validade`), um por linha renderizada. `getAll` devolve os
  * três vetores na ordem do DOM, e eles são costurados por índice.
+ *
+ * O sucesso tem **dois desfechos**, e o estado devolvido diz qual foi: a
+ * requisição nasceu agora, ou as terapias entraram numa requisição que aquele
+ * paciente já tinha com aquele número. Quem decide é o domínio; aqui só se
+ * repassa o que ele respondeu.
  */
 
 import { refresh } from "next/cache";
@@ -32,6 +37,16 @@ export type EstadoNovaRequisicao = {
   sucesso?: {
     pacienteNome: string;
     numeroRequisicao: string;
+    /**
+     * `false` quando o número submetido já era de uma requisição daquele
+     * paciente e as terapias foram acrescentadas a ela.
+     *
+     * Viaja até o formulário porque é lá que a confirmação é montada, e as duas
+     * confirmações são eventos diferentes — ver `mensagemDeCriacao`.
+     */
+    requisicaoCriada: boolean;
+    /** Quantas linhas de terapia este envio gravou. */
+    terapiasAdicionadas: number;
     /**
      * Identificador da criação, único por submissão.
      *
@@ -121,6 +136,8 @@ export async function criarRequisicaoAction(
     sucesso: {
       pacienteNome: resultado.pacienteNome,
       numeroRequisicao: resultado.numeroRequisicao,
+      requisicaoCriada: resultado.requisicaoCriada,
+      terapiasAdicionadas: resultado.terapiasAdicionadas,
       token: crypto.randomUUID(),
     },
   };

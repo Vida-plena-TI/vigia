@@ -4,8 +4,10 @@
  * O teste unitário prova que o nosso código decide certo; este prova que o
  * banco concorda — que o `ON CONFLICT (lower("nome"))` reaproveita mesmo o
  * paciente escrito com outra caixa, que a unique
- * `(paciente_id, numero_requisicao)` é por paciente e não global, e que uma
- * linha de terapia ruim leva a transação inteira embora.
+ * `(paciente_id, numero_requisicao)` é por paciente e não global, que repetir
+ * o número de um paciente acrescenta terapias à requisição que já existe (em
+ * vez de esbarrar na unique), e que uma linha de terapia ruim leva a transação
+ * inteira embora.
  *
  * Como roda (mesmo contrato de `guias.integration.test.ts`):
  *   - precisa de DATABASE_URL com as migrations aplicadas; sem ela o bloco é
@@ -22,9 +24,9 @@ import { obterOuCriarPaciente } from "./pacientes";
 import {
   criarRequisicao,
   criarRequisicaoNaTransacao,
+  ERRO_QTD_INVALIDA,
   ERRO_SEM_ENCAMINHAMENTO,
   ERRO_TERAPIA_INEXISTENTE,
-  erroNumeroDuplicado,
 } from "./requisicoes";
 
 const temBanco = Boolean(process.env.DATABASE_URL);
@@ -98,6 +100,25 @@ async function dataDeEncaminhamentoEmDia(
 ): Promise<string> {
   const [linha] = await tx.$queryRaw<{ data: string }[]>`
     SELECT CURRENT_DATE::text AS "data"
+  `;
+
+  return linha.data;
+}
+
+/**
+ * "AAAA-MM-DD" a `dias` dias do `CURRENT_DATE` **do banco**.
+ *
+ * Mesmo motivo de {@link dataDeEncaminhamentoEmDia}: o alerta de validade da
+ * guia conta dias contra o `CURRENT_DATE`, e uma data literal faria o status
+ * esperado mudar sozinho com a passagem do tempo. `date + int` devolve `date`,
+ * então não há interval nem fuso no caminho.
+ */
+async function dataEmDias(
+  tx: ClienteDaTransacao,
+  dias: number,
+): Promise<string> {
+  const [linha] = await tx.$queryRaw<{ data: string }[]>`
+    SELECT (CURRENT_DATE + ${dias}::int)::text AS "data"
   `;
 
   return linha.data;
@@ -248,42 +269,275 @@ describe.skipIf(!temBanco)("cadastro de requisicao contra o banco real", () => {
     expect(new Set(resultado.requisicoes.map((r) => r.pacienteId)).size).toBe(1);
   });
 
-  it("recusa o mesmo numero_requisicao no mesmo paciente", async () => {
-    const nome = `Paciente Numero Repetido ${SUFIXO}`;
-    const numero = `REQ-DUP-${SUFIXO}`;
+  it("acrescenta as terapias novas à requisição que o paciente já tem", async () => {
+    const nome = `Paciente Mesma Pasta ${SUFIXO}`;
+    const numero = `REQ-PASTA-${SUFIXO}`;
 
     const resultado = await comRollback(async (tx) => {
-      const terapiaId = await criarTerapia(tx, "dup");
+      const antiga = await criarTerapia(tx, "pasta-antiga");
+      const novaA = await criarTerapia(tx, "pasta-nova-a");
+      const novaB = await criarTerapia(tx, "pasta-nova-b");
+      const novaC = await criarTerapia(tx, "pasta-nova-c");
 
       await comEncaminhamento(tx, nome);
 
+      // Primeiro envio: número inédito para este paciente, uma terapia só.
       const primeira = await criarRequisicaoNaTransacao(tx, {
         pacienteNome: nome,
         numeroRequisicao: numero,
-        linhas: [{ terapiaId, qtdAutorizada: 5, validade: null }],
+        linhas: [{ terapiaId: antiga, qtdAutorizada: 12, validade: null }],
       });
 
+      // Segundo envio, semanas depois na vida real: mesmo paciente, mesmo
+      // número, outras três terapias. Antes isto era recusado como duplicata.
       const segunda = await criarRequisicaoNaTransacao(tx, {
         pacienteNome: nome,
         numeroRequisicao: numero,
-        linhas: [{ terapiaId, qtdAutorizada: 5, validade: null }],
+        linhas: [
+          // Validade própria, perto de vencer: é o que prova que a validade é
+          // por linha de `requisicao_terapia`, não da requisição — a terapia
+          // antiga continua sem validade nenhuma.
+          {
+            terapiaId: novaA,
+            qtdAutorizada: 4,
+            validade: await dataEmDias(tx, 3),
+          },
+          { terapiaId: novaB, qtdAutorizada: 8, validade: null },
+          { terapiaId: novaC, qtdAutorizada: 1, validade: null },
+        ],
       });
 
-      const total = await tx.requisicao.count({
-        where: { numeroRequisicao: numero },
+      const [contagem] = await tx.$queryRaw<{ n: number }[]>`
+        SELECT count(*)::int AS "n"
+        FROM "requisicao" r
+        JOIN "paciente" p ON p."id" = r."paciente_id"
+        WHERE lower(p."nome") = lower(${nome})
+          AND r."numero_requisicao" = ${numero}
+      `;
+
+      const guias = primeira.ok
+        ? await tx.requisicaoTerapia.findMany({
+            where: { requisicaoId: primeira.requisicaoId },
+            select: { id: true, terapiaId: true, qtdAutorizada: true },
+            orderBy: { id: "asc" },
+          })
+        : [];
+
+      // Atendimentos lançados **depois** do acréscimo, um numa guia antiga e
+      // outro numa recém-criada: é o que faz a view ter o que calcular dos
+      // dois lados.
+      const hoje = await dataEmDias(tx, 0);
+
+      for (const [terapiaId, creditos] of [
+        [antiga, 10],
+        [novaC, 1],
+      ] as const) {
+        const guia = guias.find((linha) => linha.terapiaId === terapiaId);
+
+        if (guia) {
+          await tx.atendimento.create({
+            data: {
+              requisicaoTerapiaId: guia.id,
+              dataAtendimento: new Date(`${hoje}T00:00:00.000Z`),
+              creditosConsumidos: creditos,
+            },
+          });
+        }
+      }
+
+      const saldos = primeira.ok
+        ? await tx.$queryRaw<
+            {
+              terapiaId: number;
+              qtdUtilizada: number;
+              saldoRestante: number;
+              creditosPorSessao: string;
+              statusAlerta: string;
+            }[]
+          >`
+            SELECT
+              "terapia_id"                 AS "terapiaId",
+              "qtd_utilizada"              AS "qtdUtilizada",
+              "saldo_restante"             AS "saldoRestante",
+              "creditos_por_sessao"::text  AS "creditosPorSessao",
+              "status_alerta"              AS "statusAlerta"
+            FROM "requisicao_terapia_saldo"
+            WHERE "requisicao_id" = ${primeira.requisicaoId}
+            ORDER BY "id"
+          `
+        : [];
+
+      return {
+        primeira,
+        segunda,
+        contagem: contagem.n,
+        guias,
+        saldos,
+        terapias: { antiga, novaA, novaB, novaC },
+      };
+    });
+
+    expect(resultado.primeira).toMatchObject({
+      ok: true,
+      requisicaoCriada: true,
+      terapiasAdicionadas: 1,
+    });
+
+    // O segundo envio é **sucesso**, e devolve o id da requisição que já
+    // existia — não um id novo.
+    expect(resultado.segunda).toMatchObject({
+      ok: true,
+      requisicaoCriada: false,
+      terapiasAdicionadas: 3,
+    });
+    expect(
+      resultado.segunda.ok ? resultado.segunda.requisicaoId : null,
+    ).toBe(resultado.primeira.ok ? resultado.primeira.requisicaoId : undefined);
+
+    // O ponto do teste: uma linha só em `requisicao` para o par
+    // (paciente_id, numero_requisicao) — a unique nunca chegou a ser desafiada
+    // —, e quatro em `requisicao_terapia` penduradas nela (1 + 3).
+    expect(resultado.contagem).toBe(1);
+    expect(resultado.guias).toHaveLength(4);
+    expect(resultado.guias.map((guia) => guia.terapiaId)).toEqual([
+      resultado.terapias.antiga,
+      resultado.terapias.novaA,
+      resultado.terapias.novaB,
+      resultado.terapias.novaC,
+    ]);
+
+    // E a view calcula certo dos dois lados: a guia antiga (que ganhou
+    // atendimento depois do acréscimo) e as recém-chegadas.
+    const porTerapia = new Map(
+      resultado.saldos.map((linha) => [linha.terapiaId, linha]),
+    );
+
+    // Antiga: 12 autorizados, 10 usados. Sobram 2, e 2 <= 12/4 -> Renovar.
+    expect(porTerapia.get(resultado.terapias.antiga)).toMatchObject({
+      qtdUtilizada: 10,
+      saldoRestante: 2,
+      statusAlerta: "Renovar",
+    });
+    // Nova A: saldo cheio, mas a validade cai dentro dos 7 dias -> Renovar.
+    expect(porTerapia.get(resultado.terapias.novaA)).toMatchObject({
+      qtdUtilizada: 0,
+      saldoRestante: 4,
+      statusAlerta: "Renovar",
+    });
+    // Nova B: 8 autorizados, nada usado, sem validade -> Regular.
+    expect(porTerapia.get(resultado.terapias.novaB)).toMatchObject({
+      qtdUtilizada: 0,
+      saldoRestante: 8,
+      statusAlerta: "Regular",
+    });
+    // Nova C: 1 autorizado e 1 usado -> saldo zero, Esgotada.
+    expect(porTerapia.get(resultado.terapias.novaC)).toMatchObject({
+      qtdUtilizada: 1,
+      saldoRestante: 0,
+      statusAlerta: "Esgotada",
+    });
+  });
+
+  it("não grava nenhuma terapia nova quando uma linha do acréscimo falha", async () => {
+    const nome = `Paciente Anexo Rollback ${SUFIXO}`;
+    const numero = `REQ-ANEXO-ROLLBACK-${SUFIXO}`;
+
+    // Como o teste do rollback da criação, este NÃO roda dentro da transação
+    // do arquivo: o que está sob teste é a transação que `criarRequisicao`
+    // abre sozinha, e o preparo precisa estar commitado para ela enxergá-lo.
+    const terapia = await getPrismaClient().terapia.create({
+      data: {
+        nome: `Terapia Anexo Rollback ${SUFIXO}`,
+        codigoTiss: `RAR${SUFIXO}`.slice(0, 10),
+      },
+      select: { id: true },
+    });
+
+    await getPrismaClient().$transaction(
+      (tx) => comEncaminhamento(tx, nome),
+      { maxWait: 30_000, timeout: 30_000 },
+    );
+
+    try {
+      const primeira = await criarRequisicao({
+        pacienteNome: nome,
+        numeroRequisicao: numero,
+        linhas: [{ terapiaId: terapia.id, qtdAutorizada: 4, validade: null }],
       });
 
-      return { primeira, segunda, total };
-    });
+      expect(primeira).toMatchObject({ ok: true, requisicaoCriada: true });
 
-    expect(resultado.primeira).toMatchObject({ ok: true });
-    expect(resultado.segunda).toEqual({
-      ok: false,
-      erro: erroNumeroDuplicado(numero, nome),
-      linha: undefined,
-    });
-    // A segunda tentativa não gravou nada: continua havendo uma requisição só.
-    expect(resultado.total).toBe(1);
+      /** Quantas guias a requisição tem agora, lidas do banco. */
+      const contarGuias = async () =>
+        getPrismaClient().requisicaoTerapia.count({
+          where: { requisicao: { numeroRequisicao: numero } },
+        });
+
+      // Uma linha boa **antes** da ruim: o que o teste precisa provar é que a
+      // boa também não entra, não só que a ruim é recusada.
+      const comTerapiaInexistente = await criarRequisicao({
+        pacienteNome: nome,
+        numeroRequisicao: numero,
+        linhas: [
+          { terapiaId: terapia.id, qtdAutorizada: 6, validade: null },
+          { terapiaId: TERAPIA_INEXISTENTE, qtdAutorizada: 6, validade: null },
+        ],
+      });
+
+      expect(comTerapiaInexistente).toEqual({
+        ok: false,
+        erro: ERRO_TERAPIA_INEXISTENTE,
+        linha: 1,
+      });
+      expect(await contarGuias()).toBe(1);
+
+      // Mesma coisa pela outra porta: a quantidade inválida é recusada pela
+      // validação sem banco, antes mesmo de a transação abrir.
+      const comQuantidadeInvalida = await criarRequisicao({
+        pacienteNome: nome,
+        numeroRequisicao: numero,
+        linhas: [
+          { terapiaId: terapia.id, qtdAutorizada: 6, validade: null },
+          { terapiaId: terapia.id, qtdAutorizada: 0, validade: null },
+        ],
+      });
+
+      expect(comQuantidadeInvalida).toEqual({
+        ok: false,
+        erro: ERRO_QTD_INVALIDA,
+        linha: 1,
+      });
+      expect(await contarGuias()).toBe(1);
+
+      // E a requisição continua sendo uma só.
+      expect(
+        await getPrismaClient().requisicao.count({
+          where: { numeroRequisicao: numero },
+        }),
+      ).toBe(1);
+    } finally {
+      await getPrismaClient().$executeRaw`
+        DELETE FROM "requisicao_terapia"
+        WHERE "requisicao_id" IN (
+          SELECT "id" FROM "requisicao" WHERE "numero_requisicao" = ${numero}
+        )
+      `;
+      await getPrismaClient().$executeRaw`
+        DELETE FROM "requisicao" WHERE "numero_requisicao" = ${numero}
+      `;
+      await getPrismaClient().$executeRaw`
+        DELETE FROM "encaminhamento"
+        WHERE "paciente_id" IN (
+          SELECT "id" FROM "paciente" WHERE lower("nome") = lower(${nome})
+        )
+      `;
+      await getPrismaClient().$executeRaw`
+        DELETE FROM "paciente" WHERE lower("nome") = lower(${nome})
+      `;
+      await getPrismaClient().$executeRaw`
+        DELETE FROM "terapia" WHERE "id" = ${terapia.id}
+      `;
+    }
   });
 
   it("aceita o mesmo numero_requisicao em pacientes diferentes", async () => {
@@ -315,9 +569,14 @@ describe.skipIf(!temBanco)("cadastro de requisicao contra o banco real", () => {
     });
 
     // A unicidade é `(paciente_id, numero_requisicao)`, não `numero_requisicao`
-    // sozinho: o mesmo número em outra pessoa é legítimo.
-    expect(resultado.deUm).toMatchObject({ ok: true });
-    expect(resultado.deOutro).toMatchObject({ ok: true });
+    // sozinho: o mesmo número em outra pessoa é legítimo — e continua criando
+    // uma requisição **própria**, não acrescentando terapias à do primeiro. É o
+    // par que decide, e o segundo paciente não tem esse par.
+    expect(resultado.deUm).toMatchObject({ ok: true, requisicaoCriada: true });
+    expect(resultado.deOutro).toMatchObject({
+      ok: true,
+      requisicaoCriada: true,
+    });
     expect(resultado.total).toBe(2);
   });
 

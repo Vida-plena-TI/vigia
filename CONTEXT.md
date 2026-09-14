@@ -155,6 +155,20 @@ teste passar hoje e mentir no mês que vem.
    decisões de implementação.
 5. Criar requisição: get-or-create do paciente + criar `requisicao` + criar N linhas de
    `requisicao_terapia`, tudo em **uma transação atômica**.
+   **Uma requisição é uma pasta numerada, não um evento.** Terapias entram nela ao longo
+   do tempo, e não só no minuto em que ela nasce. Por isso o cadastro tem dois desfechos,
+   decididos pela existência de uma linha em `requisicao` para
+   `(paciente_id, numero_requisicao)`:
+   - **número inédito para aquele paciente** — cria a `requisicao` e pendura as N linhas
+     de `requisicao_terapia` nela (o caminho de sempre);
+   - **número que aquele paciente já tem** — **não** cria segunda `requisicao`; insere as
+     N linhas de `requisicao_terapia` sob o `requisicao_id` que já existe.
+   Nenhuma linha é descartada por "essa terapia já está na requisição": a mesma
+   `terapia_id` sob a mesma `requisicao_id` é legítima e comum — é a segunda autorização
+   da mesma terapia, com outra quantidade e outra validade. Cada linha é uma autorização,
+   não um vínculo. A `validade` continua sendo de cada `requisicao_terapia`, nunca da
+   requisição: uma terapia acrescentada hoje a uma pasta antiga carrega a validade dela
+   própria, sem tocar nas que já estavam lá.
 6. Só terapias com `saldo_restante > 0` aparecem na tela de lançar atendimento.
 7. Lançamento de atendimento em lote:
    - pelo menos 1 terapia selecionada;
@@ -211,7 +225,10 @@ teste passar hoje e mentir no mês que vem.
 ## Decisões assumidas (perguntas em aberto no relatório de auditoria original)
 
 - `paciente.nome`: único case-insensitive no banco.
-- `numero_requisicao`: único por paciente, não globalmente.
+- `numero_requisicao`: único por paciente, não globalmente. Repetir o número de um
+  paciente **não é erro**: acrescenta terapias à requisição que já existe (regra 5). O
+  índice único continua no banco — ver "Número repetido acrescenta em vez de recusar" nas
+  decisões de implementação.
 - `qtd_autorizada`: deve ser > 0 na criação da guia.
 - Exclusão de guia `"Regular"` bloqueada no backend.
 - Edição de atendimento para 0 créditos continua permitida.
@@ -354,11 +371,31 @@ teste passar hoje e mentir no mês que vem.
     que já tinha sido escrito — e o paciente recém-criado ficaria órfão. Por isso
     `criarNaTransacao` lança `ErroDeNegocio` e quem chama converte de volta para
     `{ ok: false }`, já com a transação desfeita.
-  - **`numero_requisicao` duplicado é checado duas vezes**: um `SELECT` antes do insert,
-    para o usuário ver mensagem em vez de exceção, e a unique
-    `requisicao_paciente_id_numero_requisicao_key` como rede de verdade — o `P2002` dela
-    é traduzido para a mesma mensagem amigável. A pré-checagem sozinha tem janela de
-    corrida; a unique sozinha só produziria erro cru.
+  - **Número repetido acrescenta em vez de recusar** (14/09/2026). O `SELECT` que roda
+    antes do insert continua exatamente onde estava, mas **deixou de ser uma recusa**: ele
+    escolhe entre os dois desfechos da regra 5. Achou a requisição daquele paciente com
+    aquele número? As linhas de `requisicao_terapia` entram sob o `requisicao_id` dela, e
+    `tx.requisicao.create` nem é chamado — não há duplicata a evitar, há um INSERT que não
+    acontece. Não achou? Requisição e guias nascem juntas, no mesmo comando aninhado de
+    sempre.
+    **O índice único `requisicao_paciente_id_numero_requisicao_key` não foi removido nem
+    afrouxado**, e nenhuma migration foi escrita: o que mudou foi o comportamento em cima
+    dele, de "rejeitar" para "anexar à requisição existente". Ele continua sendo o que
+    garante que aquele par nunca vire duas pastas — e continua sendo consultado do jeito
+    certo, por `pacienteId` **mais** `numeroRequisicao`, porque o mesmo número na pasta de
+    outra pessoa é outra requisição, que não pode receber estas terapias.
+    O `P2002` ainda é traduzido, mas agora para outra coisa. Ele só é alcançável numa
+    corrida estreita — dois envios do *primeiro* cadastro daquele número chegando juntos,
+    os dois vendo o `SELECT` vazio, os dois tentando inserir. A mensagem
+    (`erroCorridaNaRequisicao`) pede **reenvio**, não outro número: reenviar agora
+    funciona, porque a requisição existe e o envio seguinte cai no ramo que acrescenta.
+    A confirmação passou a distinguir os dois desfechos, como o cadastro de encaminhamento
+    já fazia entre "cadastrado" e "atualizado": `mensagemDeCriacao` devolve "Requisição
+    criada para X" ou "N terapia(s) adicionada(s) à requisição Y de X". Sem essa palavra,
+    um número digitado por engano pareceria ter criado uma requisição nova, e o painel
+    mostraria as terapias penduradas na pasta errada sem explicação. Quem decide é o
+    domínio (`requisicaoCriada` e `terapiasAdicionadas` no resultado); o formulário só
+    monta a frase.
   - **Linhas de terapia viajam como campos repetidos** (`terapiaId`, `qtdAutorizada`,
     `validade`, um conjunto por linha renderizada), lidos com `formData.getAll` e
     costurados por índice. Quando os vetores chegam com tamanhos diferentes (só possível
@@ -1096,6 +1133,37 @@ parecer íntegro na tela.
       `aria-label="Excluir cadastro de …"` por linha (tabela e lista móvel). Ver "Exclusão
       permanente de paciente" nas decisões de implementação. **Pendente: a interação de
       navegador** — ver o roteiro nas pendências conhecidas
+- [x] Terapia acrescentada a requisição já existente (14/09/2026, branch
+      `feat/adicionar-terapia-requisicao-existente`) — "Nova requisição" deixou de recusar
+      o `numero_requisicao` que o paciente já tem e passou a **acrescentar** as terapias
+      do formulário à requisição existente, sob o mesmo `requisicao_id`. **Nenhuma
+      mudança de schema e nenhuma migration**: o índice único
+      `(paciente_id, numero_requisicao)` continua igual, e o que mudou foi o
+      comportamento em cima dele. O `SELECT` que já existia antes do insert virou a
+      escolha entre os dois desfechos em vez de uma recusa; `ResultadoCriacao` ganhou
+      `requisicaoCriada` e `terapiasAdicionadas`, e a confirmação passou a distinguir
+      "Requisição criada para X" de "N terapia(s) adicionada(s) à requisição Y de X"
+      (`mensagemDeCriacao`, mesmo padrão criado/atualizado dos encaminhamentos). O
+      `P2002` continua tratado, mas só cobre a corrida do primeiro cadastro e agora pede
+      reenvio em vez de outro número (`erroCorridaNaRequisicao` substituiu
+      `erroNumeroDuplicado`). A regra 15 e o get-or-create do paciente não foram tocados.
+      `tsc --noEmit` limpo, `npm test` verde (16 arquivos, 233 testes), `npm run build`
+      ok e `npm run lint` continua acusando só o erro pré-existente de
+      `acoes-da-guia.tsx` — confirmado rodando o lint também com as mudanças guardadas,
+      para não sobrar dúvida de origem. Testes novos de integração: a segunda submissão
+      devolve o **mesmo** `requisicaoId`, sobra **uma** linha em `requisicao` para o par e
+      **quatro** em `requisicao_terapia` (1 + 3), a view `requisicao_terapia_saldo`
+      calcula certo tanto na guia antiga (que ganhou atendimento depois do acréscimo)
+      quanto nas recém-chegadas — Renovar por saldo, Renovar por validade dentro dos 7
+      dias, Regular e Esgotada —, e o acréscimo com uma linha ruim (terapia inexistente
+      ou `qtd_autorizada = 0`) não grava **nenhuma** das linhas novas, nem a que passaria
+      sozinha. O caso "mesmo número em outro paciente" continua criando requisição
+      própria. Verificado sem navegador controlável (de novo: nenhuma sessão até agora
+      expôs um): um script pelo caminho real do domínio contra o banco de desenvolvimento
+      fez os dois envios commitados e leu o painel por `listarGuiasDoDashboard` —
+      1 linha em `requisicao`, 4 em `requisicao_terapia`, e as quatro terapias saindo
+      sob o mesmo número. **Pendente: a interação de navegador** — ver o roteiro nas
+      pendências conhecidas
 
 ## Pendências conhecidas (não bloqueiam o próximo passo, mas não esquecer)
 
@@ -1157,6 +1225,24 @@ parecer íntegro na tela.
      aparecer em lugar nenhum.
   8. Cancelar um diálogo antes de confirmar (Esc e botão "Cancelar") e conferir que nada
      foi apagado e que o campo de confirmação volta vazio na próxima abertura.
+- **Teste manual no navegador do acréscimo de terapia a requisição existente**
+  (14/09/2026) ainda não foi feito — nenhum browser controlável nesta sessão. O que já foi
+  verificado sem ele está no progresso. Roteiro:
+  1. Em "Nova requisição", escolher um paciente **que já tenha encaminhamento**, digitar
+     um número novo, escolher uma terapia e enviar. Confirmar o toast "Requisição criada
+     para <paciente>." e que o formulário limpa e devolve o foco.
+  2. Voltar em "Nova requisição" e enviar o **mesmo paciente com o mesmo número**, agora
+     com outras três terapias (validades diferentes entre si, e pelo menos uma vazia).
+     Confirmar que **não** aparece erro de duplicata e que o toast diz "3 terapias
+     adicionadas à requisição <número> de <paciente>.".
+  3. No painel, abrir esse paciente: as quatro terapias têm de aparecer **sob o mesmo
+     número de requisição**, uma linha cada, sem a requisição aparecer duas vezes. Conferir
+     que cada linha mostra a validade que foi digitada nela — a da primeira continua a
+     dela.
+  4. Lançar um atendimento numa das terapias antigas e outro numa das novas, e conferir
+     que o saldo e o selo de status mudam só na linha certa.
+  5. Repetir o envio com uma terapia **que já está na requisição**, com outra quantidade:
+     tem de entrar como uma **segunda linha**, não substituir a primeira nem dar erro.
 - **O banco de desenvolvimento local ficou com cinco encaminhamentos de demonstração**
   ("Zoe Vencida Manual", "Bruno Este Mes Manual", "Carla Fim Deste Mes Manual", "Diego A
   Vencer Manual", "Elisa Longe Manual"), um em cada caso da classificação, criados para a

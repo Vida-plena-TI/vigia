@@ -16,6 +16,7 @@ import {
   ERRO_QTD_INVALIDA,
   ERRO_SEM_TERAPIA,
   ERRO_TERAPIA_OBRIGATORIA,
+  mensagemDeCriacao,
 } from "@/lib/domain/requisicoes-mensagens";
 import type { TerapiaParaEscolha } from "@/lib/domain/requisicoes";
 
@@ -115,7 +116,17 @@ export function FormularioDeRequisicao({
 
     tokenTratado.current = sucesso.token;
 
-    const mensagem = `Requisição criada para ${sucesso.pacienteNome}.`;
+    // "Criada" e "adicionada" são eventos diferentes. Repetir o número de uma
+    // requisição que o paciente já tem **não** é mais recusado: as terapias
+    // entram na requisição que já existe. Sem essa palavra, quem digitou o
+    // número errado acharia ter criado uma requisição nova — e o painel
+    // mostraria as terapias penduradas na pasta errada, sem explicação.
+    const mensagem = mensagemDeCriacao(
+      sucesso.pacienteNome,
+      sucesso.numeroRequisicao,
+      sucesso.terapiasAdicionadas,
+      sucesso.requisicaoCriada,
+    );
 
     toast.success(mensagem, {
       description: `Número ${sucesso.numeroRequisicao}.`,
@@ -251,8 +262,9 @@ export function FormularioDeRequisicao({
               placeholder="Ex.: 2026-00187"
             />
             <p className="text-xs text-muted-foreground">
-              Precisa ser único para este paciente. O mesmo número pode se
-              repetir em pacientes diferentes.
+              Repetir um número que este paciente já tem acrescenta as terapias
+              àquela requisição, em vez de criar outra. O mesmo número em
+              pacientes diferentes continua sendo requisições diferentes.
             </p>
           </div>
         </div>

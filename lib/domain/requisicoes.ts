@@ -1,10 +1,18 @@
 /**
  * Cadastro de nova requisição (regra 5 do CONTEXT.md).
  *
- * Tudo — get-or-create do paciente, checagem do número e as N linhas de
+ * Tudo — get-or-create do paciente, resolução do número e as N linhas de
  * `requisicao_terapia` — acontece em **uma** transação. Se qualquer linha da
  * lista falhar, a transação inteira volta atrás e nenhum paciente órfão sobra
  * no banco.
+ *
+ * Uma requisição é uma **pasta numerada**, não um evento: terapias entram nela
+ * ao longo do tempo, e não só no minuto em que ela nasce. Por isso submeter um
+ * `numero_requisicao` que aquele paciente já tem **acrescenta** as terapias à
+ * requisição existente em vez de recusar o cadastro. A unique
+ * `(paciente_id, numero_requisicao)` continua no banco, intacta — o que mudou
+ * foi o que se faz diante dela: antes, rejeitar; agora, anexar. Ver
+ * {@link criarNaTransacao}.
  *
  * O get-or-create do paciente mora em `lib/domain/pacientes.ts` desde que o
  * cadastro de encaminhamento passou a precisar dele também — inclusive a
@@ -30,7 +38,7 @@ import {
   ERRO_TERAPIA_INEXISTENTE,
   ERRO_TERAPIA_OBRIGATORIA,
   ERRO_VALIDADE_INVALIDA,
-  erroNumeroDuplicado,
+  erroCorridaNaRequisicao,
 } from "./requisicoes-mensagens";
 
 /**
@@ -70,6 +78,23 @@ export type ResultadoCriacao =
       pacienteNome: string;
       /** `false` quando a requisição foi pendurada num paciente já existente. */
       pacienteCriado: boolean;
+      /**
+       * `true` quando nasceu uma linha de `requisicao`; `false` quando as
+       * terapias foram acrescentadas a uma requisição que já existia.
+       *
+       * É o que separa "Requisição criada para X" de "N terapias adicionadas à
+       * requisição Y de X" na confirmação — ver `mensagemDeCriacao`.
+       */
+      requisicaoCriada: boolean;
+      /**
+       * Quantas linhas de `requisicao_terapia` este envio gravou.
+       *
+       * É sempre o tamanho da lista que veio do formulário: nenhuma linha é
+       * descartada por já existir uma terapia igual sob a mesma requisição —
+       * repetir a terapia é legítimo (segunda autorização, outra quantidade,
+       * outra validade), e o schema não a impede.
+       */
+      terapiasAdicionadas: number;
     }
   | {
       ok: false;
@@ -160,6 +185,11 @@ export function validarEntrada(
 /**
  * A criação em si, já dentro de uma transação.
  *
+ * Dois desfechos possíveis, decididos pela existência de uma linha de
+ * `requisicao` para `(paciente_id, numero_requisicao)`: criar a requisição com
+ * as terapias penduradas nela, ou acrescentar as terapias à requisição que já
+ * estava lá. Os dois são sucesso; `requisicaoCriada` diz qual aconteceu.
+ *
  * Recebe o cliente da transação (em vez de abrir a própria) pelo mesmo motivo
  * de `excluirGuiaNaTransacao`: é o que deixa o teste de integração rodar tudo
  * dentro de uma transação que sofre rollback.
@@ -200,20 +230,24 @@ async function criarNaTransacao(
     throw new ErroDeNegocio(ERRO_SEM_ENCAMINHAMENTO);
   }
 
-  // Pré-checagem para o usuário ver uma mensagem em vez de uma exceção. Ela
-  // tem uma janela de corrida (outro cadastro pode entrar entre o SELECT e o
-  // INSERT); quem fecha a janela de verdade é a unique do banco, tratada em
-  // `criarRequisicao`.
-  const jaExiste = await tx.requisicao.findFirst({
+  // A requisição já existe para este paciente? A resposta não recusa nada —
+  // ela escolhe entre os dois desfechos, e é também o que permite dizer *qual*
+  // deles aconteceu (mesma técnica do `FOR UPDATE` de `gravarNaTransacao` em
+  // `encaminhamentos.ts`: olhar antes de gravar).
+  //
+  // O filtro é `pacienteId` **mais** `numeroRequisicao`, nunca o número
+  // sozinho: a unicidade é por paciente, e o mesmo número na pasta de outra
+  // pessoa é uma requisição diferente, que não pode receber estas terapias.
+  //
+  // Sobra uma janela de corrida quando a requisição ainda não existe: outro
+  // cadastro pode criá-la entre este SELECT e o INSERT lá embaixo. Quem fecha
+  // a janela é a unique do banco, traduzida em `criarRequisicao` num pedido de
+  // reenvio — reenviar cai neste mesmo SELECT, agora enxergando a linha, e
+  // acrescenta as terapias.
+  const requisicaoExistente = await tx.requisicao.findFirst({
     where: { pacienteId: paciente.id, numeroRequisicao },
     select: { id: true },
   });
-
-  if (jaExiste) {
-    throw new ErroDeNegocio(
-      erroNumeroDuplicado(numeroRequisicao, paciente.nome),
-    );
-  }
 
   // As terapias são conferidas contra o banco antes do insert. Sem isso um id
   // inventado viraria violação de FK — erro cru de driver, não mensagem.
@@ -233,21 +267,54 @@ async function criarNaTransacao(
     throw new ErroDeNegocio(ERRO_TERAPIA_INEXISTENTE, indiceRuim);
   }
 
+  // As mesmas linhas servem aos dois desfechos: a `validade` é atributo de
+  // cada `requisicao_terapia`, não da requisição. Uma terapia acrescentada hoje
+  // a uma pasta antiga carrega a validade dela própria, sem tocar nas que já
+  // estavam lá.
+  const guias = entrada.linhas.map((linha) => ({
+    terapiaId: linha.terapiaId,
+    qtdAutorizada: linha.qtdAutorizada,
+    // Coluna DATE: gravamos a meia-noite UTC do dia informado, para o dia
+    // gravado não depender do fuso de quem submeteu o formulário.
+    validade: linha.validade
+      ? new Date(`${linha.validade}T00:00:00.000Z`)
+      : null,
+  }));
+
+  // Desfecho 2: a pasta já existe. Nada de `requisicao.create` — seria
+  // exatamente o INSERT que a unique recusa. As terapias entram sob o
+  // `requisicao_id` que já está lá.
+  //
+  // Nenhuma delas é filtrada por "essa terapia já está na requisição": a mesma
+  // `terapia_id` sob a mesma requisição é permitida pelo schema e é um caso
+  // real — a segunda autorização da mesma terapia, com outra quantidade e
+  // outra validade. Cada linha é uma autorização, não um vínculo.
+  if (requisicaoExistente) {
+    await tx.requisicaoTerapia.createMany({
+      data: guias.map((guia) => ({
+        ...guia,
+        requisicaoId: requisicaoExistente.id,
+      })),
+    });
+
+    return {
+      ok: true,
+      requisicaoId: requisicaoExistente.id,
+      numeroRequisicao,
+      pacienteNome: paciente.nome,
+      pacienteCriado: paciente.criado,
+      requisicaoCriada: false,
+      terapiasAdicionadas: guias.length,
+    };
+  }
+
+  // Desfecho 1: número inédito para este paciente. Requisição e guias nascem
+  // no mesmo comando aninhado, como sempre foi.
   const requisicao = await tx.requisicao.create({
     data: {
       numeroRequisicao,
       pacienteId: paciente.id,
-      guias: {
-        create: entrada.linhas.map((linha) => ({
-          terapiaId: linha.terapiaId,
-          qtdAutorizada: linha.qtdAutorizada,
-          // Coluna DATE: gravamos a meia-noite UTC do dia informado, para o
-          // dia gravado não depender do fuso de quem submeteu o formulário.
-          validade: linha.validade
-            ? new Date(`${linha.validade}T00:00:00.000Z`)
-            : null,
-        })),
-      },
+      guias: { create: guias },
     },
     select: { id: true },
   });
@@ -258,6 +325,8 @@ async function criarNaTransacao(
     numeroRequisicao,
     pacienteNome: paciente.nome,
     pacienteCriado: paciente.criado,
+    requisicaoCriada: true,
+    terapiasAdicionadas: guias.length,
   };
 }
 
@@ -312,12 +381,16 @@ export async function criarRequisicao(
       return { ok: false, erro: erro.erro, linha: erro.linha };
     }
 
-    // Corrida perdida na pré-checagem do número: a unique do banco pegou. A
-    // transação já foi desfeita, então nada ficou pela metade.
+    // Corrida perdida na pré-checagem do número: dois envios do *primeiro*
+    // cadastro daquele número chegaram juntos, os dois viram o SELECT vazio e
+    // os dois tentaram inserir. A unique do banco pegou o segundo. A transação
+    // já foi desfeita, então nada ficou pela metade — e reenviar resolve, que
+    // é o que a mensagem pede: a requisição existe agora, e o envio seguinte
+    // cai no ramo que acrescenta as terapias a ela.
     if (ehNumeroDuplicado(erro)) {
       return {
         ok: false,
-        erro: erroNumeroDuplicado(
+        erro: erroCorridaNaRequisicao(
           entrada.numeroRequisicao.trim(),
           entrada.pacienteNome.trim(),
         ),

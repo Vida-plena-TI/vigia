@@ -19,12 +19,56 @@ export const ERRO_VALIDADE_INVALIDA = "Validade inválida. Use uma data real.";
 export const ERRO_TERAPIA_INEXISTENTE =
   "A terapia escolhida não existe mais. Recarregue a página e tente de novo.";
 
-/** Mensagem do choque com `requisicao_paciente_id_numero_requisicao_key`. */
-export function erroNumeroDuplicado(
+/**
+ * Recusa do choque com `requisicao_paciente_id_numero_requisicao_key`.
+ *
+ * Não é mais a resposta ao número repetido — repetir o número de um paciente
+ * agora **anexa** as terapias à requisição que já existe, e o caminho normal
+ * nem chega perto da unique. O que sobra para esta mensagem é a corrida: dois
+ * cadastros simultâneos do *primeiro* envio daquele número, os dois sem ver
+ * linha nenhuma na pré-checagem, os dois tentando inserir. Um ganha, o outro
+ * estoura aqui.
+ *
+ * Por isso o texto pede para reenviar em vez de pedir outro número: reenviar
+ * agora funciona — a requisição existe, e a segunda submissão cai no ramo que
+ * acrescenta as terapias a ela.
+ */
+export function erroCorridaNaRequisicao(
   numeroRequisicao: string,
   pacienteNome: string,
 ): string {
-  return `O paciente ${pacienteNome} já tem a requisição ${numeroRequisicao}. Use outro número.`;
+  return `A requisição ${numeroRequisicao} de ${pacienteNome} acabou de ser criada por outro cadastro. Envie de novo para acrescentar as terapias a ela.`;
+}
+
+/**
+ * A confirmação do cadastro, que **diz qual dos dois caminhos aconteceu**.
+ *
+ * Mesma ideia de `mensagemDeCadastro` em `encaminhamentos-mensagens.ts`:
+ * "criada" e "acrescentada" são eventos diferentes, e quem digitou precisa
+ * saber em qual deles caiu. Aqui a diferença é o número da requisição — ele já
+ * existia para aquele paciente, e em vez de ser recusado como duplicado
+ * recebeu as terapias novas. Sem essa palavra, um número digitado por engano
+ * pareceria ter criado uma requisição nova.
+ *
+ * A distinção vem de olhar se a linha de `requisicao` existia antes de gravar,
+ * não de adivinhar pelo resultado.
+ */
+export function mensagemDeCriacao(
+  pacienteNome: string,
+  numeroRequisicao: string,
+  terapiasAdicionadas: number,
+  requisicaoCriada: boolean,
+): string {
+  if (requisicaoCriada) {
+    return `Requisição criada para ${pacienteNome}.`;
+  }
+
+  const terapias =
+    terapiasAdicionadas === 1
+      ? "1 terapia adicionada"
+      : `${terapiasAdicionadas} terapias adicionadas`;
+
+  return `${terapias} à requisição ${numeroRequisicao} de ${pacienteNome}.`;
 }
 
 /**
