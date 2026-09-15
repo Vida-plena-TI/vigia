@@ -49,12 +49,22 @@ type LinhaDoFormulario = {
   validade: string;
 };
 
-function linhaNova(chave: number): LinhaDoFormulario {
+/**
+ * Uma linha em branco — exceto pelos dois campos que já nascem sugeridos.
+ *
+ * `validadePadrao` é "AAAA-MM-DD" a um mês do `CURRENT_DATE` do banco, e chega
+ * como argumento em vez de ser calculada aqui: o navegador não tem o relógio
+ * que vale (ver `validadePadraoDeGuia` em `lib/domain/requisicoes.ts`). O
+ * papel dela é o mesmo de `QTD_AUTORIZADA_PADRAO` — valor inicial, não piso
+ * nem limite: apagar o campo devolve a guia sem validade, e digitar outra data
+ * grava a data digitada.
+ */
+function linhaNova(chave: number, validadePadrao: string): LinhaDoFormulario {
   return {
     chave,
     terapiaId: "",
     qtdAutorizada: QTD_AUTORIZADA_PADRAO,
-    validade: "",
+    validade: validadePadrao,
   };
 }
 
@@ -78,9 +88,16 @@ function linhaNova(chave: number): LinhaDoFormulario {
 export function FormularioDeRequisicao({
   nomesDePacientes,
   terapias,
+  validadePadrao,
 }: {
   nomesDePacientes: string[];
   terapias: TerapiaParaEscolha[];
+  /**
+   * "AAAA-MM-DD" a um mês do `CURRENT_DATE` do banco, com o dia grampeado no
+   * último do mês quando ele não existe lá (31/01 -> 28/02). Toda linha de
+   * terapia nasce com ela, inclusive as do botão "Adicionar outra terapia".
+   */
+  validadePadrao: string;
 }) {
   const [estado, action] = useActionState(
     criarRequisicaoAction,
@@ -93,7 +110,7 @@ export function FormularioDeRequisicao({
   const [pacienteNome, setPacienteNome] = useState("");
   const [numeroRequisicao, setNumeroRequisicao] = useState("");
   const [linhas, setLinhas] = useState<LinhaDoFormulario[]>(() => [
-    linhaNova(0),
+    linhaNova(0, validadePadrao),
   ]);
   const [erroLocal, setErroLocal] = useState<EstadoNovaRequisicao | null>(null);
   const [mensagemDeSucesso, setMensagemDeSucesso] = useState<string | null>(
@@ -135,15 +152,22 @@ export function FormularioDeRequisicao({
     setMensagemDeSucesso(mensagem);
     setPacienteNome("");
     setNumeroRequisicao("");
-    setLinhas([linhaNova(proximaChave.current++)]);
+    setLinhas([linhaNova(proximaChave.current++, validadePadrao)]);
     setErroLocal(null);
 
     requestAnimationFrame(() => campoPacienteRef.current?.focus());
-  }, [estado]);
+    // `validadePadrao` entra nas dependências porque a linha limpa nasce com
+    // ela: depois do `refresh()` da action, um cadastro feito na virada do dia
+    // recebe a validade recalculada, não a que a página trouxe ao abrir. O
+    // token barra a reexecução, então nada é limpo duas vezes.
+  }, [estado, validadePadrao]);
 
   function adicionarLinha() {
     setMensagemDeSucesso(null);
-    setLinhas((atuais) => [...atuais, linhaNova(proximaChave.current++)]);
+    setLinhas((atuais) => [
+      ...atuais,
+      linhaNova(proximaChave.current++, validadePadrao),
+    ]);
   }
 
   function removerLinha(chave: number) {
@@ -274,7 +298,9 @@ export function FormularioDeRequisicao({
         <div className="flex flex-col gap-1">
           <h2 className="regua-de-secao">2. Terapias autorizadas</h2>
           <p className="max-w-prose text-xs text-muted-foreground">
-            Uma linha por terapia. A validade é opcional.
+            Uma linha por terapia. A validade já vem sugerida para um mês a
+            partir de hoje — continua editável, e apagá-la deixa a guia sem
+            prazo.
           </p>
         </div>
 

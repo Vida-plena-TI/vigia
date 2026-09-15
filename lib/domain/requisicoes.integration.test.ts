@@ -27,7 +27,9 @@ import {
   ERRO_QTD_INVALIDA,
   ERRO_SEM_ENCAMINHAMENTO,
   ERRO_TERAPIA_INEXISTENTE,
+  validadePadraoDeGuia,
 } from "./requisicoes";
+import { dataDeHoje } from "./atendimentos";
 
 const temBanco = Boolean(process.env.DATABASE_URL);
 
@@ -793,6 +795,103 @@ describe.skipIf(!temBanco)("cadastro de requisicao contra o banco real", () => {
           where: { numeroRequisicao: numero },
         }),
       ).toBe(0);
+    });
+  });
+
+  describe("validade sugerida no formulário (hoje + 1 mês)", () => {
+    /**
+     * As fronteiras de mês, com os alvos conferidos à mão.
+     *
+     * Aqui as datas **são** literais, ao contrário do resto do arquivo, e pelo
+     * motivo oposto: o que está sob teste é a aritmética de calendário, e ela
+     * só mostra a diferença entre "1 mês" e "30 dias" em dias que o
+     * `CURRENT_DATE` do banco ofereceria uma vez por ano. Mirar a partir de
+     * hoje daria um teste que quase nunca exercita o caso interessante.
+     *
+     * O par 31/01 é o caso que o usuário pediu explicitamente: 30 dias fixos
+     * cairiam em 02/03 (ou 03/03 fora de ano bissexto), e o mês de calendário
+     * grampeia no último dia de fevereiro.
+     */
+    const FRONTEIRAS: ReadonlyArray<readonly [string, string]> = [
+      // Fevereiro curto: 31 não existe lá, então vai para o último dia.
+      ["2026-01-31", "2026-02-28"],
+      // O mesmo dia em ano bissexto — 29, não 28.
+      ["2028-01-31", "2028-02-29"],
+      // 30 dias fixos dariam 02/03: é exatamente o que não se quer.
+      ["2027-01-30", "2027-02-28"],
+      // Mês de 31 para mês de 30.
+      ["2026-08-31", "2026-09-30"],
+      // Virada de ano, sem grampeamento nenhum.
+      ["2026-12-31", "2027-01-31"],
+      // Dia comum: nada de especial acontece, e é a maioria dos dias.
+      ["2026-09-15", "2026-10-15"],
+      // 29/02 de ano bissexto: março tem 29, então o dia se preserva.
+      ["2028-02-29", "2028-03-29"],
+    ];
+
+    for (const [referencia, esperada] of FRONTEIRAS) {
+      it(`sugere ${esperada} para uma requisição criada em ${referencia}`, async () => {
+        expect(await validadePadraoDeGuia(referencia)).toBe(esperada);
+      });
+    }
+
+    it("conta o mês a partir do CURRENT_DATE do banco, não do relógio do Node", async () => {
+      // Comparar com a própria função aplicada ao "hoje" do banco, em vez de
+      // repetir `+ 1 month` aqui: o que está sob teste é *de qual relógio* sai
+      // o ponto de partida. A fórmula em si já tem os casos de fronteira acima,
+      // e reescrevê-la aqui faria o teste concordar consigo mesmo.
+      expect(await validadePadraoDeGuia()).toBe(
+        await validadePadraoDeGuia(await dataDeHoje()),
+      );
+    });
+
+    it("grava a data que o usuário digitou, não a sugerida", async () => {
+      const nome = `Paciente Validade Editada ${SUFIXO}`;
+      const numero = `REQ-VAL-${SUFIXO}`;
+
+      // O que a tela teria preenchido sozinho, e o que o usuário põe por cima:
+      // duas datas garantidamente diferentes, porque uma é hoje + 1 mês e a
+      // outra é hoje + 200 dias.
+      const sugerida = await validadePadraoDeGuia();
+
+      const resultado = await comRollback(async (tx) => {
+        const digitada = await dataEmDias(tx, 200);
+        const comValidade = await criarTerapia(tx, "val-digitada");
+        const semValidade = await criarTerapia(tx, "val-apagada");
+
+        await comEncaminhamento(tx, nome);
+
+        const criacao = await criarRequisicaoNaTransacao(tx, {
+          pacienteNome: nome,
+          numeroRequisicao: numero,
+          linhas: [
+            // Campo editado antes de enviar.
+            { terapiaId: comValidade, qtdAutorizada: 4, validade: digitada },
+            // Campo apagado antes de enviar: a validade continua opcional, e
+            // o padrão não a torna obrigatória por tabela.
+            { terapiaId: semValidade, qtdAutorizada: 4, validade: null },
+          ],
+        });
+
+        const guias = criacao.ok
+          ? await tx.$queryRaw<
+              { terapiaId: number; validade: string | null }[]
+            >`
+              SELECT "terapia_id" AS "terapiaId", "validade"::text AS "validade"
+              FROM "requisicao_terapia"
+              WHERE "requisicao_id" = ${criacao.requisicaoId}
+              ORDER BY "id"
+            `
+          : [];
+
+        return { digitada, guias };
+      });
+
+      expect(resultado.digitada).not.toBe(sugerida);
+      expect(resultado.guias).toEqual([
+        { terapiaId: expect.any(Number), validade: resultado.digitada },
+        { terapiaId: expect.any(Number), validade: null },
+      ]);
     });
   });
 });

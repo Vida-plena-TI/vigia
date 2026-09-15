@@ -439,3 +439,45 @@ export async function listarTerapias(): Promise<TerapiaParaEscolha[]> {
     ORDER BY lower("nome"), "id"
   `;
 }
+
+/**
+ * A validade que uma linha de terapia já nasce preenchida no formulário: **um
+ * mês de calendário** depois de hoje, como "AAAA-MM-DD".
+ *
+ * Só um valor inicial, como o `4` de "Qtd. autorizada" — o campo continua
+ * editável e continua opcional. Quem grava é `criarRequisicao`, com o que veio
+ * do formulário; nada aqui é recalculado no servidor depois que o usuário
+ * mexeu no campo.
+ *
+ * O motivo de negócio é que uma autorização parada perde validade real por
+ * volta de um mês: com este padrão, a guia que ninguém usou entra sozinha em
+ * "Renovar" na janela certa, em vez de ficar "Regular" para sempre por ter
+ * nascido sem validade. A regra de `status_alerta` (validade a <= 7 dias) não
+ * muda por causa disto — ela continua sendo da view.
+ *
+ * **Um mês, não 30 dias.** `INTERVAL '1 month'` é aritmética de calendário: o
+ * Postgres grampeia o dia no último do mês de destino quando ele não existe,
+ * então 31/01 dá 28/02 (29/02 em ano bissexto), não 03/03. É o mesmo desenho
+ * do `+ INTERVAL '180 days'` de `encaminhamento.data_vencimento` — a diferença
+ * é a unidade, e é ela que faz a fronteira de mês cair no lugar certo.
+ *
+ * Vem do `CURRENT_DATE` do **banco**, não do relógio do Node nem do navegador,
+ * pelo mesmo motivo da data padrão de "Lançar atendimento": é o mesmo "hoje"
+ * que a view usa para decidir "Renovar" por validade, e um servidor em UTC
+ * discordaria dele à noite no horário de Brasília.
+ *
+ * @param referencia "AAAA-MM-DD" no lugar de hoje. Existe para o teste poder
+ *   mirar fronteiras de mês que o `CURRENT_DATE` só ofereceria em janeiro; em
+ *   produção nunca é passado.
+ */
+export async function validadePadraoDeGuia(
+  referencia?: string,
+): Promise<string> {
+  const [linha] = await getPrismaClient().$queryRaw<{ validade: string }[]>`
+    SELECT (
+      COALESCE(${referencia ?? null}::text::date, CURRENT_DATE) + INTERVAL '1 month'
+    )::date::text AS "validade"
+  `;
+
+  return linha.validade;
+}

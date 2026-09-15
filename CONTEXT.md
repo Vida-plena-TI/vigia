@@ -405,6 +405,40 @@ teste passar hoje e mentir no mês que vem.
     mostraria as terapias penduradas na pasta errada sem explicação. Quem decide é o
     domínio (`requisicaoCriada` e `terapiasAdicionadas` no resultado); o formulário só
     monta a frase.
+  - **A validade já nasce preenchida com hoje + 1 mês de calendário** (15/09/2026). Toda
+    linha de terapia do formulário — a primeira, cada uma criada por "Adicionar outra
+    terapia" e a que volta depois da limpeza do sucesso — começa com a data que
+    `validadePadraoDeGuia` (em `lib/domain/requisicoes.ts`) lê do banco. Vale para os dois
+    desfechos da regra 5, porque é o mesmo formulário: criar a requisição nova e
+    acrescentar terapias à requisição que o paciente já tem.
+    **O motivo é de negócio, não de conveniência de digitação**: uma autorização parada
+    perde validade real por volta de um mês, e a guia que nascia sem validade ficava
+    `Regular` para sempre — o painel não tinha como cobrá-la. Com o padrão, ela entra
+    sozinha em `Renovar` perto de um mês depois de criada, que é quando alguém precisa
+    olhar para ela. **A regra de `status_alerta` não mudou nem um caractere**: continua
+    sendo da view, continua sendo `validade <= CURRENT_DATE + 7 days`. O que mudou foi só
+    o valor que o campo já traz.
+    **Um mês de calendário, não 30 dias.** A conta é `CURRENT_DATE + INTERVAL '1 month'`,
+    e é o Postgres que grampeia o dia no último do mês de destino quando ele não existe
+    lá: 31/01 dá 28/02 (29/02 em ano bissexto), não 03/03. É o mesmo desenho do
+    `+ INTERVAL '180 days'` de `encaminhamento.data_vencimento` — muda a unidade, e é a
+    unidade que faz a fronteira cair no lugar certo. Os casos de fronteira têm teste de
+    integração com alvos literais conferidos à mão, e ali as datas **são** fixas, ao
+    contrário do resto daquele arquivo: o que está sob teste é a aritmética de calendário,
+    e mirar a partir do `CURRENT_DATE` daria um teste que só exercitaria o caso
+    interessante em janeiro.
+    **A data vem do `CURRENT_DATE` do banco**, não do relógio do Node nem do navegador,
+    pelo mesmo motivo da data padrão de "Lançar atendimento": é o mesmo "hoje" que a view
+    usa para decidir `Renovar` por validade, e um servidor em UTC discordaria dele à noite
+    no horário de Brasília. A página busca o valor junto das outras duas listas, no mesmo
+    `Promise.all`, e passa como prop ao formulário — o cliente não calcula data nenhuma.
+    **É valor inicial, não piso nem obrigação**, exatamente como o `4` de "Qtd.
+    autorizada": o campo continua editável e continua opcional. Digitar outra data grava a
+    data digitada; apagar o campo grava `NULL` e a guia segue sem prazo. Nada é
+    recalculado no servidor depois do envio — `criarRequisicao` grava o que veio do
+    formulário, e `validadePadraoDeGuia` não é chamada em lugar nenhum do caminho de
+    gravação. O parâmetro `referencia` dela existe só para o teste mirar fronteiras de mês
+    que o `CURRENT_DATE` ofereceria uma vez por ano; em produção nunca é passado.
   - **Linhas de terapia viajam como campos repetidos** (`terapiaId`, `qtdAutorizada`,
     `validade`, um conjunto por linha renderizada), lidos com `formData.getAll` e
     costurados por índice. Quando os vetores chegam com tamanhos diferentes (só possível
@@ -1206,6 +1240,37 @@ parecer íntegro na tela.
       confirmar fecha o diálogo sem mensagem de erro, o resumo do topo cai de 7 para 6 em
       "Regular" e o paciente some da lista. No banco, guia apagada e **zero** atendimento
       órfão. Os dados de teste foram removidos no fim.
+- [x] Validade sugerida em "Nova requisição" (15/09/2026, branch
+      `feat/validade-automatica-1-mes`) — o campo "Validade (opcional)" de cada linha de
+      terapia passou a nascer preenchido com `CURRENT_DATE + INTERVAL '1 month'` lido do
+      banco, nos dois desfechos da regra 5 (requisição nova e terapia acrescentada a uma
+      existente), porque é o mesmo formulário. **Nenhuma mudança de schema, nenhuma
+      migration e nenhuma mudança na regra de `status_alerta`** — a view continua
+      decidindo `Renovar` por `validade <= CURRENT_DATE + 7 days`; o efeito pretendido é
+      que a guia sem uso entre sozinha em `Renovar` por volta de um mês depois de criada,
+      em vez de ficar `Regular` para sempre por ter nascido sem validade. Entrou
+      `validadePadraoDeGuia` em `lib/domain/requisicoes.ts` (com `referencia` opcional só
+      para o teste mirar fronteiras de mês); `page.tsx` a busca no mesmo `Promise.all` das
+      listas e a passa como prop; `linhaNova` no formulário ganhou o segundo argumento, o
+      que faz o TypeScript cobrar os três pontos onde uma linha nasce — a inicial, a de
+      "Adicionar outra terapia" e a que volta depois da limpeza do sucesso. `tsc --noEmit`
+      limpo, `npm test` verde (16 arquivos, 244 testes, com a integração contra o banco
+      real), `npm run build` ok e `npm run lint` continua acusando só o erro pré-existente
+      de `acoes-da-guia.tsx`. Testes novos de integração: sete fronteiras de mês com alvos
+      literais (31/01 -> 28/02, e 29/02 em ano bissexto; 30/01 -> 28/02, que 30 dias
+      fixos errariam; 31/08 -> 30/09; 31/12 -> 31/01; um dia comum; 29/02 -> 29/03), a
+      prova de que o ponto de partida é o `CURRENT_DATE` do banco (comparando com a
+      própria função aplicada a `dataDeHoje()`, em vez de repetir a fórmula) e um envio
+      pelo domínio com uma linha de validade digitada por cima e outra apagada — grava a
+      digitada e `NULL`, nunca a sugerida. **Teste manual no navegador feito** (Edge do
+      sistema via `playwright-core` instalado com `--no-save` e removido depois): a página
+      abre com `15/10/2026` já no campo sem ninguém digitar, as duas linhas de "Adicionar
+      outra terapia" nascem com a mesma data, editar a segunda para `09/03/2027` e apagar
+      a terceira e enviar grava exatamente `2026-10-15`, `2027-03-09` e `NULL`, as três
+      saindo `Regular` na view; um segundo envio com o mesmo número para o mesmo paciente
+      anexou a quarta guia sob o mesmo `requisicao_id` (1 linha em `requisicao`, 4 em
+      `requisicao_terapia`) e ela também levou a validade sugerida. Os dados de teste
+      foram removidos no fim.
 
 ## Pendências conhecidas (não bloqueiam o próximo passo, mas não esquecer)
 

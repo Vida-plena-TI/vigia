@@ -1,7 +1,10 @@
 import type { Metadata } from "next";
 
 import { listarNomesDePacientes } from "@/lib/domain/pacientes";
-import { listarTerapias } from "@/lib/domain/requisicoes";
+import {
+  listarTerapias,
+  validadePadraoDeGuia,
+} from "@/lib/domain/requisicoes";
 
 import { FormularioDeRequisicao } from "./formulario-de-requisicao";
 
@@ -14,19 +17,21 @@ export const metadata: Metadata = {
  *
  * Server Component: as duas listas que o formulário precisa (pacientes para o
  * `datalist`, terapias para o `select`) são lidas aqui e vão prontas para o
- * cliente. O formulário em si é client-side porque a lista de terapias cresce
- * e encolhe por estado do React.
+ * cliente, junto da validade que cada linha de terapia já nasce preenchida —
+ * hoje + 1 mês, calculado pelo banco. O formulário em si é client-side porque
+ * a lista de terapias cresce e encolhe por estado do React.
  *
  * A autenticação é garantida pelo layout `app/(app)/layout.tsx`
  * (`requireUsuario`), além da triagem do `proxy.ts` — e de novo dentro da
  * própria Server Action, que é alcançável sem passar por nenhum dos dois.
  */
 export default async function NovaRequisicaoPage() {
-  // Independentes entre si: buscar em paralelo evita somar as duas idas ao
+  // Independentes entre si: buscar em paralelo evita somar as três idas ao
   // banco no tempo de resposta da página.
-  const [nomesDePacientes, terapias] = await Promise.all([
+  const [nomesDePacientes, terapias, validadePadrao] = await Promise.all([
     listarNomesDePacientes(),
     listarTerapias(),
+    validadePadraoDeGuia(),
   ]);
 
   return (
@@ -42,6 +47,7 @@ export default async function NovaRequisicaoPage() {
       <FormularioDeRequisicao
         nomesDePacientes={nomesDePacientes}
         terapias={terapias}
+        validadePadrao={validadePadrao}
       />
     </div>
   );
