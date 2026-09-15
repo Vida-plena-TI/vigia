@@ -182,9 +182,17 @@ teste passar hoje e mentir no mês que vem.
 8. Edição de atendimento: permite `creditos_consumidos = 0`, rejeita negativo. Recalcula a
    soma dos **outros** atendimentos da mesma guia e rejeita se o total após a edição
    exceder `qtd_autorizada`. (Intencionalmente mais permissiva que a regra de lançamento.)
-9. Exclusão de guia: bloqueada no **backend** (não só escondida na UI) quando o status é
-   `"Regular"` — correção deliberada em relação ao sistema legado, que só escondia o botão
-   na interface.
+9. ~~Exclusão de guia: bloqueada no **backend** quando o status é `"Regular"`.~~
+   **Revertida em 15/09/2026, por decisão explícita do usuário.** Qualquer guia pode ser
+   excluída, em qualquer status. A restrição não era pedido original: nasceu como decisão
+   de implementação no Prompt 4, espelhando o sistema legado (que escondia o botão), e
+   virou fricção no uso real — cadastro errado e terapia duplicada por engano precisam
+   ser apagados, e nenhum dos dois muda de status por isso. O backend não guarda mais
+   nenhum limite de status, e a UI mostra "Excluir guia" em toda guia, como já fazia com
+   "Histórico".
+   O que **continua** de pé: o `SELECT ... FOR UPDATE` que trava a guia durante a
+   exclusão, o cascade dos atendimentos filhos (regra 10) e o diálogo de confirmação
+   antes de excluir — que passou a ser o único freio.
 10. Exclusão de guia apaga os atendimentos filhos via `ON DELETE CASCADE` no banco.
 11. Relatório semanal: agrupa guias por paciente, mantém só pacientes com pelo menos uma
     guia `Renovar` ou `Esgotada`. Se a lista final estiver vazia, não envia e-mail.
@@ -230,7 +238,7 @@ teste passar hoje e mentir no mês que vem.
   índice único continua no banco — ver "Número repetido acrescenta em vez de recusar" nas
   decisões de implementação.
 - `qtd_autorizada`: deve ser > 0 na criação da guia.
-- Exclusão de guia `"Regular"` bloqueada no backend.
+- ~~Exclusão de guia `"Regular"` bloqueada no backend.~~ Revertida — ver regra 9.
 - Edição de atendimento para 0 créditos continua permitida.
 
 ## Decisões tomadas durante a implementação (não estavam no relatório original)
@@ -319,12 +327,13 @@ teste passar hoje e mentir no mês que vem.
   para `DD/MM/AAAA` na tela. Virar `Date` faria o dia exibido depender do fuso de
   quem renderiza — servidor e navegador podem discordar e a data aparecer um dia
   deslocada.
-- **Exclusão de guia trava a linha antes de decidir**: `excluirGuiaNaTransacao`
-  faz `SELECT ... FOR UPDATE` em `requisicao_terapia` **antes** de ler o
-  `status_alerta` da view. Sem isso, um lançamento de atendimento concorrente
-  (regra 7, que trava as mesmas linhas) poderia mudar o saldo entre a checagem e
-  o DELETE, e uma guia que voltou a ser "Regular" nesse intervalo seria apagada
-  assim mesmo. Por isso a função recebe o cliente de transação em vez de abrir a
+- **Exclusão de guia trava a linha antes de apagar**: `excluirGuiaNaTransacao`
+  faz `SELECT ... FOR UPDATE` em `requisicao_terapia` antes do DELETE, e é ele
+  quem descobre que a guia não existe. O travamento nasceu para proteger uma
+  checagem de status que não existe mais (regra 9, revertida), mas continua
+  valendo por si: sem ele, um lançamento de atendimento concorrente (regra 7, que
+  trava as mesmas linhas) poderia gravar numa guia que este DELETE está prestes a
+  apagar. Por isso a função recebe o cliente de transação em vez de abrir a
   própria — é o que deixa o teste de integração rodar com rollback.
 - **Filtro de busca do dashboard é client-side**: a lista inteira já vem
   renderizada do servidor e é filtrada em memória (sem acento e sem caixa), sem
@@ -998,8 +1007,9 @@ parecer íntegro na tela.
       `lib/domain/saldo.ts`, testes unitários de borda e teste de integração que compara o
       espelho com a view (Vitest)
 - [x] Prompt 4 — Dashboard (`/dashboard`): resumo por status, lista agrupada por
-      paciente, busca client-side, exclusão de guia validada no backend e
-      histórico de atendimentos em diálogo
+      paciente, busca client-side, exclusão de guia com confirmação e histórico de
+      atendimentos em diálogo (a validação de status que este prompt acrescentou à
+      exclusão foi revertida depois — ver regra 9)
 - [x] Prompt 5 — Cadastro de nova requisição (`/requisicoes/nova`): formulário com
       autocomplete de paciente (`datalist`), lista dinâmica de terapias, validação no
       cliente e no servidor, Server Action transacional com get-or-create
@@ -1164,6 +1174,38 @@ parecer íntegro na tela.
       1 linha em `requisicao`, 4 em `requisicao_terapia`, e as quatro terapias saindo
       sob o mesmo número. **Pendente: a interação de navegador** — ver o roteiro nas
       pendências conhecidas
+- [x] Exclusão de guia liberada em qualquer status (15/09/2026, branch
+      `fix/permitir-exclusao-guia-regular`) — **reversão deliberada da regra 9**, a pedido
+      explícito do usuário: o bloqueio de exclusão quando o status era `"Regular"` era
+      decisão de implementação do Prompt 4, não pedido original, e causava fricção no uso
+      real (cadastro errado, terapia duplicada por engano). Saíram a checagem de status em
+      `excluirGuiaNaTransacao`, as constantes `ERRO_GUIA_REGULAR` e
+      `STATUS_QUE_PERMITEM_EXCLUSAO`, e a consulta do `status_alerta` que só existia para
+      alimentá-la — a exclusão não lê mais a view. Na UI, `AcoesDaGuia` deixou de esconder
+      "Excluir guia": ele aparece em toda guia, como "Histórico". **Nada mais mudou**: o
+      `SELECT ... FOR UPDATE` continua travando a linha (agora é ele quem detecta a guia
+      inexistente), o cascade dos atendimentos é o mesmo e o diálogo de confirmação
+      continua no caminho. Testes invertidos em vez de apagados: no unitário, `Regular`
+      entrou no `it.each` dos três status que são excluídos com sucesso, mais um caso novo
+      que exige que o `status_alerta` **não seja consultado** (a regressão de recolocar a
+      checagem precisa dele) e o antigo teste de ordem virou "trava com FOR UPDATE antes de
+      apagar", por `invocationCallOrder`; na integração, os três status viraram um
+      `it.each` com o mesmo desfecho — guia apagada e zero atendimento órfão —, e o caso de
+      guia inexistente cobre o `FOR UPDATE` contra o Postgres real. A exclusividade da
+      trava não é observável de dentro de uma transação que sofre rollback (outra conexão
+      nem enxerga a guia), e isso ficou escrito no teste. `tsc --noEmit` limpo, `npm test`
+      verde (16 arquivos, 235 testes, com a integração rodando contra o banco real),
+      `npm run build` ok e `npm run lint` continua acusando só o erro pré-existente de
+      `acoes-da-guia.tsx` — confirmado rodando o lint com as mudanças guardadas.
+      **Teste manual no navegador, enfim feito** (esta sessão teve browser controlável —
+      Edge do sistema via Playwright instalado com `--no-save` e removido depois): guia
+      `Regular` criada no banco de desenvolvimento (20 autorizados, 2 consumidos, sem
+      validade), aberta no dashboard com cookie de sessão selado à mão — o botão "Excluir
+      guia" aparece na linha com o selo "Regular", o diálogo de confirmação abre com o
+      texto certo (terapia, paciente, número da requisição e o aviso do cascade),
+      confirmar fecha o diálogo sem mensagem de erro, o resumo do topo cai de 7 para 6 em
+      "Regular" e o paciente some da lista. No banco, guia apagada e **zero** atendimento
+      órfão. Os dados de teste foram removidos no fim.
 
 ## Pendências conhecidas (não bloqueiam o próximo passo, mas não esquecer)
 

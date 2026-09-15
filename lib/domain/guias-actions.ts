@@ -5,8 +5,9 @@
  *
  * Toda função daqui é alcançável por um POST direto, sem passar pela UI — é
  * exatamente por isso que a regra 4 do CONTEXT.md exige `requireUsuario()` em
- * cada uma, e a regra 9 (bloquear exclusão de guia "Regular") mora no
- * backend, em `excluirGuiaNaTransacao`, e não no `if` que esconde o botão.
+ * cada uma. O status da guia não restringe mais a exclusão (a regra 9 do
+ * CONTEXT.md foi revertida); o que sobrou de proteção é a transação com
+ * `FOR UPDATE` em `excluirGuiaNaTransacao` e a confirmação na interface.
  *
  * O `id` chega do cliente e é tratado como entrada não confiável: quem valida
  * é `lib/domain/guias.ts`.
@@ -24,10 +25,10 @@ import {
 } from "./guias";
 
 /**
- * Exclui uma guia, se o status permitir.
+ * Exclui uma guia, seja qual for o status dela.
  *
- * Devolve o erro em vez de lançar: a falha esperada aqui (guia "Regular") é
- * uma mensagem para o usuário, não uma exceção.
+ * Devolve o erro em vez de lançar: a falha esperada aqui (guia que já sumiu,
+ * id inválido) é uma mensagem para o usuário, não uma exceção.
  */
 export async function excluirGuia(
   guiaId: number,

@@ -51,21 +51,18 @@ const CLASSE_TEXTAREA =
   "min-h-16 w-full rounded-lg border border-input bg-transparent px-2.5 py-2 text-base transition-colors outline-none placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 disabled:cursor-not-allowed disabled:opacity-50 aria-invalid:border-destructive aria-invalid:ring-3 aria-invalid:ring-destructive/20 md:text-sm";
 
 /**
- * Botões de uma guia: "Histórico" sempre, "Excluir guia" só em Renovar e
- * Esgotada.
+ * Botões de uma guia: "Histórico" e "Excluir guia", ambos sempre visíveis.
  *
- * Esconder o botão aqui é só para não oferecer uma ação que vai falhar. Quem
- * de fato rejeita a exclusão de uma guia "Regular" é a Server Action
- * `excluirGuia` (regra 9 do CONTEXT.md) — este componente pode ser
- * contornado, ela não.
+ * O botão de excluir já foi condicionado ao status (só Renovar e Esgotada),
+ * espelhando a antiga regra 9 do CONTEXT.md. A regra foi revertida a pedido do
+ * usuário — excluir cadastro errado ou terapia duplicada é rotina, e o status
+ * não tem como saber disso. O diálogo de confirmação continua sendo o freio.
  */
 export function AcoesDaGuia({ guia }: { guia: GuiaDoDashboard }) {
-  const podeExcluir = guia.statusAlerta !== "Regular";
-
   return (
     <div className="flex flex-wrap gap-2 md:justify-end">
       <HistoricoDaGuia guia={guia} />
-      {podeExcluir ? <ExcluirGuia guia={guia} /> : null}
+      <ExcluirGuia guia={guia} />
     </div>
   );
 }
@@ -515,8 +512,8 @@ function ExcluirGuia({ guia }: { guia: GuiaDoDashboard }) {
           return;
         }
 
-        // Ex.: a guia virou "Regular" (ou sumiu) desde que a página foi
-        // renderizada. O diálogo fica aberto mostrando o motivo.
+        // Ex.: a guia sumiu desde que a página foi renderizada. O diálogo
+        // fica aberto mostrando o motivo.
         setErro(resultado.erro);
       } catch {
         setErro("Não foi possível excluir a guia.");

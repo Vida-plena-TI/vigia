@@ -6,9 +6,11 @@
  * (CONTEXT.md, "Campos calculados"). Nada aqui recalcula a fórmula em
  * TypeScript — `lib/domain/saldo.ts` é só espelho para teste.
  *
- * A regra 9 do CONTEXT.md (exclusão de guia "Regular" bloqueada) vive em
- * {@link excluirGuiaNaTransacao}, no backend. Esconder o botão na UI é
- * conforto visual, não é a validação.
+ * A regra 9 do CONTEXT.md — que bloqueava a exclusão de guia "Regular" — foi
+ * revertida por decisão explícita do usuário: o status não limita mais a
+ * exclusão. {@link excluirGuiaNaTransacao} continua travando a guia com
+ * `FOR UPDATE` e levando os atendimentos filhos no cascade (regra 10), mas
+ * não olha mais o status.
  */
 import { getPrismaClient } from "@/lib/db";
 import { OPCOES_DE_TRANSACAO } from "@/lib/db/transacao";
@@ -65,14 +67,6 @@ export type ResultadoExclusao = { ok: true } | { ok: false; erro: string };
 
 export const ERRO_ID_INVALIDO = "Identificador de guia inválido.";
 export const ERRO_GUIA_INEXISTENTE = "Guia não encontrada.";
-export const ERRO_GUIA_REGULAR =
-  'Guia com status "Regular" não pode ser excluída.';
-
-/** Os únicos status que autorizam exclusão (regra 9 do CONTEXT.md). */
-export const STATUS_QUE_PERMITEM_EXCLUSAO: readonly StatusAlerta[] = [
-  "Renovar",
-  "Esgotada",
-];
 
 /** Linha crua da consulta do dashboard, antes da validação do status. */
 type LinhaDoDashboard = Omit<GuiaDoDashboard, "statusAlerta"> & {
@@ -209,17 +203,17 @@ export async function listarAtendimentosDaGuia(
 }
 
 /**
- * Exclusão de guia (regra 9 do CONTEXT.md), já dentro de uma transação.
+ * Exclusão de guia, já dentro de uma transação.
  *
- * O status é lido da view, nunca recalculado aqui. A ordem importa:
+ * Qualquer guia pode ser excluída, em qualquer status: a antiga regra 9 do
+ * CONTEXT.md (recusar "Regular") saiu a pedido do usuário, porque impedia
+ * apagar cadastro errado e terapia duplicada por engano. A ordem importa:
  *
  *   1. `SELECT ... FOR UPDATE` na linha de `requisicao_terapia`, travando a
  *      guia. Sem isso um lançamento de atendimento concorrente (regra 7, que
- *      trava as mesmas linhas) poderia mudar o saldo entre a leitura do status
- *      e o DELETE, e uma guia que voltou a ser "Regular" nesse intervalo seria
- *      apagada mesmo assim;
- *   2. leitura do `status_alerta` da view;
- *   3. DELETE, que leva junto os atendimentos filhos via ON DELETE CASCADE
+ *      trava as mesmas linhas) poderia gravar atendimento numa guia que este
+ *      DELETE está prestes a apagar;
+ *   2. DELETE, que leva junto os atendimentos filhos via ON DELETE CASCADE
  *      (regra 10) — o cascade está no banco, não é feito em código.
  *
  * Recebe o cliente da transação em vez de abrir a própria para o teste de
@@ -241,22 +235,6 @@ export async function excluirGuiaNaTransacao(
 
   if (travadas.length === 0) {
     return { ok: false, erro: ERRO_GUIA_INEXISTENTE };
-  }
-
-  const linhas = await tx.$queryRaw<{ statusAlerta: string }[]>`
-    SELECT "status_alerta" AS "statusAlerta"
-    FROM "requisicao_terapia_saldo"
-    WHERE "id" = ${guiaId}
-  `;
-
-  if (linhas.length === 0) {
-    return { ok: false, erro: ERRO_GUIA_INEXISTENTE };
-  }
-
-  const status = comoStatusAlerta(linhas[0].statusAlerta);
-
-  if (!STATUS_QUE_PERMITEM_EXCLUSAO.includes(status)) {
-    return { ok: false, erro: ERRO_GUIA_REGULAR };
   }
 
   await tx.requisicaoTerapia.delete({ where: { id: guiaId } });

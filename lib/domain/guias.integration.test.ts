@@ -1,10 +1,14 @@
 /**
  * Contraparte de `guias.test.ts` contra o Postgres real.
  *
- * O teste unitário prova que o nosso código decide certo a partir do
- * `status_alerta`; este prova que o status vem mesmo da view e que a regra 9
- * do CONTEXT.md sobrevive ao caminho completo (view -> decisão -> DELETE),
- * incluindo o cascade da regra 10.
+ * O teste unitário prova a decisão do nosso código com o banco dublado; este
+ * prova que a exclusão sobrevive ao caminho completo contra o Postgres, em
+ * qualquer status — a regra 9 do CONTEXT.md, que recusava "Regular", foi
+ * revertida por decisão do usuário —, incluindo o cascade da regra 10.
+ *
+ * Os três casos criam guias em status diferentes (lido da view, para o teste
+ * provar que o status é o que se pensa) e exigem o mesmo desfecho: guia
+ * apagada e atendimentos filhos junto.
  *
  * Como roda (mesmo contrato de `saldo.integration.test.ts`):
  *   - precisa de DATABASE_URL com as migrations aplicadas; sem ela o bloco é
@@ -16,7 +20,7 @@ import { afterAll, describe, expect, it } from "vitest";
 
 import { getPrismaClient } from "@/lib/db";
 
-import { ERRO_GUIA_REGULAR, excluirGuiaNaTransacao } from "./guias";
+import { ERRO_GUIA_INEXISTENTE, excluirGuiaNaTransacao } from "./guias";
 
 const temBanco = Boolean(process.env.DATABASE_URL);
 
@@ -123,68 +127,83 @@ describe.skipIf(!temBanco)("exclusao de guia contra o banco real", () => {
     await getPrismaClient().$disconnect();
   });
 
-  it("recusa apagar uma guia Regular e deixa a linha no banco", async () => {
-    const resultado = await comRollback(async (tx) => {
+  /**
+   * Cada caso descreve uma guia por saldo e o status que a view tem de dar a
+   * ela; o desfecho esperado é o mesmo nos três.
+   */
+  const CASOS = [
+    {
       // 20 autorizados, 2 consumidos, sem validade: sobra muito -> Regular.
-      const guia = await criarGuia(tx, "regular", 20, [2]);
-
-      const exclusao = await excluirGuiaNaTransacao(tx, guia.id);
-
-      const aindaExiste = await tx.requisicaoTerapia.findUnique({
-        where: { id: guia.id },
-        select: { id: true },
-      });
-
-      return { guia, exclusao, aindaExiste };
-    });
-
-    expect(resultado.guia.statusAlerta).toBe("Regular");
-    expect(resultado.exclusao).toEqual({ ok: false, erro: ERRO_GUIA_REGULAR });
-    expect(resultado.aindaExiste).not.toBeNull();
-  });
-
-  it("apaga uma guia Esgotada junto com os atendimentos (cascade)", async () => {
-    const resultado = await comRollback(async (tx) => {
-      // 8 autorizados, 8 consumidos: saldo zerado -> Esgotada.
-      const guia = await criarGuia(tx, "esgotada", 8, [5, 3]);
-
-      const exclusao = await excluirGuiaNaTransacao(tx, guia.id);
-
-      const aindaExiste = await tx.requisicaoTerapia.findUnique({
-        where: { id: guia.id },
-        select: { id: true },
-      });
-
-      const atendimentosOrfaos = await tx.atendimento.count({
-        where: { requisicaoTerapiaId: guia.id },
-      });
-
-      return { guia, exclusao, aindaExiste, atendimentosOrfaos };
-    });
-
-    expect(resultado.guia.statusAlerta).toBe("Esgotada");
-    expect(resultado.exclusao).toEqual({ ok: true });
-    expect(resultado.aindaExiste).toBeNull();
-    expect(resultado.atendimentosOrfaos).toBe(0);
-  });
-
-  it("apaga uma guia Renovar", async () => {
-    const resultado = await comRollback(async (tx) => {
+      status: "Regular",
+      rotulo: "regular",
+      qtdAutorizada: 20,
+      creditos: [2],
+    },
+    {
       // 20 autorizados, 16 consumidos: saldo 4 = 25% -> Renovar.
-      const guia = await criarGuia(tx, "renovar", 20, [16]);
+      status: "Renovar",
+      rotulo: "renovar",
+      qtdAutorizada: 20,
+      creditos: [16],
+    },
+    {
+      // 8 autorizados, 8 consumidos: saldo zerado -> Esgotada.
+      status: "Esgotada",
+      rotulo: "esgotada",
+      qtdAutorizada: 8,
+      creditos: [5, 3],
+    },
+  ] as const;
 
-      const exclusao = await excluirGuiaNaTransacao(tx, guia.id);
+  it.each(CASOS)(
+    "apaga uma guia $status junto com os atendimentos (cascade)",
+    async ({ status, rotulo, qtdAutorizada, creditos }) => {
+      const resultado = await comRollback(async (tx) => {
+        const guia = await criarGuia(tx, rotulo, qtdAutorizada, [...creditos]);
 
-      const aindaExiste = await tx.requisicaoTerapia.findUnique({
-        where: { id: guia.id },
-        select: { id: true },
+        const exclusao = await excluirGuiaNaTransacao(tx, guia.id);
+
+        const aindaExiste = await tx.requisicaoTerapia.findUnique({
+          where: { id: guia.id },
+          select: { id: true },
+        });
+
+        const atendimentosOrfaos = await tx.atendimento.count({
+          where: { requisicaoTerapiaId: guia.id },
+        });
+
+        return { guia, exclusao, aindaExiste, atendimentosOrfaos };
       });
 
-      return { guia, exclusao, aindaExiste };
+      // O status é lido da view: se a fórmula mudar, o caso falha aqui em vez
+      // de passar testando outra coisa.
+      expect(resultado.guia.statusAlerta).toBe(status);
+      expect(resultado.exclusao).toEqual({ ok: true });
+      expect(resultado.aindaExiste).toBeNull();
+      expect(resultado.atendimentosOrfaos).toBe(0);
+    },
+  );
+
+  /**
+   * O `SELECT ... FOR UPDATE` da exclusão é o que descobre que a guia não
+   * existe — não há mais nenhuma outra consulta antes do DELETE. Este caso
+   * cobre o caminho contra o Postgres real: se aquele SQL deixasse de rodar,
+   * o DELETE do Prisma estouraria em vez de devolver o erro tratado.
+   *
+   * A exclusividade do travamento em si não dá para observar daqui: tudo
+   * acontece numa transação que sofre rollback, então uma segunda conexão nem
+   * enxergaria a guia para disputar a trava. Quem guarda a ordem (travar antes
+   * de apagar) é o teste unitário.
+   */
+  it("recusa uma guia que não existe, pelo FOR UPDATE", async () => {
+    const exclusao = await comRollback(async (tx) => {
+      const guia = await criarGuia(tx, "sumida", 20, [2]);
+
+      await tx.requisicaoTerapia.delete({ where: { id: guia.id } });
+
+      return excluirGuiaNaTransacao(tx, guia.id);
     });
 
-    expect(resultado.guia.statusAlerta).toBe("Renovar");
-    expect(resultado.exclusao).toEqual({ ok: true });
-    expect(resultado.aindaExiste).toBeNull();
+    expect(exclusao).toEqual({ ok: false, erro: ERRO_GUIA_INEXISTENTE });
   });
 });

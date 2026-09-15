@@ -1,16 +1,17 @@
 /**
- * A regra 9 do CONTEXT.md — exclusão de guia "Regular" bloqueada — é uma regra
- * de backend, não de interface.
+ * A regra 9 do CONTEXT.md — exclusão de guia "Regular" bloqueada no backend —
+ * foi revertida por decisão explícita do usuário: o status deixou de limitar a
+ * exclusão. Estes testes guardam a decisão nova (qualquer status é excluível) e
+ * o que continuou de pé: `FOR UPDATE` antes do DELETE, sessão obrigatória e
+ * validação do id.
  *
- * O sistema legado só escondia o botão. Um teste que clica no botão nunca
- * pegaria isso: o botão escondido não é clicável, e o teste passaria com a
- * validação inexistente. Por isso estes testes chamam a Server Action
- * `excluirGuia` **diretamente**, como faria um POST manual para o endpoint da
- * action — que é como uma Server Action é alcançável de fato.
+ * Eles chamam a Server Action `excluirGuia` **diretamente**, como faria um POST
+ * manual para o endpoint da action — que é como uma Server Action é alcançável
+ * de fato, e o único jeito de provar que o backend não guarda mais nenhuma
+ * restrição de status escondida atrás do botão.
  *
- * O banco é dublado: o que está sob teste é a decisão do nosso código a partir
- * do `status_alerta` que a view devolve, não o SQL. A contraparte contra o
- * Postgres real está em `guias.integration.test.ts`.
+ * O banco é dublado: o que está sob teste é a decisão do nosso código, não o
+ * SQL. A contraparte contra o Postgres real está em `guias.integration.test.ts`.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -24,8 +25,10 @@ const mocks = vi.hoisted(() => {
   const deletarGuia = vi.fn(async () => ({}));
 
   /**
-   * `$queryRaw` é chamado como template tag; distinguimos as duas consultas
-   * pelo texto para o teste não depender da ordem em que elas acontecem.
+   * `$queryRaw` é chamado como template tag. O dublê ainda sabe responder a
+   * consulta de `status_alerta` de propósito: se o código voltasse a perguntar
+   * o status, o teste "não consulta o status" flagra, em vez de o dublê
+   * estourar e confundir o motivo da falha.
    */
   const consultar = vi.fn(async (partes: TemplateStringsArray) => {
     const sql = partes.join(" ");
@@ -65,7 +68,7 @@ vi.mock("@/lib/auth/current-user", () => ({
 
 vi.mock("next/cache", () => ({ refresh: mocks.refresh }));
 
-import { ERRO_GUIA_INEXISTENTE, ERRO_GUIA_REGULAR, ERRO_ID_INVALIDO } from "./guias";
+import { ERRO_GUIA_INEXISTENTE, ERRO_ID_INVALIDO } from "./guias";
 import { excluirGuia } from "./guias-actions";
 
 const ID_DA_GUIA = 7;
@@ -76,39 +79,34 @@ beforeEach(() => {
   mocks.banco.status = "Regular";
 });
 
-describe("excluirGuia (Server Action) — regra 9 do CONTEXT.md", () => {
-  it("rejeita guia Regular mesmo chamada direto, sem passar pela UI", async () => {
+describe("excluirGuia (Server Action)", () => {
+  it.each(["Regular", "Renovar", "Esgotada"])(
+    "exclui uma guia %s, chamada direto, sem passar pela UI",
+    async (status) => {
+      mocks.banco.status = status;
+
+      const resultado = await excluirGuia(ID_DA_GUIA);
+
+      expect(resultado).toEqual({ ok: true });
+      expect(mocks.deletarGuia).toHaveBeenCalledWith({
+        where: { id: ID_DA_GUIA },
+      });
+      expect(mocks.refresh).toHaveBeenCalled();
+    },
+  );
+
+  it("não consulta o status da guia para decidir", async () => {
     mocks.banco.status = "Regular";
 
-    const resultado = await excluirGuia(ID_DA_GUIA);
+    await excluirGuia(ID_DA_GUIA);
 
-    expect(resultado).toEqual({ ok: false, erro: ERRO_GUIA_REGULAR });
-    // O ponto do teste: nada foi apagado. Se a validação vivesse só no `if`
-    // que esconde o botão, este `delete` teria acontecido.
-    expect(mocks.deletarGuia).not.toHaveBeenCalled();
-    expect(mocks.refresh).not.toHaveBeenCalled();
-  });
+    // O ponto da reversão: "Regular" não é mais um veto. Se alguém recolocar a
+    // checagem, ela precisa do status — e esta consulta reaparece.
+    const consultas = mocks.consultar.mock.calls.map(([partes]) =>
+      partes.join(" "),
+    );
 
-  it("aceita guia Renovar", async () => {
-    mocks.banco.status = "Renovar";
-
-    const resultado = await excluirGuia(ID_DA_GUIA);
-
-    expect(resultado).toEqual({ ok: true });
-    expect(mocks.deletarGuia).toHaveBeenCalledWith({
-      where: { id: ID_DA_GUIA },
-    });
-  });
-
-  it("aceita guia Esgotada", async () => {
-    mocks.banco.status = "Esgotada";
-
-    const resultado = await excluirGuia(ID_DA_GUIA);
-
-    expect(resultado).toEqual({ ok: true });
-    expect(mocks.deletarGuia).toHaveBeenCalledWith({
-      where: { id: ID_DA_GUIA },
-    });
+    expect(consultas.some((sql) => sql.includes("status_alerta"))).toBe(false);
   });
 
   it("exige usuário autenticado antes de tocar no banco", async () => {
@@ -121,18 +119,20 @@ describe("excluirGuia (Server Action) — regra 9 do CONTEXT.md", () => {
     expect(mocks.deletarGuia).not.toHaveBeenCalled();
   });
 
-  it("lê o status só depois de travar a linha da guia", async () => {
-    mocks.banco.status = "Esgotada";
+  it("trava a linha da guia com FOR UPDATE antes de apagar", async () => {
+    mocks.banco.status = "Regular";
 
     await excluirGuia(ID_DA_GUIA);
 
-    // Sem o FOR UPDATE antes da leitura, um lançamento de atendimento
-    // concorrente poderia devolver a guia para "Regular" entre a checagem e o
-    // DELETE, e ela seria apagada assim mesmo.
-    const [primeira, segunda] = mocks.consultar.mock.calls;
+    // Sem o FOR UPDATE, um lançamento de atendimento concorrente (regra 7, que
+    // trava as mesmas linhas) poderia gravar num intervalo em que esta guia já
+    // está a caminho do DELETE.
+    const [travamento] = mocks.consultar.mock.calls;
 
-    expect(primeira[0].join(" ")).toContain("FOR UPDATE");
-    expect(segunda[0].join(" ")).toContain("status_alerta");
+    expect(travamento[0].join(" ")).toContain("FOR UPDATE");
+    expect(mocks.consultar.mock.invocationCallOrder[0]).toBeLessThan(
+      mocks.deletarGuia.mock.invocationCallOrder[0],
+    );
   });
 
   it("rejeita guia inexistente sem apagar nada", async () => {
@@ -142,6 +142,7 @@ describe("excluirGuia (Server Action) — regra 9 do CONTEXT.md", () => {
 
     expect(resultado).toEqual({ ok: false, erro: ERRO_GUIA_INEXISTENTE });
     expect(mocks.deletarGuia).not.toHaveBeenCalled();
+    expect(mocks.refresh).not.toHaveBeenCalled();
   });
 
   it.each([0, -1, 1.5, Number.NaN])(
