@@ -15,12 +15,13 @@ Sistema de controle de autorizações de terapia de uma clínica.
 > em algum lugar do código, de um comentário ou de uma sessão anterior a afirmação de que
 > não há perfis, ela está desatualizada — o texto certo é este.
 >
-> A reversão é a **Fase A** de um plano de quatro fases (papéis → rotas por convênio →
-> controle de acesso → SulAmérica). Ver "Plano de papéis e convênios" no fim de
-> "Progresso": **só a Fase A está implementada**, e ela acrescenta apenas o *dado*.
-> Nenhuma rota é bloqueada e nenhuma permissão é checada por papel ainda — quem lê este
-> documento procurando controle de acesso não vai encontrar, porque ele não existe (Fase
-> C).
+> A reversão começou na **Fase A** de um plano de quatro fases (papéis → rotas por
+> convênio → controle de acesso → SulAmérica). Ver "Plano de papéis e convênios" no fim de
+> "Progresso": **as Fases A, B e C estão implementadas**. Desde a Fase C (17/09/2026) o
+> papel **barra**: a recepção alcança só o painel e as duas telas de atendimento, e a raiz
+> "/" mostra a escolha de convênio para o admin. As regras estão na regra de negócio 17 e
+> em "Controle de acesso por papel" nas decisões de implementação. Se você encontrar em
+> algum lugar a afirmação de que o papel ainda não é checado, ela é de antes da Fase C.
 
 ## Stack
 
@@ -165,6 +166,9 @@ teste passar hoje e mentir no mês que vem.
    nova, já que uma Server Action é alcançável por POST direto sem passar pelo proxy).
    Sessão órfã (usuário desativado/apagado com sessão ainda aberta) é detectada por essa
    segunda camada e limpa o cookie.
+   **A regra 17 (acesso por papel) repete essas mesmas duas camadas**, uma altura acima: o
+   proxy desvia pelo papel do cookie, a página e a Server Action reconfirmam pelo papel do
+   banco.
    **Exceção: rotas sob `/api/cron/`.** Elas autenticam a si mesmas por Bearer token
    (`CRON_SECRET`) e são chamadas servidor-a-servidor pelo Vercel Cron, que nunca tem
    cookie de sessão. O `proxy.ts` as dispensa da triagem; a proteção continua sendo a
@@ -246,6 +250,22 @@ teste passar hoje e mentir no mês que vem.
     guias e atendimentos — em `DELETE` real, numa única transação. Não há soft-delete,
     arquivamento nem lixeira. Ver "Exclusão permanente de paciente" nas decisões de
     implementação, inclusive a ressalva sobre guarda de prontuário.
+
+17. **Acesso por papel (17/09/2026, Fase C).** `admin` tem acesso irrestrito — a tudo que
+    existe hoje e a toda rota nova, sem precisar ser cadastrada em lugar nenhum.
+    `recepcao` alcança **somente** `/klini/dashboard`, `/klini/atendimentos/novo`,
+    `/klini/atendimentos/hoje` e a raiz `/`; qualquer outro caminho a manda para
+    `/klini/dashboard`. Na prática, o que fica de fora é "Nova requisição" e
+    "Encaminhamentos" (inclusive a exclusão permanente de paciente, que só existe lá). A
+    raiz `/` ramifica: admin vê a tela de escolha de convênio, recepção é redirecionada
+    direto para `/klini/dashboard`, sem ver escolha nenhuma. Quem não tem permissão vai
+    para `/klini/dashboard`, **não** para `/login`: a pessoa está autenticada: falta
+    permissão, não identificação — e mandá-la ao login faria o `next=` trazê-la de volta
+    para a mesma parede. A regra é decidida num lugar só, `podeAcessarRota` em
+    `lib/auth/acesso.ts`, e é escrita como **lista do que a recepção pode**, não do que
+    ela não pode: rota nova nasce fechada para ela (a `/sulamerica` da Fase D inclusive) e
+    aberta para o admin. Ver "Controle de acesso por papel" nas decisões de implementação
+    para as camadas.
 
 ## Decisões assumidas (perguntas em aberto no relatório de auditoria original)
 
@@ -404,8 +424,9 @@ teste passar hoje e mentir no mês que vem.
 - **Papel na sessão, mas a sessão não é a autoridade.** O cookie assinado passou a levar
   `papel` e `username` junto de `usuarioId` (`SessionData` em `lib/auth/session-options.ts`,
   gravados no `login` de `lib/auth/actions.ts`). O motivo é o `proxy.ts`, que roda antes de
-  tudo e **não consulta o banco**: com o papel no cookie ele poderá decidir redirect/UI na
-  Fase C sem uma ida ao Postgres por requisição. Nada lê esse campo ainda.
+  tudo e **não consulta o banco**: com o papel no cookie ele decide o desvio da Fase C sem
+  uma ida ao Postgres por requisição. Desde a Fase C é `proxy.ts` quem lê esse campo — e
+  ninguém mais.
   Isso **não** move a autoridade para o cookie. `requireUsuario()` continua sendo a fonte
   de verdade (regra 4), pela mesma razão de sempre — ela enxerga conta desativada ou papel
   trocado *depois* que o cookie foi selado, e o cookie não. Os campos do cookie são cópias
@@ -418,6 +439,52 @@ teste passar hoje e mentir no mês que vem.
   pé, e é o que impede uma conta circular com um papel que o TypeScript acha que conhece.
   **Nota para quem vier depois:** `username` **não** estava na sessão antes desta mudança
   (só `usuarioId`). Ele entrou junto, pela mesma razão que o papel.
+- **Controle de acesso por papel (17/09/2026, Fase C, branch
+  `feat/controle-de-acesso-por-papel`) — duas camadas, e a lista é do lado do permitido.**
+  A regra de quem alcança o quê (regra 17) mora em **um** módulo, `lib/auth/acesso.ts`, e
+  as três coisas que dependem dela leem de lá: o `proxy.ts`, as páginas/Server Actions
+  restritas e o menu. O módulo não importa `server-only`, pelo mesmo motivo de `papel.ts`:
+  o proxy roda fora do contexto de renderização.
+  **Camada 1, otimista — `proxy.ts`.** Abre o cookie assinado, lê o `papel` que o login
+  selou ali e, se aquele papel não alcança o caminho pedido, redireciona para
+  `/klini/dashboard`. Não consulta o banco; é a mesma divisão de trabalho da regra 4, uma
+  altura acima: rápido, sem I/O, e **nunca** a palavra final.
+  **Camada 2, autoritativa — a página e a Server Action.** `requireAcessoARota()`
+  (páginas) e `autorizarRota()` (actions), em `lib/auth/current-user.ts`, decidem pelo
+  papel **lido do banco** naquela requisição. É a camada que enxerga um papel trocado
+  depois que o cookie foi selado, e é a única que existe no caminho de um POST montado à
+  mão — uma Server Action é alcançável sem navegar, e proteção que mora na navegação se
+  contorna com um `curl`. A página redireciona; a action **devolve erro**
+  (`MENSAGEM_SEM_PERMISSAO`) em vez de lançar, porque o chamador legítimo desse caminho é
+  uma aba velha, aberta antes de o papel mudar, e o que ela precisa é de uma frase no
+  formulário.
+  **Camada 3, o menu — conveniência, não proteção.** `itensDeNavegacaoPara`
+  (`app/(app)/itens-de-navegacao.ts`) filtra os itens da faixa pelo mesmo
+  `podeAcessarRota`, e o botão "Nova requisição" do painel some pelo mesmo teste. Esconder
+  link não barra ninguém; ele existe para a recepção não ver uma porta que não abre.
+  **Allowlist, não lista de proibidas.** `podeAcessarRota` responde `true` para `admin`
+  sem olhar caminho, e para `recepcao` só nos prefixos de `ROTAS_DA_RECEPCAO`. A
+  alternativa (listar as rotas proibidas) faria toda rota futura nascer **aberta** para a
+  recepção — e o esquecimento seria silencioso. Com o allowlist, quem criar `/sulamerica`
+  na Fase D precisa decidir explicitamente se a recepção entra.
+  **A única decisão permissiva do conjunto, e por quê.** No proxy, cookie **sem** `papel`
+  passa. Isso contraria a nota da Fase A ("ausente é o caso restritivo"), e a troca é
+  deliberada: cookie sem papel é um cookie selado antes da Fase A, ou seja, de um usuário
+  que era necessariamente admin. Fechar ali jogaria todo admin com sessão aberta no
+  painel, sem explicação, no deploy — e não compraria segurança nenhuma, porque a camada 2
+  recusa de qualquer forma (ela lê o banco, não o cookie). No banco a ausência não existe:
+  papel fora de `PAPEIS` derruba a autenticação em `getUsuarioAtual`.
+  **A raiz `/` deixou de ser um `redirect` fixo.** `app/(app)/page.tsx` virou tela de
+  escolha de convênio para o admin (dois cartões, sem cor — convênio não é status) e
+  continua um `redirect` para quem é recepção. O cartão da SulAmérica já aponta para
+  `/sulamerica/dashboard`, que **ainda dá 404** até a Fase D: o destino é o definitivo
+  desde agora para o link não ter de mudar depois. A marca "VIGIA" do cabeçalho passou a
+  levar para `/` em vez de `/klini/dashboard` — é o único caminho de volta para a escolha.
+  **O que a Fase C NÃO faz:** nenhuma checagem de papel entrou nas actions do painel e dos
+  atendimentos (lançar, editar, excluir atendimento, excluir guia, histórico). São as
+  telas que a recepção usa, e elas continuam exigindo só `requireUsuario()`. Consequência
+  assumida: a recepção pode excluir uma guia pelo painel, embora não possa criar uma
+  requisição. Se isso não for o desejado, é regra nova, não correção de bug.
 - **Collation do banco (verificado em 31/08/2026)**: o Postgres de desenvolvimento é
   16.11, `server_encoding = UTF8`, `datcollate = datctype = Portuguese_Brazil.1252`.
   **Não** é a collation `C`. Consequência prática: `lower()` faz case-folding Unicode
@@ -1117,9 +1184,15 @@ parecer íntegro na tela.
 - Não fazer `create-recepcao` cair em `ADMIN_USERNAME`/`ADMIN_PASSWORD` (nem o contrário)
   "para reaproveitar". O par separado é o que impede um comando de mexer na conta errada —
   e há teste que lê os dois fontes e afirma isso.
-- Não implementar bloqueio de rota por papel antes da Fase C. A Fase A entrega o dado; as
-  fases B e C vêm antes da autorização, e pular direto para ela deixaria a reorganização de
-  rotas por convênio para ser desfeita depois.
+- Não decidir permissão a partir do cookie fora do `proxy.ts`. O papel do cookie é cópia
+  que envelhece: ele serve para o desvio otimista e nada mais. Página e Server Action
+  decidem pelo papel do banco (`requireAcessoARota` / `autorizarRota`) — ver a regra 17 e
+  "Controle de acesso por papel".
+- Não escrever a regra de acesso em dois lugares. `podeAcessarRota` (`lib/auth/acesso.ts`)
+  é a única fonte: proxy, páginas/actions e menu leem dela. Um menu que decida por conta
+  própria é um menu que um dia vai discordar da permissão de verdade.
+- Não esconder link achando que isso protege. O item do menu some por conveniência; quem
+  barra são as duas camadas de backend.
 
 ## Progresso
 
@@ -1441,6 +1514,53 @@ parecer íntegro na tela.
     acesso da Fase C deixaria a recepção alcançando telas que deveria ter bloqueadas. As
     duas fases sobem juntas.
 
+- [x] Fase C do plano de papéis e convênios (17/09/2026, branch
+      `feat/controle-de-acesso-por-papel`) — o papel passou a barrar. A regra de negócio
+      17 diz o que vale; "Controle de acesso por papel" nas decisões de implementação diz
+      como e por quê. Em código: `lib/auth/acesso.ts` (a regra, num lugar só), `proxy.ts`
+      (camada otimista), `requireAcessoARota`/`autorizarRota` em
+      `lib/auth/current-user.ts` (camada autoritativa) usados nas duas páginas restritas e
+      nas quatro actions delas (criar requisição, cadastrar/substituir encaminhamento,
+      contar e excluir paciente), `app/(app)/itens-de-navegacao.ts` (menu) e
+      `app/(app)/page.tsx` (escolha de convênio).
+  - **Verificado com `tsc --noEmit` limpo, 276 testes verdes e `next build` ok.** `npm run
+    lint` continua acusando só o erro pré-existente de `acoes-da-guia.tsx`. Testes novos:
+    a tabela de permissões (`lib/auth/acesso.test.ts`), o desvio do proxy com cookie
+    selado de verdade (`lib/auth/proxy.test.ts`), a recusa das quatro actions com o papel
+    vindo de um Prisma dublê (`lib/domain/acesso-por-papel.test.ts` — o que se troca por
+    dublê é só o que está *abaixo* da decisão: a sessão e o banco) e o menu por papel
+    (`app/(app)/itens-de-navegacao.test.ts`, primeiro teste dentro de `app/`; o `include`
+    do Vitest passou a cobrir `app/**/*.test.ts`).
+  - **`vitest.config.mts` ganhou um alias para `server-only`.** O pacote só exporta o
+    módulo vazio na condição `react-server`, que o Next resolve e o Vitest não — sem o
+    alias, qualquer teste que importe um módulo marcado como servidor (como
+    `lib/auth/current-user.ts`) falha no import.
+  - **Verificação de ponta a ponta feita por HTTP** (esta sessão também não teve browser
+    controlável; o que se fez foi dirigir o servidor de produção local em `next start`,
+    logando de verdade pelas contas `codex_teste`/admin e `recepcao_teste`/recepção, com a
+    Server Action de login exercitada pelos campos ocultos do fallback sem JavaScript — ou
+    seja, o login de ponta a ponta, que nenhum teste automatizado cobre, rodou aqui).
+    Resultados: como recepção, `/klini/requisicoes/nova`, `/klini/encaminhamentos`,
+    `/sulamerica/dashboard` e `/` devolvem 307 para `/klini/dashboard`, e as três telas
+    dela devolvem 200; como admin, todas devolvem 200 e a raiz traz a escolha com os dois
+    cartões; o HTML do painel da recepção não tem nenhum `href` para as rotas restritas
+    (nem no menu, nem no botão "Nova requisição"), e o do admin tem os cinco itens.
+  - **A camada autoritativa foi provada sem a ajuda do proxy**, e o jeito de fazer isso
+    está registrado porque não é óbvio: um POST da action restrita a partir de outra rota
+    **não funciona** — o Next escopa o id da action por rota e responde 500 ("Failed to
+    find Server Action") antes de qualquer código nosso. O que funciona é o **cookie
+    desatualizado**: logar como admin, rebaixar aquela conta para `recepcao` no banco e
+    reusar o cookie antigo. O proxy lê "admin" no cookie e deixa passar; a página
+    redireciona para `/klini/dashboard` e o POST das duas actions volta com `{"erro":"Seu
+    usuário não tem permissão para esta ação."}` no payload, sem criar nada (conferido no
+    banco: nenhum paciente novo). É exatamente o cenário que a regra 4 descreve — o cookie
+    envelhece, o banco não.
+  - **Falta o clique no navegador de verdade.** O que foi exercido por HTTP cobre rota,
+    redirect, action e HTML renderizado; o que não foi é a interação (clicar no cartão do
+    convênio, ver o toast de recusa numa aba velha).
+  - **Não vai para produção sozinha:** sobe junto com a Fase B, pelo motivo registrado no
+    item dela.
+
 ### Plano de papéis e convênios — 4 fases
 
 Registrado aqui inteiro de propósito: a Fase A sozinha não explica por que existe, e as
@@ -1453,11 +1573,14 @@ sessões seguintes precisam do plano completo para não implementar a fase errad
       por convênio. Vem antes do controle de acesso porque é o que define *o que* há para
       permitir; inverter a ordem faria a Fase C ser refeita em cima de rotas que mudaram.
       Detalhes no item correspondente do progresso.
-- [ ] **Fase C — Controle de acesso.** Aqui, e só aqui, `papel` passa a barrar. É onde o
-      `papel` do cookie ganha uso (decisões otimistas de redirect/UI no `proxy.ts`, sem
-      bater no banco) e onde `requireUsuario()` deixa de só informar o papel e passa a
-      recusar com ele.
-- [ ] **Fase D — SulAmérica.** O convênio novo, em cima da estrutura das fases B e C.
+- [x] **Fase C — Controle de acesso.** Aqui, e só aqui, `papel` passou a barrar: o `papel`
+      do cookie ganhou uso (desvio otimista no `proxy.ts`, sem bater no banco) e o papel
+      do banco ganhou quem recusa com ele (`requireAcessoARota` e `autorizarRota`, ao lado
+      de `requireUsuario`). Detalhes no item correspondente do progresso.
+- [ ] **Fase D — SulAmérica.** O convênio novo, em cima da estrutura das fases B e C. A
+      tela de escolha da raiz já linka para `/sulamerica/dashboard`, que dá 404 até esta
+      fase existir. Quando ela existir, decidir explicitamente se a recepção entra: o
+      allowlist de `lib/auth/acesso.ts` a deixa de fora por padrão.
 
 ## Pendências conhecidas (não bloqueiam o próximo passo, mas não esquecer)
 
@@ -1472,13 +1595,20 @@ sessões seguintes precisam do plano completo para não implementar a fase errad
 - `ADMIN_PASSWORD` e `RECEPCAO_PASSWORD` de produção devem ficar só no terminal local ao
   rodar `npm run create-admin` / `npm run create-recepcao`; não versionar e não configurar
   na Vercel.
-- **A conta `recepcao_teste` (id 44) ficou no banco de desenvolvimento**, criada em
-  17/09/2026 para verificar a Fase A, com uma senha de teste escolhida na hora. Ela não
-  existe em produção. Se for usada para validar a Fase A no navegador, rode
-  `npm run create-recepcao` com uma senha sua antes; se não for, apague a linha.
+- **Duas contas de teste ficaram no banco de desenvolvimento, com senhas conhecidas por
+  quem leu esta sessão.** `recepcao_teste` (id 44, papel `recepcao`) e `codex_teste` (id
+  6, papel `admin`) tiveram a senha redefinida em 17/09/2026 para a verificação da Fase C
+  — as duas com senhas escolhidas na hora e escritas no terminal. Nenhuma das duas existe
+  em produção, e a conta `admin` (id 1) **não** foi tocada. Antes de usar qualquer uma
+  delas para validar no navegador, rode `npm run create-recepcao` / `npm run create-admin`
+  com uma senha sua; se não for usar, apague a linha. `codex_teste` também foi rebaixada a
+  `recepcao` e devolvida a `admin` durante o teste do cookie desatualizado — o estado
+  final conferido no banco é `admin`.
 - **Nenhum teste automatizado exercita a Server Action `login` de ponta a ponta.** Não é
   novo — mas ficou mais visível com a Fase A, que passou a gravar `papel` e `username` no
-  cookie. Os campos do cookie são cobertos pelo tipo, não por teste.
+  cookie. Os campos do cookie são cobertos pelo tipo, não por teste. Na Fase C o login foi
+  exercitado **à mão** contra o servidor local, com as duas contas, e o `papel` selado no
+  cookie foi confirmado pelo comportamento do proxy — mas continua sem teste automatizado.
 - **A unicidade case-insensitive de `paciente.nome` depende da collation da instalação.**
   O banco local verificado em 31/08/2026 usa `Portuguese_Brazil.1252`; o Supabase de
   produção verificado em 01/09/2026 usa `en_US.UTF-8`. Nenhum dos dois é `C/POSIX`.

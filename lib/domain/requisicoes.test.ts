@@ -60,10 +60,11 @@ const mocks = vi.hoisted(() => {
     banco.temEncaminhamento ? { id: 7 } : null,
   );
 
-  const buscarTerapias = vi.fn(async (args: { where: { id: { in: number[] } } }) =>
-    args.where.id.in
-      .filter((id) => banco.terapiasExistentes.includes(id))
-      .map((id) => ({ id })),
+  const buscarTerapias = vi.fn(
+    async (args: { where: { id: { in: number[] } } }) =>
+      args.where.id.in
+        .filter((id) => banco.terapiasExistentes.includes(id))
+        .map((id) => ({ id })),
   );
 
   /**
@@ -72,46 +73,55 @@ const mocks = vi.hoisted(() => {
    * `valores` são os parâmetros interpolados no template — é por eles que os
    * testes conferem que o nome chegou trimado.
    */
-  const consultar = vi.fn(async (
-    partes: TemplateStringsArray,
-    ...valores: unknown[]
-  ) => {
-    void valores;
+  const consultar = vi.fn(
+    async (partes: TemplateStringsArray, ...valores: unknown[]) => {
+      void valores;
 
-    const sql = partes.join(" ");
+      const sql = partes.join(" ");
 
-    if (sql.includes("ON CONFLICT")) {
-      escritas.push("paciente");
-      return [banco.paciente];
-    }
+      if (sql.includes("ON CONFLICT")) {
+        escritas.push("paciente");
+        return [banco.paciente];
+      }
 
-    throw new Error(`consulta nao prevista pelo teste: ${sql}`);
-  });
+      throw new Error(`consulta nao prevista pelo teste: ${sql}`);
+    },
+  );
 
   /**
    * Simula a atomicidade: se o callback lançar, o que foi escrito é descartado
    * — que é exatamente o que o Postgres faz no rollback.
    */
-  const transacao = vi.fn(async (executar: (tx: unknown) => Promise<unknown>) => {
-    try {
-      return await executar({
-        $queryRaw: consultar,
-        encaminhamento: { findFirst: buscarEncaminhamento },
-        requisicao: { findFirst: buscarRequisicao, create: criarRequisicao },
-        requisicaoTerapia: { createMany: criarGuias },
-        terapia: { findMany: buscarTerapias },
-      });
-    } catch (erro) {
-      escritas.length = 0;
-      throw erro;
-    }
-  });
+  const transacao = vi.fn(
+    async (executar: (tx: unknown) => Promise<unknown>) => {
+      try {
+        return await executar({
+          $queryRaw: consultar,
+          encaminhamento: { findFirst: buscarEncaminhamento },
+          requisicao: { findFirst: buscarRequisicao, create: criarRequisicao },
+          requisicaoTerapia: { createMany: criarGuias },
+          terapia: { findMany: buscarTerapias },
+        });
+      } catch (erro) {
+        escritas.length = 0;
+        throw erro;
+      }
+    },
+  );
 
-  const requireUsuario = vi.fn(async () => ({ id: 1, username: "admin" }));
+  // A action pede permissao para a rota, nao so autenticacao (Fase C). O
+  // dublê responde como um admin; a recusa por papel e afirmada em
+  // `acesso-por-papel.test.ts`, que roda a regra de verdade contra o banco.
+  const autorizarRota = vi.fn(async () => ({
+    id: 1,
+    username: "admin",
+    papel: "admin" as const,
+  }));
 
   const refresh = vi.fn();
 
   return {
+    autorizarRota,
     banco,
     buscarEncaminhamento,
     buscarRequisicao,
@@ -121,7 +131,6 @@ const mocks = vi.hoisted(() => {
     criarRequisicao,
     escritas,
     refresh,
-    requireUsuario,
     transacao,
   };
 });
@@ -131,7 +140,7 @@ vi.mock("@/lib/db", () => ({
 }));
 
 vi.mock("@/lib/auth/current-user", () => ({
-  requireUsuario: mocks.requireUsuario,
+  autorizarRota: mocks.autorizarRota,
 }));
 
 vi.mock("next/cache", () => ({ refresh: mocks.refresh }));
@@ -454,7 +463,11 @@ describe("criarRequisicao — encaminhamento obrigatório (regra 15)", () => {
 
 describe("criarRequisicao — validação de entrada", () => {
   it.each([
-    ["nome do paciente vazio", { pacienteNome: "   " }, ERRO_PACIENTE_OBRIGATORIO],
+    [
+      "nome do paciente vazio",
+      { pacienteNome: "   " },
+      ERRO_PACIENTE_OBRIGATORIO,
+    ],
     ["número vazio", { numeroRequisicao: "  " }, ERRO_NUMERO_OBRIGATORIO],
     ["nenhuma terapia", { linhas: [] }, ERRO_SEM_TERAPIA],
   ])("recusa %s", async (_rotulo, ajustes, mensagem) => {
@@ -469,9 +482,7 @@ describe("criarRequisicao — validação de entrada", () => {
     async (quantidade) => {
       const resultado = await criarRequisicao(
         entrada({
-          linhas: [
-            { terapiaId: 1, qtdAutorizada: quantidade, validade: null },
-          ],
+          linhas: [{ terapiaId: 1, qtdAutorizada: quantidade, validade: null }],
         }),
       );
 
@@ -577,7 +588,9 @@ describe("criarRequisicaoAction (Server Action)", () => {
   }
 
   it("exige usuário autenticado antes de tocar no banco", async () => {
-    mocks.requireUsuario.mockRejectedValueOnce(new Error("NEXT_REDIRECT"));
+    // Sem sessão, `autorizarRota` nem chega a decidir por papel: o
+    // `requireUsuario` de dentro dela redireciona para o login.
+    mocks.autorizarRota.mockRejectedValueOnce(new Error("NEXT_REDIRECT"));
 
     await expect(criarRequisicaoAction({}, formulario())).rejects.toThrow(
       "NEXT_REDIRECT",
@@ -683,9 +696,7 @@ describe("criarRequisicaoAction (Server Action)", () => {
       const estado = await criarRequisicaoAction(
         {},
         formulario({
-          linhas: [
-            { terapiaId: "1", qtdAutorizada: quantidade, validade: "" },
-          ],
+          linhas: [{ terapiaId: "1", qtdAutorizada: quantidade, validade: "" }],
         }),
       );
 

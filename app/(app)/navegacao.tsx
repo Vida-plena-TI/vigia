@@ -3,21 +3,10 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 
+import type { PapelUsuario } from "@/lib/auth/papel";
 import { cn } from "@/lib/utils";
 
-/**
- * Itens da faixa de navegação.
- *
- * Os rótulos batem exatamente com o `<h1>` de cada página — acentuação
- * incluída. Divergir aqui faz o usuário achar que chegou em outro lugar.
- */
-const ITENS = [
-  { href: "/klini/dashboard", rotulo: "Painel" },
-  { href: "/klini/requisicoes/nova", rotulo: "Nova requisição" },
-  { href: "/klini/atendimentos/novo", rotulo: "Lançar atendimento" },
-  { href: "/klini/atendimentos/hoje", rotulo: "Atendimentos de hoje" },
-  { href: "/klini/encaminhamentos", rotulo: "Encaminhamentos" },
-] as const;
+import { itensDeNavegacaoPara } from "./itens-de-navegacao";
 
 /**
  * Navegação da faixa escura.
@@ -25,19 +14,25 @@ const ITENS = [
  * A rota ativa é marcada por um filete branco embaixo do rótulo, não por uma
  * pílula colorida: dentro do VIGIA, cor é reservada para status, e um item de
  * menu não é um status.
+ *
+ * Os itens dependem do `papel` (Fase C) — ver `itensDeNavegacaoPara`. O papel
+ * chega por prop, do layout, que já o leu do banco: um client component não
+ * tem como fazer essa leitura, e o cookie é `httpOnly`.
  */
-export function Navegacao() {
+export function Navegacao({ papel }: { papel: PapelUsuario }) {
   const pathname = usePathname();
+  const itens = itensDeNavegacaoPara(papel);
 
   return (
     <nav
       aria-label="Seções do VIGIA"
       // A rolagem horizontal é o que salva a faixa no celular: os cinco
-      // rótulos não cabem em 360px e quebrar linha empurraria o conteúdo.
+      // rótulos do admin não cabem em 360px e quebrar linha empurraria o
+      // conteúdo.
       className="-mx-5 overflow-x-auto px-5 sm:mx-0 sm:overflow-visible sm:px-0"
     >
       <ul className="flex items-stretch gap-1 whitespace-nowrap">
-        {ITENS.map((item) => {
+        {itens.map((item) => {
           const ativo =
             pathname === item.href || pathname.startsWith(`${item.href}/`);
 

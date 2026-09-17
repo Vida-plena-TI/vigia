@@ -5,6 +5,7 @@ import { redirect } from "next/navigation";
 
 import { getPrismaClient } from "@/lib/db";
 
+import { ROTA_PADRAO_DA_RECEPCAO, podeAcessarRota } from "./acesso";
 import { urlDeLogin } from "./next-path";
 import { ehPapelValido, type PapelUsuario } from "./papel";
 import { getSession } from "./session";
@@ -17,8 +18,8 @@ export type UsuarioAutenticado = {
    * enxerga um papel trocado depois que a sessao foi selada, coisa que a copia
    * em `SessionData` nao enxerga ate o proximo login.
    *
-   * Na Fase A ninguem decide nada com ele — nenhuma rota e nenhuma Server
-   * Action ramifica por papel. O campo existe para as fases seguintes.
+   * Desde a Fase C e com ele que `requireAcessoARota()` e `autorizarRota()`
+   * decidem — e e por isso que elas nao leem o cookie.
    */
   papel: PapelUsuario;
 };
@@ -71,10 +72,10 @@ export const getUsuarioAtual = cache(
 /**
  * Exige um usuario autenticado e ativo.
  *
- * Devolve tambem o `papel` do usuario (Fase A). Isto **nao** e controle de
- * acesso: nada aqui barra ninguem por papel, e nenhuma chamada existente
- * precisou mudar. Quem for implementar a Fase C ramifica a partir deste
- * retorno, nao a partir do cookie.
+ * Devolve tambem o `papel`, mas **nao** barra por ele: quem faz isso sao
+ * `requireAcessoARota()` (paginas) e `autorizarRota()` (Server Actions), logo
+ * abaixo. As rotas que qualquer usuario autenticado alcanca continuam usando
+ * so esta funcao.
  *
  * Sem sessao -> manda para o login preservando o caminho de origem.
  * Sessao apontando para usuario inexistente/inativo -> passa pelo route handler
@@ -97,4 +98,48 @@ export async function requireUsuario(
   }
 
   return usuario;
+}
+
+/**
+ * Exige um usuario autenticado, ativo **e** com papel que alcance `rota`.
+ *
+ * E a camada autoritativa da Fase C para paginas, e a contraparte exata do que
+ * o `proxy.ts` faz de forma otimista: o proxy decide pelo cookie (copia velha,
+ * e nem sempre roda), esta decide pelo papel lido do banco na propria
+ * requisicao. Toda pagina restrita chama isto no lugar de `requireUsuario()`.
+ *
+ * Sem permissao -> mesmo destino do proxy: o painel. O usuario esta logado; o
+ * que falta e permissao, nao identificacao.
+ */
+export async function requireAcessoARota(
+  rota: string,
+  pathname?: string | null,
+): Promise<UsuarioAutenticado> {
+  const usuario = await requireUsuario(pathname);
+
+  if (!podeAcessarRota(usuario.papel, rota)) {
+    redirect(ROTA_PADRAO_DA_RECEPCAO);
+  }
+
+  return usuario;
+}
+
+/**
+ * Versao para Server Actions: devolve o usuario, ou `null` quando o papel dele
+ * nao alcanca `rota`.
+ *
+ * Nao redireciona — uma action recusada devolve mensagem ao formulario, que e o
+ * que o chamador legitimo (uma aba velha, aberta antes de o papel mudar)
+ * precisa ver. Um POST montado a mao recebe a mesma recusa e nada acontece no
+ * banco, que e o ponto: sem isto, toda a protecao da Fase C moraria na
+ * navegacao, e navegacao se contorna com um `curl`.
+ *
+ * Nao autenticado continua caindo no redirect de `requireUsuario()`.
+ */
+export async function autorizarRota(
+  rota: string,
+): Promise<UsuarioAutenticado | null> {
+  const usuario = await requireUsuario();
+
+  return podeAcessarRota(usuario.papel, rota) ? usuario : null;
 }

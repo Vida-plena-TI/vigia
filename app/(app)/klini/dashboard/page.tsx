@@ -2,6 +2,8 @@ import type { Metadata } from "next";
 import Link from "next/link";
 
 import { Button } from "@/components/ui/button";
+import { ROTA_NOVA_REQUISICAO, podeAcessarRota } from "@/lib/auth/acesso";
+import { requireUsuario } from "@/lib/auth/current-user";
 import {
   agruparPorPaciente,
   contarPorStatus,
@@ -24,7 +26,10 @@ export const metadata: Metadata = {
  * client-side.
  *
  * A autenticação é garantida pelo layout `app/(app)/layout.tsx`
- * (`requireUsuario`), além da triagem do `proxy.ts`.
+ * (`requireUsuario`), além da triagem do `proxy.ts`. A tela é aberta aos dois
+ * papéis; o que depende de papel é o botão "Nova requisição", que é uma segunda
+ * porta para uma rota restrita e some para a recepção pelo mesmo motivo que o
+ * item do menu some — ver `itensDeNavegacaoPara`.
  *
  * Esta é uma tela densa: ocupa a largura toda disponível, alinhada à mesma
  * borda esquerda do cabeçalho. As telas de formulário fazem o contrário
@@ -32,7 +37,15 @@ export const metadata: Metadata = {
  * leitura, se a tela é para varrer ou para preencher.
  */
 export default async function DashboardPage() {
-  const guias = await listarGuiasDoDashboard();
+  const [guias, usuario] = await Promise.all([
+    listarGuiasDoDashboard(),
+    requireUsuario(),
+  ]);
+
+  const podeCriarRequisicao = podeAcessarRota(
+    usuario.papel,
+    ROTA_NOVA_REQUISICAO,
+  );
 
   return (
     <div className="flex flex-col gap-5">
@@ -45,9 +58,11 @@ export default async function DashboardPage() {
           </p>
         </div>
 
-        <Button asChild size="lg">
-          <Link href="/klini/requisicoes/nova">Nova requisição</Link>
-        </Button>
+        {podeCriarRequisicao ? (
+          <Button asChild size="lg">
+            <Link href={ROTA_NOVA_REQUISICAO}>Nova requisição</Link>
+          </Button>
+        ) : null}
       </div>
 
       <ResumoDeStatus resumo={contarPorStatus(guias)} />

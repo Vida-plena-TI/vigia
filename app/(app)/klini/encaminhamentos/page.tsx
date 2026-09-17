@@ -1,5 +1,9 @@
 import type { Metadata } from "next";
+import { headers } from "next/headers";
 
+import { ROTA_ENCAMINHAMENTOS } from "@/lib/auth/acesso";
+import { requireAcessoARota } from "@/lib/auth/current-user";
+import { PATHNAME_HEADER } from "@/lib/auth/pathname-header";
 import { dataDeHoje } from "@/lib/domain/atendimentos";
 import {
   contarPorStatusDeEncaminhamento,
@@ -35,8 +39,19 @@ export const metadata: Metadata = {
  * A autenticação é garantida pelo layout `app/(app)/layout.tsx`
  * (`requireUsuario`), além da triagem do `proxy.ts` — e de novo dentro da
  * própria Server Action, que é alcançável sem passar por nenhum dos dois.
+ *
+ * A **permissão** é outra coisa, e esta tela é restrita ao papel `admin`
+ * (Fase C). `requireAcessoARota` relê o papel no banco: o desvio que o
+ * `proxy.ts` faz pelo cookie é otimista, e o cookie pode estar velho — ou o
+ * proxy pode nem ter rodado. Vale para as três ações da tela (cadastrar,
+ * substituir e excluir o paciente), que reconfirmam por conta própria.
  */
 export default async function EncaminhamentosPage() {
+  await requireAcessoARota(
+    ROTA_ENCAMINHAMENTOS,
+    (await headers()).get(PATHNAME_HEADER),
+  );
+
   // Independentes entre si: buscar em paralelo evita somar as três idas ao
   // banco no tempo de resposta da página.
   const [encaminhamentos, nomesDePacientes, hoje] = await Promise.all([

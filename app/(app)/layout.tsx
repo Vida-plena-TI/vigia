@@ -14,6 +14,10 @@ import { Navegacao } from "./navegacao";
  * checagem que vale: confirma no banco que o usuario da sessao existe e esta
  * ativo. O `proxy.ts` so faz a triagem otimista pelo cookie.
  *
+ * O `papel` do usuário desce daqui para a `Navegacao`: os links que a recepção
+ * não alcança não são renderizados (Fase C). Isso é conveniência de interface —
+ * a proteção mesmo está no `proxy.ts` e em cada página/Server Action restrita.
+ *
  * Visualmente: a faixa grafite fixa no topo é o "posto de vigia" — ela ancora
  * todas as telas e é o único elemento escuro dentro do sistema. Dentro dela o
  * anel de foco vira claro (`--anel-foco`), senão um contorno grafite sobre
@@ -32,7 +36,10 @@ export default async function AppLayout({ children }: LayoutProps<"/">) {
         <div className="mx-auto flex w-full max-w-[90rem] flex-col gap-2 px-5 py-2.5 sm:flex-row sm:items-center sm:gap-6 sm:px-6">
           <div className="flex items-center justify-between gap-4">
             <Link
-              href="/klini/dashboard"
+              // A marca leva à raiz, não ao painel: para o admin, a raiz é a
+              // escolha de convênio; para a recepção, ela redireciona para o
+              // painel de qualquer forma.
+              href="/"
               className="font-serif text-xl leading-none font-semibold tracking-[-0.01em] text-white"
             >
               VIGIA
@@ -43,7 +50,7 @@ export default async function AppLayout({ children }: LayoutProps<"/">) {
             </div>
           </div>
 
-          <Navegacao />
+          <Navegacao papel={usuario.papel} />
 
           <div className="ml-auto hidden items-center gap-3 sm:flex">
             <IdentificacaoDoUsuario username={usuario.username} />

@@ -4,9 +4,14 @@
  * Server Actions da exclusão permanente de paciente.
  *
  * As duas funções daqui são alcançáveis por um POST direto, sem passar pela UI
- * — por isso a regra 4 do CONTEXT.md (`requireUsuario()`) vale para as duas, e
- * vale com mais força aqui do que em qualquer outra action do sistema: esta é a
- * única que apaga dados sem forma de desfazer.
+ * — por isso a regra 4 do CONTEXT.md vale para as duas, e vale com mais força
+ * aqui do que em qualquer outra action do sistema: esta é a única que apaga
+ * dados sem forma de desfazer.
+ *
+ * Desde a Fase C a checagem é `autorizarRota()`: a exclusão só existe na tela
+ * de encaminhamentos, que é restrita ao `admin`, e a contagem vai junto — ela
+ * lê o prontuário inteiro de um paciente para montar a frase do diálogo, e isso
+ * também não é da recepção.
  *
  * A fricção do diálogo (ver o que será apagado, digitar a palavra de
  * confirmação) é do cliente, e o cliente pode ser contornado. O que **não** é
@@ -23,7 +28,11 @@
 
 import { refresh } from "next/cache";
 
-import { requireUsuario } from "@/lib/auth/current-user";
+import {
+  MENSAGEM_SEM_PERMISSAO,
+  ROTA_ENCAMINHAMENTOS,
+} from "@/lib/auth/acesso";
+import { autorizarRota } from "@/lib/auth/current-user";
 
 import {
   contarParaExclusao,
@@ -41,7 +50,9 @@ import {
 export async function contarParaExcluirPaciente(
   pacienteId: number,
 ): Promise<ResultadoDaContagem> {
-  await requireUsuario();
+  if (!(await autorizarRota(ROTA_ENCAMINHAMENTOS))) {
+    return { ok: false, erro: MENSAGEM_SEM_PERMISSAO };
+  }
 
   return contarParaExclusao(pacienteId);
 }
@@ -56,7 +67,9 @@ export async function contarParaExcluirPaciente(
 export async function excluirPaciente(
   pacienteId: number,
 ): Promise<ResultadoDaExclusao> {
-  await requireUsuario();
+  if (!(await autorizarRota(ROTA_ENCAMINHAMENTOS))) {
+    return { ok: false, erro: MENSAGEM_SEM_PERMISSAO };
+  }
 
   const resultado = await excluirPacientePeloId(pacienteId);
 

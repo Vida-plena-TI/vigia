@@ -1,7 +1,9 @@
 import { unsealData } from "iron-session";
 import { NextResponse, type NextRequest } from "next/server";
 
+import { ROTA_PADRAO_DA_RECEPCAO, podeAcessarRota } from "@/lib/auth/acesso";
 import { urlDeLogin } from "@/lib/auth/next-path";
+import { ehPapelValido, type PapelUsuario } from "@/lib/auth/papel";
 import { PATHNAME_HEADER } from "@/lib/auth/pathname-header";
 import {
   SESSION_COOKIE_NAME,
@@ -19,6 +21,12 @@ import {
  * que o usuario ainda existe e esta ativo e o `requireUsuario` do layout
  * `app/(app)/layout.tsx` (e as Server Actions), que sao alcancados mesmo quando
  * o proxy nao roda.
+ *
+ * Desde a Fase C ele tambem le o `papel` do cookie e desvia a recepcao das
+ * rotas que ela nao alcanca (ver `lib/auth/acesso.ts`). Isso continua sendo
+ * otimista, e pela mesma razao: o papel do cookie e uma copia selada no login,
+ * que envelhece. A recusa que vale esta na pagina e na Server Action, que leem
+ * o papel do banco.
  */
 
 /**
@@ -58,13 +66,20 @@ export function dispensaSessao(pathname: string): boolean {
   );
 }
 
-async function usuarioIdDaSessao(
-  request: NextRequest,
-): Promise<number | undefined> {
+type SessaoDoCookie = {
+  usuarioId?: number;
+  /**
+   * Ausente em dois casos: cookie selado antes da Fase A (que ainda nao
+   * gravava papel) e papel fora de `PAPEIS`. Ver `desviaPorPapel`.
+   */
+  papel?: PapelUsuario;
+};
+
+async function sessaoDoCookie(request: NextRequest): Promise<SessaoDoCookie> {
   const cookie = request.cookies.get(SESSION_COOKIE_NAME)?.value;
 
   if (!cookie) {
-    return undefined;
+    return {};
   }
 
   try {
@@ -73,11 +88,30 @@ async function usuarioIdDaSessao(
       ttl: sessionTtlSeconds(),
     });
 
-    return sessao?.usuarioId;
+    return {
+      usuarioId: sessao?.usuarioId,
+      papel: ehPapelValido(sessao?.papel) ? sessao.papel : undefined,
+    };
   } catch {
     // Cookie adulterado, expirado ou assinado com outro SESSION_SECRET.
-    return undefined;
+    return {};
   }
+}
+
+/**
+ * O proxy deve desviar esta requisicao por falta de permissao?
+ *
+ * Papel ausente no cookie **passa** — e esta e a unica decisao permissiva de
+ * todo o controle de acesso. Ela e segura porque nao e a decisao final: quem
+ * chega a pagina cai em `requireAcessoARota()` e quem chama a action cai em
+ * `autorizarRota()`, e ambos leem o papel no banco. O ganho e nao expulsar de
+ * "Nova requisição" e "Encaminhamentos" todo admin com sessao aberta desde
+ * antes da Fase A — cujos cookies nao tem `papel` e so ganhariam um no proximo
+ * login. Se em vez disso a ausencia fechasse a rota, o efeito do deploy seria
+ * um admin legitimo sendo jogado no painel sem explicacao nenhuma.
+ */
+function desviaPorPapel(papel: PapelUsuario | undefined, pathname: string) {
+  return papel !== undefined && !podeAcessarRota(papel, pathname);
 }
 
 export async function proxy(request: NextRequest) {
@@ -87,7 +121,7 @@ export async function proxy(request: NextRequest) {
     return NextResponse.next();
   }
 
-  const usuarioId = await usuarioIdDaSessao(request);
+  const { usuarioId, papel } = await sessaoDoCookie(request);
 
   if (!usuarioId) {
     const destino = new URL(
@@ -96,6 +130,13 @@ export async function proxy(request: NextRequest) {
     );
 
     return NextResponse.redirect(destino);
+  }
+
+  // Autenticado, mas sem permissao para esta tela: o destino e o painel, nao o
+  // login. Mandar para o login diria "identifique-se" a quem ja se identificou,
+  // e o `next=` traria a pessoa de volta para a mesma parede.
+  if (desviaPorPapel(papel, pathname)) {
+    return NextResponse.redirect(new URL(ROTA_PADRAO_DA_RECEPCAO, request.url));
   }
 
   // Repassa o caminho pedido para o layout autenticado montar o `next=` certo.

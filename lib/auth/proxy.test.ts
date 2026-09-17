@@ -1,3 +1,4 @@
+import { sealData } from "iron-session";
 import { NextRequest } from "next/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -15,6 +16,11 @@ vi.mock("@/lib/relatorio/montar", () => ({
 }));
 
 import { GET } from "../../app/api/cron/relatorio-semanal/route";
+import {
+  SESSION_COOKIE_NAME,
+  type SessionData,
+} from "@/lib/auth/session-options";
+import type { PapelUsuario } from "@/lib/auth/papel";
 import { config, dispensaSessao, proxy } from "@/proxy";
 
 const BASE = "https://vigia.example.com";
@@ -156,5 +162,86 @@ describe("proxy + rota do relatório semanal", () => {
 
     expect(resposta.status).toBe(401);
     expect(mocks.montarRelatorioSemanal).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * Camada otimista do controle de acesso por papel (Fase C).
+ *
+ * O que se afirma aqui e o **desvio**, nao a permissao: o proxy le uma copia do
+ * papel selada no cookie, e a recusa que vale esta na pagina e na Server Action
+ * (`autorizarRota`), testadas em `lib/domain/acesso-por-papel.test.ts`.
+ */
+describe("proxy — acesso por papel", () => {
+  const SEGREDO = "segredo-de-teste-com-mais-de-32-caracteres";
+
+  beforeEach(() => {
+    vi.stubEnv("SESSION_SECRET", SEGREDO);
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  /** Um cookie de sessao de verdade: selado com o mesmo segredo do proxy. */
+  async function cookieDe(papel: PapelUsuario | undefined): Promise<string> {
+    const sessao: SessionData = { usuarioId: 1, username: "quem-seja", papel };
+    const selado = await sealData(sessao, { password: SEGREDO });
+
+    return `${SESSION_COOKIE_NAME}=${selado}`;
+  }
+
+  /** Para onde o proxy mandou esta requisicao? `null` = deixou passar. */
+  async function destinoDe(
+    pathname: string,
+    papel: PapelUsuario | undefined,
+  ): Promise<string | null> {
+    const resposta = await proxy(
+      requisicao(pathname, { cookie: await cookieDe(papel) }),
+    );
+    const location = resposta.headers.get("location");
+
+    return location === null ? null : new URL(location, BASE).pathname;
+  }
+
+  const ROTAS_RESTRITAS = [
+    "/klini/requisicoes/nova",
+    "/klini/requisicoes",
+    "/klini/encaminhamentos",
+    "/klini/encaminhamentos/qualquer-coisa",
+  ];
+
+  it("recepcao digitando a URL restrita cai no painel, nao no login", async () => {
+    for (const rota of ROTAS_RESTRITAS) {
+      expect(await destinoDe(rota, "recepcao")).toBe("/klini/dashboard");
+    }
+  });
+
+  it("recepcao passa nas telas dela", async () => {
+    for (const rota of [
+      "/",
+      "/klini/dashboard",
+      "/klini/atendimentos/novo",
+      "/klini/atendimentos/hoje",
+    ]) {
+      expect(await destinoDe(rota, "recepcao")).toBeNull();
+    }
+  });
+
+  it("admin passa em todas, inclusive nas restritas", async () => {
+    for (const rota of [...ROTAS_RESTRITAS, "/", "/klini/dashboard"]) {
+      expect(await destinoDe(rota, "admin")).toBeNull();
+    }
+  });
+
+  /**
+   * Cookie selado antes da Fase A nao tem `papel`. O proxy deixa passar de
+   * proposito (ver `desviaPorPapel`): a decisao final e da pagina, que le o
+   * banco, e fechar aqui expulsaria admins legitimos no deploy.
+   */
+  it("sessao sem papel no cookie passa — quem decide e a camada autoritativa", async () => {
+    for (const rota of ROTAS_RESTRITAS) {
+      expect(await destinoDe(rota, undefined)).toBeNull();
+    }
   });
 });

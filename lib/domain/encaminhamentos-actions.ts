@@ -4,9 +4,13 @@
  * Server Action do cadastro de encaminhamento.
  *
  * Como toda action do projeto, é alcançável por um POST direto sem passar pela
- * UI — por isso `requireUsuario()` (regra 4 do CONTEXT.md) vem antes de
- * qualquer leitura do formulário, e a validação de verdade mora em
+ * UI — por isso a checagem (regra 4 do CONTEXT.md) vem antes de qualquer
+ * leitura do formulário, e a validação de verdade mora em
  * `lib/domain/encaminhamentos.ts`, não no JavaScript da página.
+ *
+ * Desde a Fase C a checagem é `autorizarRota()`, não `requireUsuario()`: esta
+ * tela é só do `admin`. Cadastrar e substituir são a mesma action (o upsert),
+ * então a recusa cobre as duas de uma vez.
  *
  * Gravar aqui é **upsert**: um paciente tem no máximo um encaminhamento, e
  * cadastrar outro substitui o anterior. Por isso o estado de sucesso carrega
@@ -22,7 +26,11 @@
 
 import { refresh } from "next/cache";
 
-import { requireUsuario } from "@/lib/auth/current-user";
+import {
+  MENSAGEM_SEM_PERMISSAO,
+  ROTA_ENCAMINHAMENTOS,
+} from "@/lib/auth/acesso";
+import { autorizarRota } from "@/lib/auth/current-user";
 
 import {
   registrarEncaminhamento,
@@ -55,7 +63,9 @@ export async function criarEncaminhamentoAction(
   _prev: EstadoNovoEncaminhamento,
   formData: FormData,
 ): Promise<EstadoNovoEncaminhamento> {
-  await requireUsuario();
+  if (!(await autorizarRota(ROTA_ENCAMINHAMENTOS))) {
+    return { erro: MENSAGEM_SEM_PERMISSAO };
+  }
 
   const entrada: EntradaNovoEncaminhamento = {
     pacienteNome: String(formData.get("pacienteNome") ?? ""),

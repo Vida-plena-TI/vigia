@@ -1,10 +1,11 @@
 import type { Metadata } from "next";
+import { headers } from "next/headers";
 
+import { ROTA_NOVA_REQUISICAO } from "@/lib/auth/acesso";
+import { requireAcessoARota } from "@/lib/auth/current-user";
+import { PATHNAME_HEADER } from "@/lib/auth/pathname-header";
 import { listarNomesDePacientes } from "@/lib/domain/pacientes";
-import {
-  listarTerapias,
-  validadePadraoDeGuia,
-} from "@/lib/domain/requisicoes";
+import { listarTerapias, validadePadraoDeGuia } from "@/lib/domain/requisicoes";
 
 import { FormularioDeRequisicao } from "./formulario-de-requisicao";
 
@@ -24,8 +25,18 @@ export const metadata: Metadata = {
  * A autenticação é garantida pelo layout `app/(app)/layout.tsx`
  * (`requireUsuario`), além da triagem do `proxy.ts` — e de novo dentro da
  * própria Server Action, que é alcançável sem passar por nenhum dos dois.
+ *
+ * A **permissão** é outra coisa, e esta tela é restrita ao papel `admin`
+ * (Fase C). `requireAcessoARota` relê o papel no banco: o desvio que o
+ * `proxy.ts` faz pelo cookie é otimista, e o cookie pode estar velho — ou o
+ * proxy pode nem ter rodado.
  */
 export default async function NovaRequisicaoPage() {
+  await requireAcessoARota(
+    ROTA_NOVA_REQUISICAO,
+    (await headers()).get(PATHNAME_HEADER),
+  );
+
   // Independentes entre si: buscar em paralelo evita somar as três idas ao
   // banco no tempo de resposta da página.
   const [nomesDePacientes, terapias, validadePadrao] = await Promise.all([

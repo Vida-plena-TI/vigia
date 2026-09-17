@@ -4,9 +4,14 @@
  * Server Action do cadastro de nova requisição.
  *
  * Como toda action do projeto, é alcançável por um POST direto sem passar pela
- * UI — por isso `requireUsuario()` (regra 4 do CONTEXT.md) vem antes de
- * qualquer leitura do formulário, e a validação de verdade mora em
+ * UI — por isso a checagem (regra 4 do CONTEXT.md) vem antes de qualquer
+ * leitura do formulário, e a validação de verdade mora em
  * `lib/domain/requisicoes.ts`, não no JavaScript da página.
+ *
+ * Desde a Fase C a checagem é `autorizarRota()`, não `requireUsuario()`: esta
+ * tela é só do `admin`. O `proxy.ts` desvia a recepção da *navegação*, mas um
+ * POST montado à mão não navega — quem recusa é esta linha, com o papel lido do
+ * banco.
  *
  * As linhas de terapia viajam como campos repetidos (`terapiaId`,
  * `qtdAutorizada`, `validade`), um por linha renderizada. `getAll` devolve os
@@ -20,7 +25,11 @@
 
 import { refresh } from "next/cache";
 
-import { requireUsuario } from "@/lib/auth/current-user";
+import {
+  MENSAGEM_SEM_PERMISSAO,
+  ROTA_NOVA_REQUISICAO,
+} from "@/lib/auth/acesso";
+import { autorizarRota } from "@/lib/auth/current-user";
 
 import {
   criarRequisicao,
@@ -80,11 +89,7 @@ function lerLinhas(formData: FormData): LinhaDeTerapia[] {
   // montado à mão pode mandá-los desalinhados; usar o maior faz a linha
   // incompleta cair na validação em vez de ser costurada em silêncio com o
   // valor da linha vizinha.
-  const total = Math.max(
-    terapias.length,
-    quantidades.length,
-    validades.length,
-  );
+  const total = Math.max(terapias.length, quantidades.length, validades.length);
 
   const linhas: LinhaDeTerapia[] = [];
 
@@ -116,7 +121,9 @@ export async function criarRequisicaoAction(
   _prev: EstadoNovaRequisicao,
   formData: FormData,
 ): Promise<EstadoNovaRequisicao> {
-  await requireUsuario();
+  if (!(await autorizarRota(ROTA_NOVA_REQUISICAO))) {
+    return { erro: MENSAGEM_SEM_PERMISSAO };
+  }
 
   const entrada: EntradaNovaRequisicao = {
     pacienteNome: String(formData.get("pacienteNome") ?? ""),
