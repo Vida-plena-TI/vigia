@@ -1,19 +1,17 @@
 /**
- * Cria (ou atualiza) o usuario administrativo a partir do ambiente.
+ * Cria (ou atualiza) a conta da recepcao a partir do ambiente.
  *
- * Equivalente ao `create_admin_user.py` do sistema antigo. Se o username ja
- * existir, a senha e reescrita e o usuario e reativado — e assim que se
- * recupera o acesso depois de perder a senha.
+ * Mesmo molde de `scripts/create-admin.ts` — idempotente: se o username ja
+ * existir, a senha e reescrita e a conta e reativada, em vez de falhar por
+ * duplicata. A implementacao das duas e a mesma funcao
+ * (`criarOuAtualizarUsuario`); aqui muda o papel gravado e as variaveis lidas.
  *
- *   ADMIN_USERNAME=admin ADMIN_PASSWORD=troque-isso npm run create-admin
+ *   RECEPCAO_USERNAME=recepcao RECEPCAO_PASSWORD=troque-isso npm run create-recepcao
  *
- * Desde 17/09/2026 grava tambem `papel = 'admin'` explicitamente. Antes disso
- * nao gravava papel nenhum porque a coluna nao existia; as contas daquela
- * epoca foram backfilladas como admin pela migration
- * `20260917120000_papel_de_usuario`.
- *
- * Para criar a conta da recepcao, use `npm run create-recepcao` — script
- * irmao, com variaveis de ambiente proprias.
+ * As variaveis sao proprias de proposito: reaproveitar ADMIN_USERNAME /
+ * ADMIN_PASSWORD deixaria ambiguo qual conta o comando esta criando ou
+ * atualizando — e, como o papel e reescrito na atualizacao, uma confusao
+ * dessas rebaixaria o admin a recepcao sem avisar.
  *
  * Usa DATABASE_URL (role de runtime): criar usuario e DML, nao precisa do role
  * de migrations.
@@ -34,20 +32,20 @@ async function main() {
     );
   }
 
-  const username = process.env.ADMIN_USERNAME?.trim();
+  const username = process.env.RECEPCAO_USERNAME?.trim();
 
   if (!username) {
     throw new Error(
-      "ADMIN_USERNAME nao definida. Rode com ADMIN_USERNAME=... ADMIN_PASSWORD=... npm run create-admin",
+      "RECEPCAO_USERNAME nao definida. Rode com RECEPCAO_USERNAME=... RECEPCAO_PASSWORD=... npm run create-recepcao",
     );
   }
 
   // A senha nao passa por trim: espaco pode ser parte dela.
-  const senha = process.env.ADMIN_PASSWORD ?? "";
+  const senha = process.env.RECEPCAO_PASSWORD ?? "";
 
   if (senha.length < MIN_SENHA) {
     throw new Error(
-      `ADMIN_PASSWORD nao definida ou com menos de ${MIN_SENHA} caracteres.`,
+      `RECEPCAO_PASSWORD nao definida ou com menos de ${MIN_SENHA} caracteres.`,
     );
   }
 
@@ -59,7 +57,7 @@ async function main() {
     const conta = await criarOuAtualizarUsuario(prisma, {
       username,
       senha,
-      papel: "admin",
+      papel: "recepcao",
     });
 
     console.log(

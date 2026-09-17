@@ -81,13 +81,32 @@ model Encaminhamento {
   @@map("encaminhamento")
 }
 
-/// Usuario do sistema. Nao existem perfis: ou o usuario esta autenticado e
-/// ativo, ou nao esta autenticado.
+/// Usuario do sistema.
+///
+/// **Esta entidade mudou de premissa em 17/09/2026.** Ate entao o CONTEXT.md
+/// afirmava que nao havia distincao de perfil — so "autenticado e ativo" ou
+/// "nao autenticado". Agora todo usuario tem um `papel`.
+///
+/// `papel` e `String` aqui, mas nao e texto livre no banco: a migration
+/// `20260917120000_papel_de_usuario` poe um
+/// `CHECK (papel IN ('admin', 'recepcao'))` na coluna. O Prisma nao expressa
+/// CHECK no schema, pelo mesmo motivo que o `UNIQUE (lower(nome))` de
+/// `paciente` vive so na migration. O espelho em TypeScript do conjunto de
+/// valores e `PapelUsuario` em `lib/auth/papel.ts`, e os tres tem de mudar
+/// juntos.
+///
+/// **Sem `@default` de proposito.** A migration cria a coluna com
+/// `DEFAULT 'admin'` apenas para backfillar as linhas que ja existiam (todas
+/// elas eram admin) e derruba o default no mesmo arquivo. Declarar um default
+/// permanente faria toda insercao nova que esquecesse o papel virar admin em
+/// silencio — exatamente o erro que este campo existe para impedir. Sendo
+/// obrigatorio e sem default, o TypeScript cobra o `papel` em todo `create`.
 model Usuario {
   id           Int     @id @default(autoincrement())
   username     String  @unique
   passwordHash String  @map("password_hash")
   ativo        Boolean @default(true)
+  papel        String
 
   @@map("usuario")
 }

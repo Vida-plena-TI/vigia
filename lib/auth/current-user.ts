@@ -6,11 +6,21 @@ import { redirect } from "next/navigation";
 import { getPrismaClient } from "@/lib/db";
 
 import { urlDeLogin } from "./next-path";
+import { ehPapelValido, type PapelUsuario } from "./papel";
 import { getSession } from "./session";
 
 export type UsuarioAutenticado = {
   id: number;
   username: string;
+  /**
+   * Papel lido do **banco**, nao do cookie. Esta e a leitura autoritativa: ela
+   * enxerga um papel trocado depois que a sessao foi selada, coisa que a copia
+   * em `SessionData` nao enxerga ate o proximo login.
+   *
+   * Na Fase A ninguem decide nada com ele — nenhuma rota e nenhuma Server
+   * Action ramifica por papel. O campo existe para as fases seguintes.
+   */
+  papel: PapelUsuario;
 };
 
 /**
@@ -34,19 +44,37 @@ export const getUsuarioAtual = cache(
 
     const usuario = await getPrismaClient().usuario.findUnique({
       where: { id: session.usuarioId },
-      select: { id: true, username: true, ativo: true },
+      select: { id: true, username: true, ativo: true, papel: true },
     });
 
     if (!usuario || !usuario.ativo) {
       return null;
     }
 
-    return { id: usuario.id, username: usuario.username };
+    if (!ehPapelValido(usuario.papel)) {
+      // Inalcancavel enquanto o CHECK `usuario_papel_valido` estiver de pe: o
+      // banco nao aceita gravar outro valor. Fica como recusa explicita — se um
+      // papel novo entrar no banco sem entrar em `PAPEIS`, a conta perde o
+      // acesso (e o operador ve o login falhar) em vez de circular pelo sistema
+      // com um papel que o TypeScript acha que conhece.
+      return null;
+    }
+
+    return {
+      id: usuario.id,
+      username: usuario.username,
+      papel: usuario.papel,
+    };
   },
 );
 
 /**
  * Exige um usuario autenticado e ativo.
+ *
+ * Devolve tambem o `papel` do usuario (Fase A). Isto **nao** e controle de
+ * acesso: nada aqui barra ninguem por papel, e nenhuma chamada existente
+ * precisou mudar. Quem for implementar a Fase C ramifica a partir deste
+ * retorno, nao a partir do cookie.
  *
  * Sem sessao -> manda para o login preservando o caminho de origem.
  * Sessao apontando para usuario inexistente/inativo -> passa pelo route handler

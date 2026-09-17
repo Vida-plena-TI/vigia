@@ -6,8 +6,21 @@
 > "klini", trate como o nome antigo/legado — o nome exibido para o usuário final
 > (título da página, texto do header, e-mails) deve ser **VIGIA**.
 
-Sistema de controle de autorizações de terapia de uma clínica. Não tem múltiplos perfis:
-existe apenas "usuário autenticado e ativo" ou "não autenticado".
+Sistema de controle de autorizações de terapia de uma clínica.
+
+> **Premissa revertida em 17/09/2026.** Desde o início do projeto este documento afirmava
+> que *"não há distinção de perfil/papel de usuário: existe apenas 'usuário autenticado e
+> ativo' ou 'não autenticado'"*. **Isso deixou de ser verdade.** Todo usuário agora tem um
+> **papel** (`admin` ou `recepcao`), gravado na coluna `usuario.papel`. Se você encontrar
+> em algum lugar do código, de um comentário ou de uma sessão anterior a afirmação de que
+> não há perfis, ela está desatualizada — o texto certo é este.
+>
+> A reversão é a **Fase A** de um plano de quatro fases (papéis → rotas por convênio →
+> controle de acesso → SulAmérica). Ver "Plano de papéis e convênios" no fim de
+> "Progresso": **só a Fase A está implementada**, e ela acrescenta apenas o *dado*.
+> Nenhuma rota é bloqueada e nenhuma permissão é checada por papel ainda — quem lê este
+> documento procurando controle de acesso não vai encontrar, porque ele não existe (Fase
+> C).
 
 ## Stack
 
@@ -28,7 +41,11 @@ existe apenas "usuário autenticado e ativo" ou "não autenticado".
   case-insensitive, nome sempre trimado antes de salvar/buscar. **Único case-insensitive**
   no banco via índice `UNIQUE (lower(nome))`.
 - **usuario**: id, username (único, comparação **case-sensitive** — diferente de
-  paciente.nome), password_hash (bcrypt), ativo (bool, default true).
+  paciente.nome), password_hash (bcrypt), ativo (bool, default true), **papel** (texto,
+  `NOT NULL`, `CHECK (papel IN ('admin', 'recepcao'))`, **sem default**). O `papel` entrou
+  em 17/09/2026 e reverteu a premissa de que não havia perfis — ver a nota no topo deste
+  documento e "Papéis de usuário" nas decisões de implementação. As contas que já existiam
+  foram backfilladas como `admin` pela migration `20260917120000_papel_de_usuario`.
 - **terapia**: id, nome (único), codigo_tiss (texto).
 - **requisicao**: id, numero_requisicao (texto), paciente_id (FK). Único por
   `(paciente_id, numero_requisicao)` — não único globalmente.
@@ -349,10 +366,57 @@ teste passar hoje e mentir no mês que vem.
   sem acento (decisão antiga, provavelmente de encoding); código novo não repete
   isso, porque a acentuação errada chega ao usuário final. A troca do texto
   antigo entra junto com o Prompt 10.
-- **Script de admin idempotente**: `scripts/create-admin.ts` (rodado via
-  `npm run create-admin`, lendo `ADMIN_USERNAME`/`ADMIN_PASSWORD` do `.env`) redefine a
-  senha e reativa a conta se o usuário já existir, em vez de falhar por duplicata. É o
-  jeito recomendado de resetar a senha do admin — evitar apagar/recriar via SQL manual.
+- **Scripts de conta idempotentes**: `scripts/create-admin.ts` (via `npm run create-admin`,
+  lendo `ADMIN_USERNAME`/`ADMIN_PASSWORD`) e `scripts/create-recepcao.ts` (via
+  `npm run create-recepcao`, lendo `RECEPCAO_USERNAME`/`RECEPCAO_PASSWORD`) redefinem a
+  senha, reativam a conta e regravam o papel se o usuário já existir, em vez de falhar por
+  duplicata. É o jeito recomendado de resetar uma senha — evitar apagar/recriar via SQL
+  manual. Os dois são casca em volta de `criarOuAtualizarUsuario`
+  (`lib/auth/criar-usuario.ts`): a regra de idempotência existe uma vez só, para os dois
+  não divergirem em silêncio quando um deles for mexido. Cada um lê **seu próprio par** de
+  variáveis; ver "Papéis de usuário" abaixo para o porquê.
+- **Papéis de usuário (17/09/2026, Fase A, branch `feat/papel-de-usuario`) — reversão de
+  premissa.** Até esta data o documento afirmava que o sistema não tinha distinção de
+  perfil, só "autenticado e ativo". Passou a ter: `usuario.papel`, texto `NOT NULL` com
+  `CHECK (papel IN ('admin', 'recepcao'))`.
+  **Sem default na coluna, de propósito.** A migration `20260917120000_papel_de_usuario`
+  cria a coluna com `DEFAULT 'admin'` *só para backfillar* as linhas existentes (o
+  Postgres precisa de um valor num `ADD COLUMN NOT NULL`) e derruba o default no comando
+  seguinte, no mesmo arquivo. `'admin'` não é chute de conveniência: até aquela data o
+  sistema só tinha contas criadas por `create-admin.ts`, então todo usuário que já existia
+  **era** admin — confirmado no banco local, onde as duas linhas pré-existentes (`admin` e
+  `codex_teste`) saíram da migration como `admin`. Derrubar o default é o que faz um
+  `INSERT` que esqueça o papel **falhar** em vez de nascer admin em silêncio, e é também o
+  que mantém `schema.prisma` e banco em acordo — o model declara `papel String` sem
+  `@default`, e um default guardado na coluna faria o próximo `migrate dev` ver drift.
+  **O conjunto de valores mora no banco.** O Prisma não expressa `CHECK` no schema (mesma
+  situação do `UNIQUE (lower(nome))` de `paciente`), então `papel` é `String` no model e o
+  espelho em TypeScript é `PAPEIS` / `PapelUsuario` em `lib/auth/papel.ts`. Acrescentar um
+  papel é mudar os dois no mesmo commit; há teste de integração que manda um papel
+  inválido e exige a recusa do Postgres.
+  **Variáveis de ambiente separadas** (`ADMIN_*` e `RECEPCAO_*`, sem reaproveitar um par
+  para os dois scripts): como o papel é reescrito também no caminho de atualização, um
+  único par deixaria ambíguo qual conta o comando está mexendo — e uma confusão dessas
+  rebaixaria o admin a recepção sem avisar.
+  **O que esta fase NÃO faz:** nenhuma rota, nenhum layout e nenhuma Server Action
+  ramifica por papel. `requireUsuario()` devolve o papel e não barra ninguém com ele.
+- **Papel na sessão, mas a sessão não é a autoridade.** O cookie assinado passou a levar
+  `papel` e `username` junto de `usuarioId` (`SessionData` em `lib/auth/session-options.ts`,
+  gravados no `login` de `lib/auth/actions.ts`). O motivo é o `proxy.ts`, que roda antes de
+  tudo e **não consulta o banco**: com o papel no cookie ele poderá decidir redirect/UI na
+  Fase C sem uma ida ao Postgres por requisição. Nada lê esse campo ainda.
+  Isso **não** move a autoridade para o cookie. `requireUsuario()` continua sendo a fonte
+  de verdade (regra 4), pela mesma razão de sempre — ela enxerga conta desativada ou papel
+  trocado *depois* que o cookie foi selado, e o cookie não. Os campos do cookie são cópias
+  que envelhecem: mudar o papel de alguém no banco só aparece lá no próximo login. Por
+  isso `getUsuarioAtual()` lê `papel` do banco, e não da sessão.
+  Detalhe de tipos nas duas pontas: como `papel` é `String` no Prisma, a leitura passa por
+  `ehPapelValido` antes de virar `PapelUsuario`. No login, papel irreconhecível grava a
+  sessão **sem** papel (ausente é o caso restritivo, não o permissivo); em
+  `getUsuarioAtual`, ele derruba a autenticação — inalcançável enquanto o CHECK estiver de
+  pé, e é o que impede uma conta circular com um papel que o TypeScript acha que conhece.
+  **Nota para quem vier depois:** `username` **não** estava na sessão antes desta mudança
+  (só `usuarioId`). Ele entrou junto, pela mesma razão que o papel.
 - **Collation do banco (verificado em 31/08/2026)**: o Postgres de desenvolvimento é
   16.11, `server_encoding = UTF8`, `datcollate = datctype = Portuguese_Brazil.1252`.
   **Não** é a collation `C`. Consequência prática: `lower()` faz case-folding Unicode
@@ -1030,6 +1094,28 @@ parecer íntegro na tela.
 - Não afrouxar a confirmação da exclusão (habilitar o botão sem o campo digitado, estimar
   as contagens em vez de consultá-las, fechar o diálogo no erro). A fricção é o produto
   daquela tela, não um obstáculo a ser polido.
+- Não repetir que "o sistema não tem perfis". Tinha, até 17/09/2026; não tem mais. A
+  afirmação sobrevive em comentários e resumos antigos — ao encontrá-la, corrija em vez de
+  propagar.
+- Não decidir acesso pelo `papel` do **cookie**. Ele é cópia envelhecida, selada no último
+  login; quem decide é `requireUsuario()` / `getUsuarioAtual()`, que lê o banco. O papel no
+  cookie existe só para o `proxy.ts` poder ser barato — e "barato" ali significa
+  aproximação otimista, exatamente como a checagem de sessão que já mora lá.
+- Não repor o `DEFAULT 'admin'` em `usuario.papel`. Ele existe apenas dentro da migration
+  `20260917120000_papel_de_usuario`, como mecanismo de backfill, e é derrubado no comando
+  seguinte. Um default permanente faria toda inserção que esquecesse o papel virar admin
+  em silêncio, e ainda poria `schema.prisma` e banco em desacordo. Há teste que cai.
+- Não acrescentar um papel novo só no `CHECK` da migration ou só em `PAPEIS`
+  (`lib/auth/papel.ts`). São duas metades da mesma definição e mudam no mesmo commit.
+- Não reescrever a lógica idempotente de criação de conta dentro de um script novo. Ela
+  vive em `criarOuAtualizarUsuario` (`lib/auth/criar-usuario.ts`); um terceiro script de
+  conta lê o ambiente dele e chama essa função.
+- Não fazer `create-recepcao` cair em `ADMIN_USERNAME`/`ADMIN_PASSWORD` (nem o contrário)
+  "para reaproveitar". O par separado é o que impede um comando de mexer na conta errada —
+  e há teste que lê os dois fontes e afirma isso.
+- Não implementar bloqueio de rota por papel antes da Fase C. A Fase A entrega o dado; as
+  fases B e C vêm antes da autorização, e pular direto para ela deixaria a reorganização de
+  rotas por convênio para ser desfeita depois.
 
 ## Progresso
 
@@ -1272,6 +1358,63 @@ parecer íntegro na tela.
       `requisicao_terapia`) e ela também levou a validade sugerida. Os dados de teste
       foram removidos no fim.
 
+- [x] **Fase A — Papel de usuário** (17/09/2026, branch `feat/papel-de-usuario`, **não
+      mesclada**: validação local do usuário primeiro). Reverteu a premissa "sem perfis"
+      registrada desde o início deste documento. Entrou: a coluna `usuario.papel` (TEXT
+      `NOT NULL`, `CHECK (papel IN ('admin', 'recepcao'))`, sem default) pela migration
+      `20260917120000_papel_de_usuario`, que backfilla `'admin'` nas linhas existentes e
+      derruba o default em seguida; `lib/auth/papel.ts` com `PAPEIS` / `PapelUsuario` /
+      `ehPapelValido`, espelho em TypeScript do CHECK; `lib/auth/criar-usuario.ts` com a
+      regra idempotente única; `scripts/create-admin.ts` gravando `papel = 'admin'`
+      explicitamente e `scripts/create-recepcao.ts` (novo, lendo `RECEPCAO_USERNAME` e
+      `RECEPCAO_PASSWORD`, com o script `create-recepcao` no `package.json`) gravando
+      `'recepcao'`; `papel` e `username` no cookie de sessão; `papel` no retorno de
+      `getUsuarioAtual()` / `requireUsuario()`, lido do banco. **Nenhuma rota e nenhuma
+      permissão dependem de papel** — isso é a Fase C.
+      `tsc --noEmit` limpo, `npm test` verde (18 arquivos, 255 testes, com a integração
+      contra o banco real), `npm run build` ok e `npm run lint` continua acusando só o
+      erro pré-existente de `acoes-da-guia.tsx`. Testes novos: unitários do espelho
+      `PAPEIS`, e integração cobrindo os dois scripts gravando o papel certo, a
+      idempotência (segunda passada redefine a senha — verificada com `verifyPassword` nos
+      dois sentidos —, mantém uma linha só, o mesmo id e o papel), a reativação de conta
+      desativada, a recusa do Postgres a papel fora da lista, e o backfill. O teste do
+      backfill **roda o SQL do arquivo de migration**, lido do disco, sobre uma cópia
+      temporária semeada com as linhas reais de `usuario` mais duas "antigas" (uma ativa e
+      uma inativa): a cópia existe porque o role de runtime não é dono de `usuario` e o
+      Postgres recusa o `ALTER TABLE` dele — separação de privilégio que está correta —, e
+      o que muda entre o arquivo e o que roda é só o nome da tabela. O estado final da
+      tabela de verdade é conferido à parte, no catálogo (`NOT NULL`, sem default, CHECK
+      com os dois papéis).
+      **Verificação local por SQL feita**: `admin` (id 1) e `codex_teste` (id 6), que já
+      existiam, saíram da migration com `papel = 'admin'`; `npm run create-admin` rodado
+      duas vezes mantém `admin` em `papel = 'admin'` e imprime "atualizado" nas duas;
+      `npm run create-recepcao` criou `recepcao_teste` (id 44) com `papel = 'recepcao'` e,
+      na segunda passada, atualizou a mesma linha sem duplicar; sem `RECEPCAO_PASSWORD` o
+      script recusa com mensagem própria. O `information_schema` confirma `papel` TEXT,
+      `is_nullable = NO`, `column_default` nulo, e o CHECK
+      `papel = ANY (ARRAY['admin', 'recepcao'])`.
+      **Teste manual no navegador não foi feito** — esta sessão não teve browser
+      controlável. O que falta verificar na mão é o login: ele grava `papel` e `username`
+      no cookie agora, e nenhum teste automatizado exercita a Server Action `login` de
+      ponta a ponta.
+
+### Plano de papéis e convênios — 4 fases
+
+Registrado aqui inteiro de propósito: a Fase A sozinha não explica por que existe, e as
+sessões seguintes precisam do plano completo para não implementar a fase errada primeiro.
+
+- [x] **Fase A — Papéis de usuário.** A coluna `usuario.papel`, os dois scripts de criação
+      de conta, e o papel disponível nos dois lugares (sessão e busca autoritativa no
+      banco). Só o dado. Detalhes no item acima.
+- [ ] **Fase B — Reorganização de rotas por convênio.** As rotas passam a ser organizadas
+      por convênio. Vem antes do controle de acesso porque é o que define *o que* há para
+      permitir; inverter a ordem faria a Fase C ser refeita em cima de rotas que mudaram.
+- [ ] **Fase C — Controle de acesso.** Aqui, e só aqui, `papel` passa a barrar. É onde o
+      `papel` do cookie ganha uso (decisões otimistas de redirect/UI no `proxy.ts`, sem
+      bater no banco) e onde `requireUsuario()` deixa de só informar o papel e passa a
+      recusar com ele.
+- [ ] **Fase D — SulAmérica.** O convênio novo, em cima da estrutura das fases B e C.
+
 ## Pendências conhecidas (não bloqueiam o próximo passo, mas não esquecer)
 
 - Nome do cookie de sessão ainda é `klini_session` e o header interno é
@@ -1282,8 +1425,16 @@ parecer íntegro na tela.
   (`react-hooks/set-state-in-effect`, no `useEffect` de `LinhaDoHistorico` que recarrega os
   campos ao entrar em edição). Não foi tocado pela passagem visual porque é lógica de
   estado, não estilo — mas `npm run lint` falha por causa dele.
-- `ADMIN_PASSWORD` de produção deve ficar só no terminal local ao rodar
-  `npm run create-admin`; não versionar e não configurar na Vercel.
+- `ADMIN_PASSWORD` e `RECEPCAO_PASSWORD` de produção devem ficar só no terminal local ao
+  rodar `npm run create-admin` / `npm run create-recepcao`; não versionar e não configurar
+  na Vercel.
+- **A conta `recepcao_teste` (id 44) ficou no banco de desenvolvimento**, criada em
+  17/09/2026 para verificar a Fase A, com uma senha de teste escolhida na hora. Ela não
+  existe em produção. Se for usada para validar a Fase A no navegador, rode
+  `npm run create-recepcao` com uma senha sua antes; se não for, apague a linha.
+- **Nenhum teste automatizado exercita a Server Action `login` de ponta a ponta.** Não é
+  novo — mas ficou mais visível com a Fase A, que passou a gravar `papel` e `username` no
+  cookie. Os campos do cookie são cobertos pelo tipo, não por teste.
 - **A unicidade case-insensitive de `paciente.nome` depende da collation da instalação.**
   O banco local verificado em 31/08/2026 usa `Portuguese_Brazil.1252`; o Supabase de
   produção verificado em 01/09/2026 usa `en_US.UTF-8`. Nenhum dos dois é `C/POSIX`.

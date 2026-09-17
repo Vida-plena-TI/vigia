@@ -147,6 +147,9 @@ async function main() {
       username: "admin",
       passwordHash: bcrypt.hashSync("admin123", 10),
       ativo: true,
+      // Obrigatorio desde a migration `20260917120000_papel_de_usuario`: a
+      // coluna e NOT NULL e nao tem default, entao todo `create` diz o papel.
+      papel: "admin",
     },
   });
 

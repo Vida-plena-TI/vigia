@@ -8,9 +8,34 @@
  */
 import type { SessionOptions } from "iron-session";
 
-/** Conteudo do cookie de sessao. Nao ha perfis: ou existe usuario logado, ou nao. */
+import type { PapelUsuario } from "./papel";
+
+/**
+ * Conteudo do cookie de sessao.
+ *
+ * Todos os campos sao opcionais porque a sessao vazia (visitante sem login) e
+ * um estado valido: `usuarioId` ausente e o que significa "nao autenticado".
+ *
+ * **`papel` aqui nao e autorizacao.** A fonte de verdade continua sendo
+ * `requireUsuario()`, que le o usuario no banco a cada requisicao e enxerga
+ * conta desativada ou papel trocado depois que o cookie foi selado. O papel no
+ * cookie existe para o `proxy.ts` — que roda antes de tudo e nao consulta o
+ * banco — poder tomar decisoes baratas de UI/redirect sem uma ida ao Postgres
+ * por requisicao. Na Fase A nada consome esse campo ainda; ele so passa a ser
+ * lido na Fase C (controle de acesso).
+ *
+ * `username` acompanha `usuarioId` pelo mesmo motivo: e o que o proxy poderia
+ * precisar exibir sem consulta. Ele tambem e uma copia, nao a verdade — quem
+ * quiser o username correto usa `getUsuarioAtual()`.
+ *
+ * Como sao copias seladas no login, elas envelhecem: mudar o papel de alguem
+ * no banco so aparece no cookie no proximo login. Por isso nenhuma decisao que
+ * precise estar certa pode sair daqui.
+ */
 export type SessionData = {
   usuarioId?: number;
+  username?: string;
+  papel?: PapelUsuario;
 };
 
 export const SESSION_COOKIE_NAME = "klini_session";

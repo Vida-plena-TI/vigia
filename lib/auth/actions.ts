@@ -4,6 +4,7 @@ import { redirect } from "next/navigation";
 
 import { getPrismaClient } from "@/lib/db";
 
+import { ehPapelValido } from "./papel";
 import { safeNextPath } from "./next-path";
 import { fakeVerifyPassword, verifyPassword } from "./password";
 import { getSession } from "./session";
@@ -26,8 +27,12 @@ const ERRO_CREDENCIAIS = "Usuário ou senha inválidos.";
  *
  * Falha -> devolve o estado com a mensagem de erro, sem redirect: o formulario
  * e re-renderizado no lugar.
- * Sucesso -> grava `usuarioId` na sessao e redireciona para `next` (se for um
- * caminho interno) ou para "/".
+ * Sucesso -> grava `usuarioId`, `username` e `papel` na sessao e redireciona
+ * para `next` (se for um caminho interno) ou para "/".
+ *
+ * O papel vai para o cookie para o `proxy.ts` poder decidir sem banco (ver
+ * `SessionData`); ele nao substitui `requireUsuario()`, que continua sendo a
+ * checagem que vale.
  */
 export async function login(
   _prev: LoginState,
@@ -43,7 +48,13 @@ export async function login(
 
   const usuario = await getPrismaClient().usuario.findUnique({
     where: { username },
-    select: { id: true, passwordHash: true, ativo: true },
+    select: {
+      id: true,
+      username: true,
+      passwordHash: true,
+      ativo: true,
+      papel: true,
+    },
   });
 
   if (!usuario || !usuario.ativo) {
@@ -61,6 +72,13 @@ export async function login(
 
   const session = await getSession();
   session.usuarioId = usuario.id;
+  session.username = usuario.username;
+  // `papel` e `String` no Prisma (o conjunto de valores vive no CHECK da
+  // tabela, nao no schema), entao a leitura passa pelo guarda antes de entrar
+  // no cookie tipado. Um valor fora da lista deixa a sessao sem papel em vez de
+  // gravar lixo selado — e como nada na Fase A le esse campo, isso nao muda o
+  // login; na Fase C, "sem papel" e o caso restritivo, nao o permissivo.
+  session.papel = ehPapelValido(usuario.papel) ? usuario.papel : undefined;
   await session.save();
 
   // `redirect` lanca uma excecao de controle — precisa ficar fora de try/catch.
