@@ -52,6 +52,11 @@ export default async function DashboardPage() {
       <div className="flex flex-wrap items-end justify-between gap-4 border-b border-regua-forte pb-4">
         <div className="flex flex-col gap-1">
           <h1 className="text-2xl font-semibold">Painel de guias</h1>
+          {usuario.papel === "admin" ? (
+            <Link href="/" className="text-sm font-medium underline underline-offset-4 hover:text-muted-foreground">
+              Trocar convênio
+            </Link>
+          ) : null}
           <p className="max-w-prose text-sm text-muted-foreground">
             Saldo e alerta de cada autorização de terapia, recalculados a cada
             atendimento lançado.

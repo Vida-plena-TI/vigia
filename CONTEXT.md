@@ -321,7 +321,34 @@ teste passar hoje e mentir no mês que vem.
     no proxy. Página e actions chamam requireAcessoARota/autorizarRota com ROTA_SULAMERICA,
     lendo papel do banco. Menu filtra o novo link pela mesma regra. A raiz perdeu o
     texto “Em construção”; `/sulamerica` redireciona ao painel depois da autorização.
-    “Trocar convênio” no cabeçalho do painel leva à raiz, e o menu permite voltar ao Klini.
+    “Trocar convênio” no cabeçalho do painel leva à raiz para escolher outro convênio.
+
+- **Menu por convênio (17/09/2026, branch `fix/navegacao-por-convenio`).**
+  `itensDeNavegacaoPara(papel, caminho)` seleciona uma lista pelo prefixo exato
+  `/klini` ou `/sulamerica` (incluindo subrotas), depois aplica o mesmo
+  `podeAcessarRota` da Fase C. Klini tem seus cinco itens; SulAmérica tem apenas
+  “Painel”, para `/sulamerica/dashboard`, em lista própria pronta para novas páginas.
+  A raiz de escolha não exibe itens de nenhum convênio. Não há links cruzados nas listas.
+  O layout reaproveita `PATHNAME_HEADER` (`x-klini-pathname`) como caminho inicial
+  da navegação, sem novo header nem alteração no proxy. A `Navegacao` reutiliza seu
+  `usePathname` existente para atualizar lista e destaque nas transições via `Link`:
+  layouts compartilhados não renderizam novamente a cada navegação no Next.js.
+  “Trocar convênio” continua separado no painel SulAmérica; o painel Klini ganhou
+  o equivalente para admin, pois antes não o tinha. Ambos levam à escolha na raiz.
+  Nenhuma regra de acesso foi alterada; recepção continua vendo só Painel,
+  Lançar atendimento e Atendimentos de hoje no Klini.
+  - Validação: `tsc --noEmit`, **332 testes em 23 arquivos** e `next build` passaram.
+    Verificação HTTP contra o build local em `127.0.0.1:3100`, com sessões assinadas
+    de contas locais existentes, confirmou cinco itens Klini para admin, um item
+    SulAmérica para admin, três itens Klini para recepção e “Trocar convênio” fora
+    do menu nos dois painéis do admin. Também confirmou as telas de atendimento,
+    a raiz sem menu para admin e os redirects da recepção na raiz e em SulAmérica.
+    Nenhuma conta, senha ou dado foi alterado; essa verificação não exercitou o login.
+  - **Teste visual e transições por cliques pendentes:** a conexão do Browser retornou
+    “No browser is available” e a lista de navegadores estava vazia. HTTP não valida
+    layout nem transições via `Link`. Conferir localmente Klini → Trocar convênio →
+    SulAmérica → Trocar convênio → Klini, além do menu da recepção.
+    Sem merge, push ou deploy; aguarda validação local do usuário.
 
 - **Status HTTP do login**: a regra "falha de login retorna 400" do sistema legado (que
   usava FastAPI + Jinja2 renderizando HTML direto) **não se aplica literalmente** aqui.

@@ -15,18 +15,29 @@ import { itensDeNavegacaoPara } from "./itens-de-navegacao";
  * pílula colorida: dentro do VIGIA, cor é reservada para status, e um item de
  * menu não é um status.
  *
- * Os itens dependem do `papel` (Fase C) — ver `itensDeNavegacaoPara`. O papel
+ * Os itens dependem do convênio atual e do `papel` (Fase C) — ver
+ * `itensDeNavegacaoPara`. O papel
  * chega por prop, do layout, que já o leu do banco: um client component não
  * tem como fazer essa leitura, e o cookie é `httpOnly`.
  */
-export function Navegacao({ papel }: { papel: PapelUsuario }) {
-  const pathname = usePathname();
-  const itens = itensDeNavegacaoPara(papel);
+export function Navegacao({
+  papel,
+  pathnameInicial,
+}: {
+  papel: PapelUsuario;
+  pathnameInicial: string;
+}) {
+  // Reutiliza o pathname já lido para o destaque ativo. O layout é preservado
+  // entre navegações: usar só o header deixaria o menu no convênio anterior.
+  const pathname = usePathname() ?? pathnameInicial;
+  const itens = itensDeNavegacaoPara(papel, pathname);
+
+  if (itens.length === 0) return null;
 
   return (
     <nav
       aria-label="Seções do VIGIA"
-      // A rolagem horizontal é o que salva a faixa no celular: os seis
+      // A rolagem horizontal é o que salva a faixa no celular: os cinco
       // rótulos do admin não cabem em 360px e quebrar linha empurraria o
       // conteúdo.
       className="-mx-5 overflow-x-auto px-5 sm:mx-0 sm:overflow-x-auto sm:px-0"

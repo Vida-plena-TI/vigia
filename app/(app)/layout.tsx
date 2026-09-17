@@ -25,7 +25,8 @@ import { Navegacao } from "./navegacao";
  */
 export default async function AppLayout({ children }: LayoutProps<"/">) {
   const cabecalhos = await headers();
-  const usuario = await requireUsuario(cabecalhos.get(PATHNAME_HEADER));
+  const pathname = cabecalhos.get(PATHNAME_HEADER);
+  const usuario = await requireUsuario(pathname);
 
   return (
     <div className="flex min-h-full flex-1 flex-col">
@@ -50,7 +51,7 @@ export default async function AppLayout({ children }: LayoutProps<"/">) {
             </div>
           </div>
 
-          <Navegacao papel={usuario.papel} />
+          <Navegacao papel={usuario.papel} pathnameInicial={pathname ?? "/"} />
 
           <div className="ml-auto hidden items-center gap-3 sm:flex">
             <IdentificacaoDoUsuario username={usuario.username} />
