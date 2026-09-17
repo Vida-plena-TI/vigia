@@ -25,6 +25,7 @@ model Paciente {
   /// entao a relacao e 1-para-no-maximo-1. Cadastrar um encaminhamento novo
   /// substitui o anterior.
   encaminhamento Encaminhamento?
+  autorizacaoSulamerica AutorizacaoSulamerica?
 
   @@index([nome])
   @@map("paciente")
@@ -171,4 +172,18 @@ model Atendimento {
 
   @@index([requisicaoTerapiaId])
   @@map("atendimento")
+}
+
+/// Uma autorizacao por paciente. CHECK de prazo e coluna gerada vivem na migration.
+/// Expressao copiada de prisma db pull --print: evita DROP DEFAULT invalido.
+model AutorizacaoSulamerica {
+  id             Int       @id @default(autoincrement())
+  pacienteId     Int       @unique @map("paciente_id")
+  dataInicio     DateTime  @map("data_inicio") @db.Date
+  prazoMeses     Int       @map("prazo_meses")
+  dataVencimento DateTime? @default(dbgenerated("((data_inicio + ((prazo_meses)::double precision * '1 mon'::interval)))::date")) @map("data_vencimento") @db.Date
+
+  paciente Paciente @relation(fields: [pacienteId], references: [id], onDelete: Restrict)
+
+  @@map("autorizacao_sulamerica")
 }

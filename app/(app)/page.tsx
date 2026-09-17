@@ -18,9 +18,7 @@ import { requireUsuario } from "@/lib/auth/current-user";
  * mesma função nesta requisição e o `cache` do React devolve a leitura dele,
  * sem segunda ida ao Postgres.
  *
- * O cartão da SulAmérica já aponta para `/sulamerica/dashboard`, que ainda não
- * existe (Fase D): o destino é o definitivo desde agora para o link não ter de
- * mudar depois.
+ * O cartão da SulAmérica abre o painel de autorizações implementado na Fase D.
  */
 export default async function HomePage() {
   const usuario = await requireUsuario();
@@ -34,8 +32,7 @@ export default async function HomePage() {
       <div className="flex flex-col gap-1 border-b border-regua-forte pb-4">
         <h1 className="text-xl font-semibold">Convênios</h1>
         <p className="max-w-prose text-sm text-muted-foreground">
-          Escolha o convênio para abrir o painel dele. Cada convênio tem as
-          próprias requisições, guias e atendimentos.
+          Escolha o convênio para acompanhar suas autorizações.
         </p>
       </div>
 
@@ -53,7 +50,7 @@ export default async function HomePage() {
         <CartaoDeConvenio
           href="/sulamerica/dashboard"
           nome="SulAmérica"
-          descricao="Em construção."
+          descricao="Autorizações com validade de 3, 6 ou 12 meses."
         />
       </ul>
     </div>

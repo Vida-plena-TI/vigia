@@ -138,6 +138,7 @@ export type ContagemParaExclusao = {
   guias: number;
   atendimentos: number;
   temEncaminhamento: boolean;
+  temAutorizacaoSulamerica: boolean;
 };
 
 export type ResultadoDaContagem =
@@ -195,7 +196,10 @@ async function contarComCliente(
       ) AS "atendimentos",
       EXISTS (
         SELECT 1 FROM "encaminhamento" e WHERE e."paciente_id" = p."id"
-      ) AS "temEncaminhamento"
+      ) AS "temEncaminhamento",
+      EXISTS (
+        SELECT 1 FROM "autorizacao_sulamerica" a WHERE a."paciente_id" = p."id"
+      ) AS "temAutorizacaoSulamerica"
     FROM "paciente" p
     WHERE p."id" = ${pacienteId}
   `;
@@ -246,7 +250,8 @@ export async function contarParaExclusao(
  *      ser uma segunda descrição de uma regra que já mora no schema.
  *   2. `requisicao` do paciente.
  *   3. `encaminhamento` do paciente (no máximo uma linha, `UNIQUE`).
- *   4. `paciente`.
+ *   4. `autorizacao_sulamerica` do paciente, se houver.
+ *   5. `paciente`.
  *
  * Qualquer falha no meio — erro de banco, FK inesperada, queda de conexão —
  * lança, e a transação inteira volta atrás: **nada fica apagado pela metade**.
@@ -304,6 +309,10 @@ export async function excluirPacienteNaTransacao(
 
   await tx.$executeRaw`
     DELETE FROM "encaminhamento" WHERE "paciente_id" = ${pacienteId}
+  `;
+
+  await tx.$executeRaw`
+    DELETE FROM "autorizacao_sulamerica" WHERE "paciente_id" = ${pacienteId}
   `;
 
   await tx.$executeRaw`

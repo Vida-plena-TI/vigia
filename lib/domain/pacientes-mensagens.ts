@@ -59,10 +59,12 @@ export function fraseDeExclusao(
   pacienteNome: string,
   requisicoes: number,
   atendimentos: number,
+  temAutorizacaoSulamerica = false,
 ): string {
   return (
     `Isso vai apagar permanentemente o cadastro de ${pacienteNome}, ` +
     `incluindo ${requisicoes} requisição(ões) e ${atendimentos} atendimento(s). ` +
+    (temAutorizacaoSulamerica ? "A autorização SulAmérica também será apagada. " : "") +
     `Essa ação não pode ser desfeita.`
   );
 }

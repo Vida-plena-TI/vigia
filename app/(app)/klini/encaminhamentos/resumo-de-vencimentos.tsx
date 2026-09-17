@@ -43,12 +43,14 @@ const TOPO_POR_VENCIMENTO: Record<StatusEncaminhamento, string> = {
  */
 export function ResumoDeVencimentos({
   resumo,
+  rotulo = "Resumo de encaminhamentos por vencimento",
 }: {
   resumo: ResumoDeEncaminhamentos;
+  rotulo?: string;
 }) {
   return (
     <section
-      aria-label="Resumo de encaminhamentos por vencimento"
+      aria-label={rotulo}
       className="folha overflow-hidden"
     >
       <div className="grid divide-y divide-regua sm:grid-cols-3 sm:divide-x sm:divide-y-0">

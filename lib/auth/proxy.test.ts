@@ -209,6 +209,9 @@ describe("proxy — acesso por papel", () => {
     "/klini/requisicoes",
     "/klini/encaminhamentos",
     "/klini/encaminhamentos/qualquer-coisa",
+    "/sulamerica",
+    "/sulamerica/dashboard",
+    "/sulamerica/qualquer/subrota",
   ];
 
   it("recepcao digitando a URL restrita cai no painel, nao no login", async () => {

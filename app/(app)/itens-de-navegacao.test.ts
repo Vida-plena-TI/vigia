@@ -13,17 +13,18 @@ const rotulos = (papel: "admin" | "recepcao") =>
   itensDeNavegacaoPara(papel).map((item) => item.rotulo);
 
 describe("itensDeNavegacaoPara", () => {
-  it("admin ve os cinco itens, na ordem da faixa", () => {
+  it("admin ve os seis itens, na ordem da faixa", () => {
     expect(rotulos("admin")).toEqual([
       "Painel",
       "Nova requisição",
       "Lançar atendimento",
       "Atendimentos de hoje",
       "Encaminhamentos",
+      "SulAmérica",
     ]);
   });
 
-  it("recepcao nao ve Nova requisição nem Encaminhamentos", () => {
+  it("recepcao nao ve Nova requisição nem Encaminhamentos nem SulAmérica", () => {
     expect(rotulos("recepcao")).toEqual([
       "Painel",
       "Lançar atendimento",

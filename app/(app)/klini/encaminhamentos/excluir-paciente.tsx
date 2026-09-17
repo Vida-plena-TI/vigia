@@ -167,6 +167,7 @@ export function ExcluirPaciente({
                   contagem.pacienteNome,
                   contagem.requisicoes,
                   contagem.atendimentos,
+                  contagem.temAutorizacaoSulamerica,
                 )}
               </AlertDialogDescription>
             </AlertDialogHeader>

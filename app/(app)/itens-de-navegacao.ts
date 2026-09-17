@@ -1,6 +1,7 @@
 import {
   ROTA_ENCAMINHAMENTOS,
   ROTA_NOVA_REQUISICAO,
+  ROTA_SULAMERICA,
   podeAcessarRota,
 } from "@/lib/auth/acesso";
 import type { PapelUsuario } from "@/lib/auth/papel";
@@ -21,6 +22,7 @@ const ITENS = [
   { href: "/klini/atendimentos/novo", rotulo: "Lançar atendimento" },
   { href: "/klini/atendimentos/hoje", rotulo: "Atendimentos de hoje" },
   { href: ROTA_ENCAMINHAMENTOS, rotulo: "Encaminhamentos" },
+  { href: ROTA_SULAMERICA, rotulo: "SulAmérica" },
 ] as const;
 
 export type ItemDeNavegacao = (typeof ITENS)[number];

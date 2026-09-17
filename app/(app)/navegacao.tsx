@@ -26,10 +26,10 @@ export function Navegacao({ papel }: { papel: PapelUsuario }) {
   return (
     <nav
       aria-label="Seções do VIGIA"
-      // A rolagem horizontal é o que salva a faixa no celular: os cinco
+      // A rolagem horizontal é o que salva a faixa no celular: os seis
       // rótulos do admin não cabem em 360px e quebrar linha empurraria o
       // conteúdo.
-      className="-mx-5 overflow-x-auto px-5 sm:mx-0 sm:overflow-visible sm:px-0"
+      className="-mx-5 overflow-x-auto px-5 sm:mx-0 sm:overflow-x-auto sm:px-0"
     >
       <ul className="flex items-stretch gap-1 whitespace-nowrap">
         {itens.map((item) => {

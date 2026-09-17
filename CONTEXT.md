@@ -17,7 +17,7 @@ Sistema de controle de autorizações de terapia de uma clínica.
 >
 > A reversão começou na **Fase A** de um plano de quatro fases (papéis → rotas por
 > convênio → controle de acesso → SulAmérica). Ver "Plano de papéis e convênios" no fim de
-> "Progresso": **as Fases A, B e C estão implementadas**. Desde a Fase C (17/09/2026) o
+> "Progresso": **as quatro fases (A, B, C e D) estão implementadas**. Desde a Fase C (17/09/2026) o
 > papel **barra**: a recepção alcança só o painel e as duas telas de atendimento, e a raiz
 > "/" mostra a escolha de convênio para o admin. As regras estão na regra de negócio 17 e
 > em "Controle de acesso por papel" nas decisões de implementação. Se você encontrar em
@@ -62,6 +62,12 @@ Sistema de controle de autorizações de terapia de uma clínica.
   das requisições. **Um paciente tem no máximo um encaminhamento**: cadastrar outro
   substitui o anterior (regra 13). O status de vencimento não é coluna — vem da view
   `encaminhamento_status`.
+
+- **autorizacao_sulamerica**: id, paciente_id (FK RESTRICT e UNIQUE), data_inicio
+  (DATE NOT NULL), prazo_meses (INT NOT NULL, CHECK em 3, 6 ou 12), data_vencimento
+  (DATE gerada STORED). Uma autorização por paciente, substituída por novo cadastro.
+  O status mensal vem da view `autorizacao_sulamerica_status`. O paciente é compartilhado
+  com o Klini; excluir esta autorização não exclui nenhum outro registro.
 
 Demais FKs (ex: requisicao → paciente) ficam no padrão `RESTRICT`. Só o caminho
 atendimento → requisicao_terapia tem cascade — decisão já implementada e confirmada por
@@ -267,6 +273,16 @@ teste passar hoje e mentir no mês que vem.
     aberta para o admin. Ver "Controle de acesso por papel" nas decisões de implementação
     para as camadas.
 
+18. **SulAmérica (Fase D, 17/09/2026).** Acesso exclusivo de admin, com papel confirmado
+    no banco na página e nas actions. Prazo escolhido explicitamente entre 3, 6 e 12
+    **meses de calendário**, sem opção pré-selecionada. O vencimento é calculado pelo
+    Postgres, inclusive o ajuste para o último dia de mês, e nunca em TypeScript.
+    Cadastro faz upsert por paciente_id dentro da transação do get-or-create. A view
+    classifica os mesmos quatro casos mensais de Encaminhamentos; a lista ordena por
+    urgência e depois lower(nome). Excluir na SulAmérica remove só a autorização.
+    A exclusão completa de paciente no Klini continua completa: inclui sua autorização
+    SulAmérica, caso exista, e a confirmação informa isso antes de exigir EXCLUIR.
+
 ## Decisões assumidas (perguntas em aberto no relatório de auditoria original)
 
 - `paciente.nome`: único case-insensitive no banco.
@@ -279,6 +295,33 @@ teste passar hoje e mentir no mês que vem.
 - Edição de atendimento para 0 créditos continua permitida.
 
 ## Decisões tomadas durante a implementação (não estavam no relatório original)
+
+- **SulAmérica — Fase D (17/09/2026, branch `feat/sulamerica`).** Migration
+  `20260917160000_autorizacao_sulamerica` cria tabela, CHECK, UNIQUE, FK RESTRICT e view.
+  A coluna gerada usa `((data_inicio + (prazo_meses * INTERVAL '1 month'))::date) STORED`.
+  O schema declara DateTime? com a expressão exata de `prisma db pull --print`:
+  `@default(dbgenerated("((data_inicio + ((prazo_meses)::double precision * '1 mon'::interval)))::date"))`.
+  O diff contra o banco local foi vazio, sem tentativa de DROP DEFAULT.
+  - Domínio em `lib/domain/autorizacoes-sulamerica.ts`, actions no módulo ao lado.
+    Reutiliza `obterOuCriarPaciente`; trava o paciente antes de consultar a autorização
+    anterior e fazer upsert, serializando inclusive dois primeiros cadastros concorrentes.
+    Datas entram e saem como AAAA-MM-DD; vencimento só volta pelo RETURNING do banco.
+  - A view compara date_trunc('month', data_vencimento) ao CURRENT_DATE do banco:
+    Vencido / Vence este mês / A vencer / NULL. O CASE de prioridade mora só no ORDER BY.
+  - `/sulamerica/dashboard` tem formulário inline, autocomplete, início editável com
+    padrão vindo de `dataDeHoje()`, prazo obrigatório sem seleção inicial, resumo,
+    busca sem acento/caixa e tabela/lista móvel. Reutiliza `SeloDeVencimento` (sobre
+    `components/selo-de-status.tsx`) e `ResumoDeVencimentos`, que ganhou rótulo acessível
+    configurável. Nenhum status Regular/Renovar/Esgotada foi usado nesta tela.
+  - A exclusão por id faz um único DELETE em autorizacao_sulamerica, sem cascata nem
+    remoção de paciente. Diálogo simples, sem palavra digitada, mantém erro aberto.
+    A exclusão completa já existente em Encaminhamentos ganhou o DELETE da autorização
+    antes de apagar paciente e a consulta/aviso de sua existência na confirmação.
+  - O allowlist da Fase C já bloqueia todo `/sulamerica`; não foi criada segunda lista
+    no proxy. Página e actions chamam requireAcessoARota/autorizarRota com ROTA_SULAMERICA,
+    lendo papel do banco. Menu filtra o novo link pela mesma regra. A raiz perdeu o
+    texto “Em construção”; `/sulamerica` redireciona ao painel depois da autorização.
+    “Trocar convênio” no cabeçalho do painel leva à raiz, e o menu permite voltar ao Klini.
 
 - **Status HTTP do login**: a regra "falha de login retorna 400" do sistema legado (que
   usava FastAPI + Jinja2 renderizando HTML direto) **não se aplica literalmente** aqui.
@@ -477,8 +520,7 @@ teste passar hoje e mentir no mês que vem.
   **A raiz `/` deixou de ser um `redirect` fixo.** `app/(app)/page.tsx` virou tela de
   escolha de convênio para o admin (dois cartões, sem cor — convênio não é status) e
   continua um `redirect` para quem é recepção. O cartão da SulAmérica já aponta para
-  `/sulamerica/dashboard`, que **ainda dá 404** até a Fase D: o destino é o definitivo
-  desde agora para o link não ter de mudar depois. A marca "VIGIA" do cabeçalho passou a
+  `/sulamerica/dashboard`, que **passou a funcionar na Fase D**. A marca "VIGIA" do cabeçalho passou a
   levar para `/` em vez de `/klini/dashboard` — é o único caminho de volta para a escolha.
   **O que a Fase C NÃO faz:** nenhuma checagem de papel entrou nas actions do painel e dos
   atendimentos (lançar, editar, excluir atendimento, excluir guia, histórico). São as
@@ -1059,7 +1101,7 @@ jeitos.
 
 **A ordem dos DELETE é do banco, não de gosto** (`excluirPacienteNaTransacao`, em
 `lib/domain/pacientes.ts`): `requisicao_terapia` -> `requisicao` -> `encaminhamento` ->
-`paciente`. As três FKs envolvidas são `ON DELETE RESTRICT`, então qualquer outra ordem é
+`autorizacao_sulamerica` -> `paciente`. As FKs envolvidas são `ON DELETE RESTRICT`, então qualquer outra ordem é
 recusada pelo Postgres. Os `atendimento` **não** têm DELETE próprio: eles vão embora pelo
 `ON DELETE CASCADE` de `atendimento -> requisicao_terapia`, o único cascade do sistema
 (regra 10). Escrever o DELETE explícito também funcionaria e foi recusado de propósito —
@@ -1561,6 +1603,28 @@ parecer íntegro na tela.
   - **Não vai para produção sozinha:** sobe junto com a Fase B, pelo motivo registrado no
     item dela.
 
+- [x] Fase D — SulAmérica implementada em `feat/sulamerica`, a partir da main com A/B/C.
+      Migration aplicada **somente no Postgres local localhost:5432/klini**. Nenhum merge,
+      push ou deploy foi feito; validação local do usuário precede publicação.
+  - `tsc --noEmit` limpo, **318 testes passando em 23 arquivos**, `next build` concluído
+    com as duas rotas SulAmérica. Integração cobre os três prazos, finais de mês e ano
+    bissexto, upsert case-insensitive, constraints, coluna gerada protegida, exclusão
+    preservando paciente/requisição/guia/atendimento/encaminhamento e ordenação mensal.
+    Testes de proxy, menu e chamada direta das actions cobrem os dois papéis.
+  - `prisma db pull --print` confirmou a expressão gerada e `prisma migrate diff
+    --from-config-datasource --to-schema prisma/schema.prisma --script` retornou migration
+    vazia. `npm run lint` aponta apenas o erro pré-existente em acoes-da-guia.tsx:335.
+  - Verificação HTTP contra `next start` local: login real com contas temporárias admin e
+    recepção; raiz e painel 200 para admin; prazo sem pré-seleção no HTML; menu sem link
+    SulAmérica para recepção e 307 para o Klini em /sulamerica e subrotas. Actions reais
+    cadastraram 31/01/2026 + 3 = 30/04/2026, 31/08/2026 + 6 = 28/02/2027 e
+    29/02/2028 + 12 = 28/02/2029. Upsert e exclusão confirmados no banco, com paciente
+    preservado. Rebaixar a conta temporária a recepção mantendo cookie admin provou a
+    recusa autoritativa da página e de ambas as actions, sem criar/apagar registros.
+    Todas as contas e os dados temporários dessa verificação foram removidos.
+  - **Interação manual no navegador pendente:** nenhum navegador estava conectado nesta
+    sessão. HTTP valida respostas e gravações, mas não cliques, foco, toast ou layout.
+
 ### Plano de papéis e convênios — 4 fases
 
 Registrado aqui inteiro de propósito: a Fase A sozinha não explica por que existe, e as
@@ -1577,12 +1641,20 @@ sessões seguintes precisam do plano completo para não implementar a fase errad
       do cookie ganhou uso (desvio otimista no `proxy.ts`, sem bater no banco) e o papel
       do banco ganhou quem recusa com ele (`requireAcessoARota` e `autorizarRota`, ao lado
       de `requireUsuario`). Detalhes no item correspondente do progresso.
-- [ ] **Fase D — SulAmérica.** O convênio novo, em cima da estrutura das fases B e C. A
-      tela de escolha da raiz já linka para `/sulamerica/dashboard`, que dá 404 até esta
-      fase existir. Quando ela existir, decidir explicitamente se a recepção entra: o
-      allowlist de `lib/auth/acesso.ts` a deixa de fora por padrão.
+- [x] **Fase D — SulAmérica.** Implementada: autorizações de 3, 6 ou 12 meses,
+      vencimento e status no banco, cadastro/substituição, exclusão isolada, busca,
+      resumo e navegação. Exclusiva de admin nas duas camadas. O link da raiz funciona.
+      **Plano de quatro fases completo em implementação.** Aguarda validação local
+      interativa do usuário antes de merge e publicação.
 
 ## Pendências conhecidas (não bloqueiam o próximo passo, mas não esquecer)
+
+- **Fase D: validação local interativa antes de merge.** Como admin, abrir SulAmérica
+  pela raiz, cadastrar cada prazo e conferir vencimento, substituir cadastro, filtrar
+  nome, cancelar/confirmar exclusão e conferir paciente preservado no autocomplete.
+  Conferir reset do prazo para vazio, foco no nome, toasts e tabela/lista móvel.
+  Usar “Trocar convênio”. Como recepção, conferir menu e URL direta bloqueada.
+  As rotas/actions e os cálculos já passaram por teste automatizado e HTTP; falta o clique.
 
 - Nome do cookie de sessão ainda é `klini_session` e o header interno é
   `x-klini-pathname` — nenhum dos dois é visível ao usuário; trocar o cookie derruba todas

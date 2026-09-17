@@ -18,6 +18,8 @@ import { MENSAGEM_SEM_PERMISSAO } from "@/lib/auth/acesso";
 import type { PapelUsuario } from "@/lib/auth/papel";
 
 const mocks = vi.hoisted(() => ({
+  registrarAutorizacao: vi.fn(),
+  excluirAutorizacao: vi.fn(),
   findUnique: vi.fn(),
   getSession: vi.fn(),
   refresh: vi.fn(),
@@ -47,6 +49,12 @@ vi.mock("./pacientes", () => ({
   contarParaExclusao: mocks.contarParaExclusao,
   excluirPacientePeloId: mocks.excluirPacientePeloId,
 }));
+
+vi.mock("./autorizacoes-sulamerica", () => ({
+  registrarAutorizacao: mocks.registrarAutorizacao,
+  excluirAutorizacao: mocks.excluirAutorizacao,
+}));
+import { criarAutorizacaoAction, excluirAutorizacaoAction } from "./autorizacoes-sulamerica-actions";
 
 import { criarEncaminhamentoAction } from "./encaminhamentos-actions";
 import {
@@ -84,6 +92,38 @@ function formularioDeEncaminhamento(): FormData {
 
   return dados;
 }
+
+function formularioSulamerica() {
+  const dados = new FormData();
+  dados.set("pacienteNome", "Fulano de Tal");
+  dados.set("dataInicio", "2026-01-31");
+  dados.set("prazoMeses", "3");
+  return dados;
+}
+
+describe("SulAmérica — actions decidem pelo banco, não pelo cookie", () => {
+  it("cookie admin desatualizado não permite criar nem excluir como recepção", async () => {
+    logadoComoPapelNoBanco("recepcao");
+    mocks.getSession.mockResolvedValue({ usuarioId: 7, papel: "admin" });
+    expect(await criarAutorizacaoAction({}, formularioSulamerica())).toEqual({ erro: MENSAGEM_SEM_PERMISSAO });
+    expect(await excluirAutorizacaoAction(3)).toEqual({ ok: false, erro: MENSAGEM_SEM_PERMISSAO });
+    expect(mocks.registrarAutorizacao).not.toHaveBeenCalled();
+    expect(mocks.excluirAutorizacao).not.toHaveBeenCalled();
+    expect(mocks.refresh).not.toHaveBeenCalled();
+    expect(mocks.findUnique).toHaveBeenCalled();
+  });
+
+  it("admin no banco pode criar e excluir", async () => {
+    logadoComoPapelNoBanco("admin");
+    mocks.registrarAutorizacao.mockResolvedValue({ ok: true, dataVencimento: "2026-04-30" });
+    mocks.excluirAutorizacao.mockResolvedValue({ ok: true });
+    expect(await criarAutorizacaoAction({}, formularioSulamerica())).toMatchObject({ sucesso: { dataVencimento: "2026-04-30" } });
+    expect(mocks.registrarAutorizacao).toHaveBeenCalledWith({ pacienteNome: "Fulano de Tal", dataInicio: "2026-01-31", prazoMeses: 3 });
+    expect(await excluirAutorizacaoAction(3)).toEqual({ ok: true });
+    expect(mocks.excluirAutorizacao).toHaveBeenCalledWith(3);
+    expect(mocks.refresh).toHaveBeenCalledTimes(2);
+  });
+});
 
 beforeEach(() => {
   vi.clearAllMocks();

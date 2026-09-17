@@ -35,7 +35,7 @@ export const ROTAS_DA_RECEPCAO = [
 ] as const;
 
 /**
- * As duas rotas restritas ao `admin`, nomeadas.
+ * As rotas restritas ao `admin`, nomeadas.
  *
  * Elas nao entram em nenhuma lista de "proibidas" — a permissao e decidida pelo
  * allowlist acima. Sao constantes porque a pagina e as Server Actions dela
@@ -44,6 +44,7 @@ export const ROTAS_DA_RECEPCAO = [
  */
 export const ROTA_NOVA_REQUISICAO = "/klini/requisicoes/nova";
 export const ROTA_ENCAMINHAMENTOS = "/klini/encaminhamentos";
+export const ROTA_SULAMERICA = "/sulamerica/dashboard";
 
 /** Para onde mandar quem esta autenticado mas nao alcanca a rota pedida. */
 export const ROTA_PADRAO_DA_RECEPCAO = "/klini/dashboard";

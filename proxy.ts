@@ -132,6 +132,7 @@ export async function proxy(request: NextRequest) {
     return NextResponse.redirect(destino);
   }
 
+  // O allowlist tambem bloqueia /sulamerica e todos os seus subcaminhos.
   // Autenticado, mas sem permissao para esta tela: o destino e o painel, nao o
   // login. Mandar para o login diria "identifique-se" a quem ja se identificou,
   // e o `next=` traria a pessoa de volta para a mesma parede.
