@@ -12,11 +12,11 @@ import { cn } from "@/lib/utils";
  * incluída. Divergir aqui faz o usuário achar que chegou em outro lugar.
  */
 const ITENS = [
-  { href: "/dashboard", rotulo: "Painel" },
-  { href: "/requisicoes/nova", rotulo: "Nova requisição" },
-  { href: "/atendimentos/novo", rotulo: "Lançar atendimento" },
-  { href: "/atendimentos/hoje", rotulo: "Atendimentos de hoje" },
-  { href: "/encaminhamentos", rotulo: "Encaminhamentos" },
+  { href: "/klini/dashboard", rotulo: "Painel" },
+  { href: "/klini/requisicoes/nova", rotulo: "Nova requisição" },
+  { href: "/klini/atendimentos/novo", rotulo: "Lançar atendimento" },
+  { href: "/klini/atendimentos/hoje", rotulo: "Atendimentos de hoje" },
+  { href: "/klini/encaminhamentos", rotulo: "Encaminhamentos" },
 ] as const;
 
 /**

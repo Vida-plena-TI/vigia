@@ -80,7 +80,7 @@ export type GuiaDisponivel = {
   statusAlerta: StatusAlerta;
 };
 
-/** Atendimento lançado hoje, como a página `/atendimentos/hoje` precisa. */
+/** Atendimento lançado hoje, como a página `/klini/atendimentos/hoje` precisa. */
 export type AtendimentoDeHoje = {
   id: number;
   pacienteNome: string;

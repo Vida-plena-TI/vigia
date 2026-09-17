@@ -58,7 +58,7 @@ function matcherCasa(pathname: string): boolean {
 describe("proxy — triagem de sessão", () => {
   // Controle: sem isto, um teste que nunca detectasse redirect passaria vazio.
   it("redireciona rota protegida sem sessão para /login", async () => {
-    const resposta = await proxy(requisicao("/dashboard"));
+    const resposta = await proxy(requisicao("/klini/dashboard"));
 
     expect(redirecionouParaLogin(resposta)).toBe(true);
     expect(resposta.status).toBe(307);
@@ -102,12 +102,12 @@ describe("proxy — rotas de cron", () => {
 
   it("não dispensa sessão em caminho que só começa parecido", () => {
     expect(dispensaSessao("/api/cronicas")).toBe(false);
-    expect(dispensaSessao("/dashboard")).toBe(false);
+    expect(dispensaSessao("/klini/dashboard")).toBe(false);
   });
 
   it("o matcher exclui /api/cron e mantém o resto", () => {
     expect(matcherCasa("/api/cron/relatorio-semanal")).toBe(false);
-    expect(matcherCasa("/dashboard")).toBe(true);
+    expect(matcherCasa("/klini/dashboard")).toBe(true);
     expect(matcherCasa("/api/cronicas")).toBe(true);
   });
 });

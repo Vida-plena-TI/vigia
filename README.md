@@ -217,10 +217,10 @@ apontando para o Supabase nessa sessão faz o próximo `npm run dev`, `npm test`
 ### 4. Promover e conferir
 
 1. `git push` da branch — a Vercel constrói e publica.
-2. Abrir a URL de produção: deve cair em `/login` (a raiz redireciona para `/dashboard`,
-   que exige sessão).
+2. Abrir a URL de produção: deve cair em `/login` (a raiz redireciona para
+   `/klini/dashboard`, que exige sessão).
 3. Entrar com o usuário do passo 3 e confirmar que o painel carrega e que
-   `/requisicoes/nova` oferece as 8 terapias do catálogo.
+   `/klini/requisicoes/nova` oferece as 8 terapias do catálogo.
 4. Conferir em Vercel → Cron Jobs que `/api/cron/relatorio-semanal` aparece agendado. Para
    testar o envio sem esperar a segunda-feira, chame a rota à mão com o bearer:
    `curl -H "Authorization: Bearer $CRON_SECRET" https://SEU-APP.vercel.app/api/cron/relatorio-semanal`

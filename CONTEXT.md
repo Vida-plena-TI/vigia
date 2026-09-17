@@ -296,8 +296,9 @@ teste passar hoje e mentir no mês que vem.
   transpilador extra (lê TypeScript direto) e reaproveita o alias `@/` do `tsconfig` via
   `vitest.config.mts`. O teste de integração de saldo se auto-pula quando `DATABASE_URL`
   não está definida, para `npm test` não exigir banco em CI.
-- **Página inicial (`/`)**: faz `redirect("/dashboard")` — não duplica o conteúdo do
-  dashboard na rota raiz. O dashboard vive em `app/(app)/dashboard` como rota própria.
+- **Página inicial (`/`)**: faz `redirect("/klini/dashboard")` — não duplica o conteúdo
+  do dashboard na rota raiz. O dashboard vive em `app/(app)/klini/dashboard` como rota
+  própria.
 - **`middleware.ts` → `proxy.ts`**: no Next 16, o arquivo de middleware foi renomeado para
   `proxy.ts`. Isso é só uma mudança de nome de arquivo/convenção da framework, não afeta
   nenhuma regra de negócio.
@@ -324,13 +325,13 @@ teste passar hoje e mentir no mês que vem.
   tinha teste nenhum. O `lib/auth/proxy.test.ts` novo cobre essa junção: monta a
   requisição sem cookie e com Bearer correto, afirma que o proxy **não** redireciona e só
   então chama o `GET`, verificando que a rota é alcançada (200) e que o Bearer errado
-  ainda dá 401. O arquivo tem também um teste de controle (`/dashboard` sem sessão →
+  ainda dá 401. O arquivo tem também um teste de controle (`/klini/dashboard` sem sessão →
   redirect), sem o qual uma asserção quebrada de "não redirecionou" passaria vazia.
   **Achado no caminho:** o primeiro `matcher` da correção excluía `api/cron` sem delimitar
   o fim do segmento, e com isso tirava `/api/cronicas` da triagem de sessão também — uma
   rota futura com esse prefixo ficaria sem proxy. O teste de caminho parecido pegou antes
   do commit; o padrão final é `api/cron(?:/|$)`.
-- **Dashboard (`/dashboard`)**: leitura em Server Component, mutação em Server
+- **Dashboard (`/klini/dashboard`)**: leitura em Server Component, mutação em Server
   Action. A consulta vive em `lib/domain/guias.ts` e usa `$queryRaw` com join da
   view `requisicao_terapia_saldo` com `requisicao`, `paciente` e `terapia` — o
   Prisma não mapeia views no `schema.prisma`, e escrever o join à mão é mais
@@ -429,7 +430,7 @@ teste passar hoje e mentir no mês que vem.
   (comum em imagens Docker mínimas), `lower()` só dobra ASCII: `lower('JOSÉ')` viraria
   `'josÉ'` e `'JOSÉ SILVA'` entraria como um segundo paciente. Ver a pendência
   correspondente no fim deste documento.
-- **Cadastro de requisição (`/requisicoes/nova`)**: leitura das listas (pacientes,
+- **Cadastro de requisição (`/klini/requisicoes/nova`)**: leitura das listas (pacientes,
   terapias) em Server Component; o formulário é Client Component porque a lista de
   terapias cresce e encolhe por estado do React. Decisões do caminho:
   - **Get-or-create do paciente em uma consulta só**: `INSERT ... ON CONFLICT
@@ -532,7 +533,8 @@ teste passar hoje e mentir no mês que vem.
     variáveis CSS da aplicação (`--popover`, `--border`), então o `theme` do sonner não
     muda o resultado visual. O arquivo foi mantido como o registry gerou, para não
     divergir no próximo `shadcn add`.
-- **Lançamento de atendimento (`/atendimentos/novo`)**: leitura da lista de pacientes e
+- **Lançamento de atendimento (`/klini/atendimentos/novo`)**: leitura da lista de
+  pacientes e
   da data de hoje em Server Component; as guias vêm sob demanda (Server Function
   `carregarGuiasDoPaciente`) quando o paciente é escolhido, como o histórico de guia do
   dashboard. Decisões do caminho:
@@ -622,7 +624,7 @@ teste passar hoje e mentir no mês que vem.
 - **Sistema de design (passagem visual, aplicada a todas as telas do Prompt 2 ao 8)**.
   Vale para as telas novas dos Prompts 8-9 e para qualquer tela futura: seguir o que está
   aqui em vez de redescobrir as escolhas. O sistema inteiro mora em `app/globals.css`
-  (tokens + três classes de componente) e em `app/(app)/dashboard/formato.ts` +
+  (tokens + três classes de componente) e em `app/(app)/klini/dashboard/formato.ts` +
   `status-badge.tsx` (apresentação de status).
   - **Princípio que organiza a paleta: cor é informação, nunca decoração.** As únicas
     cores saturadas do sistema são as três de `status_alerta`. Todo o chrome — cabeçalho,
@@ -746,7 +748,8 @@ da requisição"` via `navigator.clipboard.writeText`. Aninhar um `<button>` den
     Client Component e importar `lib/domain/guias.ts` de lá arrastaria o Prisma para o
     bundle do navegador (mesmo motivo dos módulos `*-mensagens.ts`), e o `include` do Vitest
     só enxerga `lib/**` e `prisma/**`. `STATUS_EM_ORDEM_DE_URGENCIA` foi movida para lá e é
-    reexportada por `app/(app)/dashboard/formato.ts`: é a mesma precedência do resumo do
+    reexportada por `app/(app)/klini/dashboard/formato.ts`: é a mesma precedência do resumo
+    do
     topo e do pior status do cabeçalho, e duas cópias acabariam divergindo.
   - **Cobertura**: as três funções puras têm teste unitário
     (`lib/domain/guias-apresentacao.test.ts`, 14 casos, incluindo o de múltiplas
@@ -756,8 +759,8 @@ da requisição"` via `navigator.clipboard.writeText`. Aninhar um `<button>` den
     é `node`. Montar esse aparato só para esta tela não se paga agora — se um dia entrar,
     é aqui que estes casos devem virar teste automatizado.
 
-- **Encaminhamentos (`/encaminhamentos`)**: cadastro e listagem na **mesma** tela, sem
-  rota `/novo` e sem diálogo. Decisões do caminho:
+- **Encaminhamentos (`/klini/encaminhamentos`)**: cadastro e listagem na **mesma** tela,
+  sem rota `/novo` e sem diálogo. Decisões do caminho:
   - **Os 180 dias não são seis meses — e a divergência é deliberada.** A planilha de
     referência do usuário usa **seis meses de calendário**; o sistema usa **180 dias
     corridos**, escolha confirmada. Os dois quase nunca coincidem: um encaminhamento de
@@ -801,7 +804,8 @@ da requisição"` via `navigator.clipboard.writeText`. Aninhar um `<button>` den
     idêntica em todo lugar. `listarNomesDePacientes` foi junto, pelo mesmo motivo: os dois
     formulários alimentam o mesmo `datalist`. Nenhum comportamento mudou na mudança de
     arquivo, e os testes de integração de requisição continuam verdes por cima dele.
-  - **Formulário inline no topo da própria listagem.** Não há `/encaminhamentos/novo` nem
+  - **Formulário inline no topo da própria listagem.** Não há
+    `/klini/encaminhamentos/novo` nem
     diálogo: o formulário é uma faixa no topo e a lista vem logo abaixo. Ao enviar, a
     Server Action chama `refresh()` — o Server Component da página redesenha e o registro
     novo aparece na lista sem navegação — e o formulário se limpa e devolve o foco ao campo
@@ -1126,16 +1130,16 @@ parecer íntegro na tela.
 - [x] Prompt 3 — Regras de domínio (saldo e status): espelho em TypeScript da view em
       `lib/domain/saldo.ts`, testes unitários de borda e teste de integração que compara o
       espelho com a view (Vitest)
-- [x] Prompt 4 — Dashboard (`/dashboard`): resumo por status, lista agrupada por
+- [x] Prompt 4 — Dashboard (hoje `/klini/dashboard`): resumo por status, lista agrupada por
       paciente, busca client-side, exclusão de guia com confirmação e histórico de
       atendimentos em diálogo (a validação de status que este prompt acrescentou à
       exclusão foi revertida depois — ver regra 9)
-- [x] Prompt 5 — Cadastro de nova requisição (`/requisicoes/nova`): formulário com
+- [x] Prompt 5 — Cadastro de nova requisição (hoje `/klini/requisicoes/nova`): formulário com
       autocomplete de paciente (`datalist`), lista dinâmica de terapias, validação no
       cliente e no servidor, Server Action transacional com get-or-create
       case-insensitive do paciente e unicidade de `numero_requisicao` por paciente,
       redirect para o dashboard com toast de sucesso
-- [x] Prompt 6 — Lançamento de atendimento (`/atendimentos/novo`): formulário com
+- [x] Prompt 6 — Lançamento de atendimento (hoje `/klini/atendimentos/novo`): formulário com
       seleção de paciente, data padrão vinda do `CURRENT_DATE` do banco, observação
       opcional e carga sob demanda das guias com `saldo_restante > 0`; Server Action
       transacional que trava as guias com `SELECT ... FOR UPDATE` em ordem de id antes
@@ -1147,7 +1151,7 @@ parecer íntegro na tela.
       testes prontos; pendente teste manual no navegador porque esta sessão não expôs
       um browser controlável
 - [x] Prompt 8 — Página "Atendimentos de hoje": lista simples em
-      `/atendimentos/hoje`, usando `CURRENT_DATE` do banco e ordenação por nome
+      `/klini/atendimentos/hoje`, usando `CURRENT_DATE` do banco e ordenação por nome
       do paciente, sem filtros extras
 - [x] Prompt 9 — Relatório semanal por e-mail
 - [x] Correção do cron do relatório semanal (09/09/2026) — `/api/cron/relatorio-semanal`
@@ -1180,7 +1184,7 @@ parecer íntegro na tela.
       padrão de 2s do Prisma é menor que os ~2,4s que uma conexão nova ao Supabase leva
       para abrir, o que fazia a própria asserção de bloqueio falhar de forma intermitente.
       Ver "Revalidação de concorrência refeita em 02/09/2026" no bloco de deploy
-- [x] Encaminhamentos (`/encaminhamentos`) — tabela `encaminhamento` com
+- [x] Encaminhamentos (hoje `/klini/encaminhamentos`) — tabela `encaminhamento` com
       `data_vencimento` como coluna gerada (`data_encaminhamento + INTERVAL '180 days'`),
       tela única com formulário inline no topo (autocomplete de paciente + data), listagem
       de três colunas abaixo, `requireUsuario()` na Server Action e link novo no menu.
@@ -1246,7 +1250,8 @@ parecer íntegro na tela.
       atendimentos indo por cascade) numa transação só, precedido de um diálogo que
       **consulta o banco** para citar as contagens reais e exige digitar `EXCLUIR` para
       habilitar o botão. Arquivos novos: `lib/domain/pacientes-mensagens.ts`,
-      `lib/domain/pacientes-actions.ts`, `app/(app)/encaminhamentos/excluir-paciente.tsx`,
+      `lib/domain/pacientes-actions.ts`,
+      `app/(app)/klini/encaminhamentos/excluir-paciente.tsx`,
       `lib/domain/pacientes.integration.test.ts`. `EncaminhamentoNaLista` ganhou
       `pacienteId` — a exclusão é do paciente, e resolver o paciente a partir do
       encaminhamento seria depender de uma linha que some no mesmo instante.
@@ -1398,6 +1403,44 @@ parecer íntegro na tela.
       no cookie agora, e nenhum teste automatizado exercita a Server Action `login` de
       ponta a ponta.
 
+- [x] Fase B do plano de papéis e convênios — as quatro telas mudaram de lugar:
+      `app/(app)/{dashboard,requisicoes,atendimentos,encaminhamentos}/` passaram a viver
+      debaixo de `app/(app)/klini/`, e as URLs ganharam o prefixo `/klini`. Nenhuma regra
+      de papel entrou aqui — isso é a Fase C. Ficaram **fora** do `klini/` de propósito:
+      `app/(auth)/login` (o login é compartilhado entre convênios), `app/api/auth/logout`
+      (infraestrutura de auth) e `app/api/cron/relatorio-semanal` (o relatório é do fluxo
+      klini hoje, mas é rota de API agendada, não tela; mover o caminho quebraria o
+      `vercel.json` e o cron da Vercel sem ganho nenhum nesta fase).
+  - **Bookmarks antigos dão 404, de propósito.** Não foi criado redirect de
+    compatibilidade de `/dashboard` para `/klini/dashboard`: são duas pessoas usando uma
+    ferramenta interna, e um redirect legado é código que ninguém lembraria de apagar.
+  - **A superfície de mudança foi menor do que parecia, e o motivo importa:** este código
+    **não usa `revalidatePath(caminho)`** em lugar nenhum. As Server Actions de mutação
+    chamam o `refresh()` do Next 16 (`next/cache`), que não recebe caminho — ele redesenha
+    a rota corrente. Nenhuma delas chama `redirect` também (ver a decisão "sem navegar
+    depois de lançar atendimento"). Ou seja: criar requisição, lançar atendimento,
+    cadastrar encaminhamento e excluir guia **não têm acoplamento nenhum com o caminho da
+    URL**, e continuariam corretos mesmo se alguém tivesse esquecido de varrer o
+    repositório. O que de fato precisou mudar foi só link (`href`), o `redirect` da raiz,
+    o teste do proxy e a documentação.
+  - **O `proxy.ts` não mudou uma linha, e isso foi verificado, não suposto.** O `matcher`
+    é um padrão genérico que só *exclui* `api/cron` e os estáticos — ele não lista rota
+    por rota. Como `(app)` é grupo de rotas e não aparece na URL, `/klini/*` já cai dentro
+    dele automaticamente. Verificado em execução: sem cookie, as cinco rotas novas dão 307
+    para `/login` com o `next=` certo (`/login?next=%2Fklini%2Fdashboard`); com cookie de
+    sessão válido, as cinco dão 200 e `/` redireciona para `/klini/dashboard`.
+  - **Teste interativo no navegador ainda não foi feito** — esta sessão também não teve
+    browser controlável. O que foi verificado sem ele: `tsc --noEmit` limpo (depois de
+    `npx next typegen`, porque os tipos de rota em `.next/types` ficam obsoletos quando a
+    árvore de rotas muda e apontam para os arquivos antigos), 255 testes verdes, `next
+    build` listando as rotas já sob `/klini/`, e o HTML renderizado das telas sem nenhum
+    `href` fora de `/klini` — o menu inteiro, o "Nova requisição" do painel e o "Cancelar"
+    do formulário. Falta clicar: criar requisição, lançar atendimento e excluir guia pelo
+    navegador.
+  - **Não foi para produção sozinha, e não deve ir.** Mover as rotas sem as regras de
+    acesso da Fase C deixaria a recepção alcançando telas que deveria ter bloqueadas. As
+    duas fases sobem juntas.
+
 ### Plano de papéis e convênios — 4 fases
 
 Registrado aqui inteiro de propósito: a Fase A sozinha não explica por que existe, e as
@@ -1406,9 +1449,10 @@ sessões seguintes precisam do plano completo para não implementar a fase errad
 - [x] **Fase A — Papéis de usuário.** A coluna `usuario.papel`, os dois scripts de criação
       de conta, e o papel disponível nos dois lugares (sessão e busca autoritativa no
       banco). Só o dado. Detalhes no item acima.
-- [ ] **Fase B — Reorganização de rotas por convênio.** As rotas passam a ser organizadas
+- [x] **Fase B — Reorganização de rotas por convênio.** As rotas passam a ser organizadas
       por convênio. Vem antes do controle de acesso porque é o que define *o que* há para
       permitir; inverter a ordem faria a Fase C ser refeita em cima de rotas que mudaram.
+      Detalhes no item correspondente do progresso.
 - [ ] **Fase C — Controle de acesso.** Aqui, e só aqui, `papel` passa a barrar. É onde o
       `papel` do cookie ganha uso (decisões otimistas de redirect/UI no `proxy.ts`, sem
       bater no banco) e onde `requireUsuario()` deixa de só informar o papel e passa a
@@ -1421,7 +1465,7 @@ sessões seguintes precisam do plano completo para não implementar a fase errad
   `x-klini-pathname` — nenhum dos dois é visível ao usuário; trocar o cookie derruba todas
   as sessões abertas, então fica para uma janela combinada. O `name` do `package.json`
   também continua "klini".
-- `app/(app)/dashboard/acoes-da-guia.tsx` tem um erro de lint pré-existente
+- `app/(app)/klini/dashboard/acoes-da-guia.tsx` tem um erro de lint pré-existente
   (`react-hooks/set-state-in-effect`, no `useEffect` de `LinhaDoHistorico` que recarrega os
   campos ao entrar em edição). Não foi tocado pela passagem visual porque é lógica de
   estado, não estilo — mas `npm run lint` falha por causa dele.

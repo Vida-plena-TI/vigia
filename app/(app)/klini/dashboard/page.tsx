@@ -46,7 +46,7 @@ export default async function DashboardPage() {
         </div>
 
         <Button asChild size="lg">
-          <Link href="/requisicoes/nova">Nova requisição</Link>
+          <Link href="/klini/requisicoes/nova">Nova requisição</Link>
         </Button>
       </div>
 

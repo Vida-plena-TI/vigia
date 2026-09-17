@@ -32,7 +32,7 @@ export default async function AppLayout({ children }: LayoutProps<"/">) {
         <div className="mx-auto flex w-full max-w-[90rem] flex-col gap-2 px-5 py-2.5 sm:flex-row sm:items-center sm:gap-6 sm:px-6">
           <div className="flex items-center justify-between gap-4">
             <Link
-              href="/dashboard"
+              href="/klini/dashboard"
               className="font-serif text-xl leading-none font-semibold tracking-[-0.01em] text-white"
             >
               VIGIA

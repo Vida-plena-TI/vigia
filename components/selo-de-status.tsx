@@ -5,8 +5,8 @@ import { cn } from "@/lib/utils";
 /**
  * A forma do selo de status do sistema — sem saber de qual status se trata.
  *
- * Este arquivo nasceu de `app/(app)/dashboard/status-badge.tsx`, onde o selo
- * morava enquanto tinha um consumidor só (o `status_alerta` da guia). Com a
+ * Este arquivo nasceu de `app/(app)/klini/dashboard/status-badge.tsx`, onde o
+ * selo morava enquanto tinha um consumidor só (o `status_alerta` da guia). Com a
  * tela de encaminhamentos precisando de um selo com o **mesmo peso visual e
  * outro vocabulário**, ele subiu para cá em vez de ser copiado — mesma decisão,
  * e pelo mesmo motivo, do get-or-create que subiu para `lib/domain/pacientes.ts`

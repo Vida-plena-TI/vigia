@@ -346,7 +346,7 @@ export function FormularioDeRequisicao({
       <div className="flex items-center gap-3 border-t border-regua-forte pt-5">
         <BotaoDeSubmit />
         <Button asChild variant="ghost" size="sm">
-          <Link href="/dashboard">Cancelar</Link>
+          <Link href="/klini/dashboard">Cancelar</Link>
         </Button>
       </div>
     </form>
