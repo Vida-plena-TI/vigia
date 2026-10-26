@@ -19,7 +19,8 @@
  *
  * O sucesso tem **dois desfechos**, e o estado devolvido diz qual foi: a
  * requisição nasceu agora, ou as terapias entraram numa requisição que aquele
- * paciente já tinha com aquele número. Quem decide é o domínio; aqui só se
+ * paciente já tinha com aquele número — como guias novas ou atualizando a guia
+ * da terapia que ela já tinha. Quem decide é o domínio; aqui só se
  * repassa o que ele respondeu.
  */
 
@@ -54,8 +55,13 @@ export type EstadoNovaRequisicao = {
      * confirmações são eventos diferentes — ver `mensagemDeCriacao`.
      */
     requisicaoCriada: boolean;
-    /** Quantas linhas de terapia este envio gravou. */
+    /** Quantas guias novas este envio inseriu. */
     terapiasAdicionadas: number;
+    /**
+     * Quantas guias que a requisição já tinha este envio atualizou, por trazer
+     * uma terapia que já estava nela.
+     */
+    terapiasAtualizadas: number;
     /**
      * Identificador da criação, único por submissão.
      *
@@ -145,6 +151,7 @@ export async function criarRequisicaoAction(
       numeroRequisicao: resultado.numeroRequisicao,
       requisicaoCriada: resultado.requisicaoCriada,
       terapiasAdicionadas: resultado.terapiasAdicionadas,
+      terapiasAtualizadas: resultado.terapiasAtualizadas,
       token: crypto.randomUUID(),
     },
   };

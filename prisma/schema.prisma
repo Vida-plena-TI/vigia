@@ -143,6 +143,11 @@ model Requisicao {
 /// autorizada. Os campos calculados (qtd_utilizada, saldo_restante,
 /// creditos_por_sessao, status_alerta) NAO ficam aqui — sao lidos da view
 /// SQL `requisicao_terapia_saldo`.
+///
+/// Uma terapia aparece **uma vez** por requisicao (UNIQUE
+/// `(requisicao_id, terapia_id)`, migration
+/// `20261026120000_guia_unica_por_terapia_na_requisicao`): repetir a terapia no
+/// cadastro atualiza a guia existente em vez de criar outra.
 model RequisicaoTerapia {
   id            Int       @id @default(autoincrement())
   qtdAutorizada Int       @map("qtd_autorizada")
@@ -154,7 +159,7 @@ model RequisicaoTerapia {
   terapia      Terapia       @relation(fields: [terapiaId], references: [id])
   atendimentos Atendimento[]
 
-  @@index([requisicaoId])
+  @@unique([requisicaoId, terapiaId])
   @@index([terapiaId])
   @@map("requisicao_terapia")
 }

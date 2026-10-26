@@ -14,6 +14,12 @@
  * foi o que se faz diante dela: antes, rejeitar; agora, anexar. Ver
  * {@link criarNaTransacao}.
  *
+ * Dentro da pasta, cada terapia tem **uma** guia (UNIQUE
+ * `(requisicao_id, terapia_id)`, desde 26/10/2026). Uma terapia que a
+ * requisição já tem não vira segunda guia: o envio **atualiza** `qtd_autorizada`
+ * e `validade` da guia existente, com UPDATE — nunca DELETE + INSERT, que
+ * levaria os atendimentos da guia junto pelo cascade.
+ *
  * O get-or-create do paciente mora em `lib/domain/pacientes.ts` desde que o
  * cadastro de encaminhamento passou a precisar dele também — inclusive a
  * explicação de por que a comparação de nome é `lower(nome) = lower($1)`, a
@@ -37,7 +43,9 @@ import {
   ERRO_SEM_TERAPIA,
   ERRO_TERAPIA_INEXISTENTE,
   ERRO_TERAPIA_OBRIGATORIA,
+  ERRO_TERAPIA_REPETIDA_NO_ENVIO,
   ERRO_VALIDADE_INVALIDA,
+  erroCorridaNaGuia,
   erroCorridaNaRequisicao,
 } from "./requisicoes-mensagens";
 
@@ -86,15 +94,18 @@ export type ResultadoCriacao =
        * requisição Y de X" na confirmação — ver `mensagemDeCriacao`.
        */
       requisicaoCriada: boolean;
-      /**
-       * Quantas linhas de `requisicao_terapia` este envio gravou.
-       *
-       * É sempre o tamanho da lista que veio do formulário: nenhuma linha é
-       * descartada por já existir uma terapia igual sob a mesma requisição —
-       * repetir a terapia é legítimo (segunda autorização, outra quantidade,
-       * outra validade), e o schema não a impede.
-       */
+      /** Quantas linhas novas de `requisicao_terapia` este envio inseriu. */
       terapiasAdicionadas: number;
+      /**
+       * Quantas guias que a requisição já tinha este envio atualizou
+       * (`qtd_autorizada` e `validade`), por trazer uma terapia que já estava
+       * nela.
+       *
+       * Somado com `terapiasAdicionadas` dá sempre o tamanho da lista que veio
+       * do formulário. É sempre 0 quando `requisicaoCriada` — numa pasta que
+       * acabou de nascer não há guia anterior a atualizar.
+       */
+      terapiasAtualizadas: number;
     }
   | {
       ok: false;
@@ -177,6 +188,17 @@ export function validarEntrada(
     if (linha.validade !== null && !validadeValida(linha.validade)) {
       return { ok: false, erro: ERRO_VALIDADE_INVALIDA, linha: indice };
     }
+
+    // Uma guia por terapia (UNIQUE `(requisicao_id, terapia_id)`): duas
+    // linhas da mesma terapia no mesmo envio não têm leitura certa. Aponta a
+    // segunda, que é a que sobra.
+    if (
+      entrada.linhas
+        .slice(0, indice)
+        .some((anterior) => anterior.terapiaId === linha.terapiaId)
+    ) {
+      return { ok: false, erro: ERRO_TERAPIA_REPETIDA_NO_ENVIO, linha: indice };
+    }
   }
 
   return { ok: true };
@@ -187,8 +209,10 @@ export function validarEntrada(
  *
  * Dois desfechos possíveis, decididos pela existência de uma linha de
  * `requisicao` para `(paciente_id, numero_requisicao)`: criar a requisição com
- * as terapias penduradas nela, ou acrescentar as terapias à requisição que já
- * estava lá. Os dois são sucesso; `requisicaoCriada` diz qual aconteceu.
+ * as terapias penduradas nela, ou levar as terapias à requisição que já
+ * estava lá — inserindo as que ela ainda não tem e atualizando a guia das que
+ * ela já tem. Os dois são sucesso; `requisicaoCriada` diz qual aconteceu, e
+ * `terapiasAdicionadas` / `terapiasAtualizadas` contam o segundo.
  *
  * Recebe o cliente da transação (em vez de abrir a própria) pelo mesmo motivo
  * de `excluirGuiaNaTransacao`: é o que deixa o teste de integração rodar tudo
@@ -269,8 +293,8 @@ async function criarNaTransacao(
 
   // As mesmas linhas servem aos dois desfechos: a `validade` é atributo de
   // cada `requisicao_terapia`, não da requisição. Uma terapia acrescentada hoje
-  // a uma pasta antiga carrega a validade dela própria, sem tocar nas que já
-  // estavam lá.
+  // a uma pasta antiga carrega a validade dela própria, sem tocar nas guias
+  // das outras terapias que já estavam lá.
   const guias = entrada.linhas.map((linha) => ({
     terapiaId: linha.terapiaId,
     qtdAutorizada: linha.qtdAutorizada,
@@ -282,20 +306,56 @@ async function criarNaTransacao(
   }));
 
   // Desfecho 2: a pasta já existe. Nada de `requisicao.create` — seria
-  // exatamente o INSERT que a unique recusa. As terapias entram sob o
-  // `requisicao_id` que já está lá.
+  // exatamente o INSERT que a unique recusa. Cada terapia do envio cai num de
+  // dois casos, decididos pelo que a requisição já tem:
   //
-  // Nenhuma delas é filtrada por "essa terapia já está na requisição": a mesma
-  // `terapia_id` sob a mesma requisição é permitida pelo schema e é um caso
-  // real — a segunda autorização da mesma terapia, com outra quantidade e
-  // outra validade. Cada linha é uma autorização, não um vínculo.
+  // - terapia nova na pasta -> INSERT de guia sob o `requisicao_id` existente;
+  // - terapia que a pasta já tem -> UPDATE de `qtd_autorizada` e `validade` da
+  //   guia que está lá (UNIQUE `(requisicao_id, terapia_id)`: segunda guia da
+  //   mesma terapia não existe mais).
+  //
+  // **UPDATE, nunca DELETE + INSERT.** A guia é o pai dos atendimentos
+  // (`ON DELETE CASCADE`): apagá-la para recriar levaria o histórico junto e
+  // zeraria o saldo. Atualizando no lugar, o `id` não muda, os atendimentos
+  // continuam pendurados nele, e a view recalcula o saldo com a quantidade
+  // nova.
+  //
+  // A validade é substituída pelo que veio do formulário, inclusive `null`:
+  // o campo nasce preenchido (hoje + 1 mês), então chegar vazio é alguém ter
+  // apagado de propósito.
   if (requisicaoExistente) {
-    await tx.requisicaoTerapia.createMany({
-      data: guias.map((guia) => ({
-        ...guia,
+    const guiasDaPasta = await tx.requisicaoTerapia.findMany({
+      where: {
         requisicaoId: requisicaoExistente.id,
-      })),
+        terapiaId: { in: idsPedidos },
+      },
+      select: { id: true, terapiaId: true },
     });
+
+    const guiaPorTerapia = new Map(
+      guiasDaPasta.map((guia) => [guia.terapiaId, guia.id]),
+    );
+
+    const novas = guias.filter((guia) => !guiaPorTerapia.has(guia.terapiaId));
+    const repetidas = guias.filter((guia) =>
+      guiaPorTerapia.has(guia.terapiaId),
+    );
+
+    for (const guia of repetidas) {
+      await tx.requisicaoTerapia.update({
+        where: { id: guiaPorTerapia.get(guia.terapiaId) },
+        data: { qtdAutorizada: guia.qtdAutorizada, validade: guia.validade },
+      });
+    }
+
+    if (novas.length > 0) {
+      await tx.requisicaoTerapia.createMany({
+        data: novas.map((guia) => ({
+          ...guia,
+          requisicaoId: requisicaoExistente.id,
+        })),
+      });
+    }
 
     return {
       ok: true,
@@ -304,7 +364,8 @@ async function criarNaTransacao(
       pacienteNome: paciente.nome,
       pacienteCriado: paciente.criado,
       requisicaoCriada: false,
-      terapiasAdicionadas: guias.length,
+      terapiasAdicionadas: novas.length,
+      terapiasAtualizadas: repetidas.length,
     };
   }
 
@@ -327,6 +388,7 @@ async function criarNaTransacao(
     pacienteCriado: paciente.criado,
     requisicaoCriada: true,
     terapiasAdicionadas: guias.length,
+    terapiasAtualizadas: 0,
   };
 }
 
@@ -337,23 +399,27 @@ const VIOLACAO_DE_UNIQUE = "P2002";
 const UNIQUE_NUMERO_POR_PACIENTE =
   "requisicao_paciente_id_numero_requisicao_key";
 
-/** `true` se `erro` é o choque com a unique de número por paciente. */
-function ehNumeroDuplicado(erro: unknown): boolean {
+/** Nome da unique `(requisicao_id, terapia_id)` no banco. */
+const UNIQUE_TERAPIA_POR_REQUISICAO =
+  "requisicao_terapia_requisicao_id_terapia_id_key";
+
+/** `true` se `erro` é o choque com a unique chamada `nome`. */
+function violouUnique(erro: unknown, nome: string): boolean {
   if (typeof erro !== "object" || erro === null) {
     return false;
   }
 
-  const candidato = erro as { code?: unknown; meta?: { target?: unknown } };
+  const candidato = erro as { code?: unknown; meta?: unknown };
 
   if (candidato.code !== VIOLACAO_DE_UNIQUE) {
     return false;
   }
 
-  // `target` chega como string ou como lista de colunas, dependendo de como o
-  // Prisma leu o erro do driver. Serializar cobre as duas formas.
-  return JSON.stringify(candidato.meta?.target ?? "").includes(
-    UNIQUE_NUMERO_POR_PACIENTE,
-  );
+  // O nome da constraint não chega sempre no mesmo lugar: sem driver adapter
+  // ele vem em `meta.target`; com o `@prisma/adapter-pg` que o projeto usa,
+  // vem em `meta.driverAdapterError.cause.constraint.index` e `target` nem
+  // existe. Serializar o `meta` inteiro cobre as duas formas.
+  return JSON.stringify(candidato.meta ?? "").includes(nome);
 }
 
 /**
@@ -387,10 +453,24 @@ export async function criarRequisicao(
     // já foi desfeita, então nada ficou pela metade — e reenviar resolve, que
     // é o que a mensagem pede: a requisição existe agora, e o envio seguinte
     // cai no ramo que acrescenta as terapias a ela.
-    if (ehNumeroDuplicado(erro)) {
+    if (violouUnique(erro, UNIQUE_NUMERO_POR_PACIENTE)) {
       return {
         ok: false,
         erro: erroCorridaNaRequisicao(
+          entrada.numeroRequisicao.trim(),
+          entrada.pacienteNome.trim(),
+        ),
+      };
+    }
+
+    // A mesma corrida, um nível abaixo: dois envios simultâneos trazendo a
+    // mesma terapia *nova* para a mesma requisição, os dois sem ver a guia no
+    // `findMany`, os dois tentando inseri-la. Reenviar cai no ramo que
+    // atualiza a guia que o outro acabou de criar.
+    if (violouUnique(erro, UNIQUE_TERAPIA_POR_REQUISICAO)) {
+      return {
+        ok: false,
+        erro: erroCorridaNaGuia(
           entrada.numeroRequisicao.trim(),
           entrada.pacienteNome.trim(),
         ),

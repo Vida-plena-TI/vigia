@@ -6,8 +6,10 @@
  * paciente escrito com outra caixa, que a unique
  * `(paciente_id, numero_requisicao)` é por paciente e não global, que repetir
  * o número de um paciente acrescenta terapias à requisição que já existe (em
- * vez de esbarrar na unique), e que uma linha de terapia ruim leva a transação
- * inteira embora.
+ * vez de esbarrar na unique), que repetir uma terapia que a requisição já
+ * tem atualiza a guia existente em vez de criar outra (e a UNIQUE
+ * `(requisicao_id, terapia_id)` recusa a segunda guia mesmo fora do código), e
+ * que uma linha de terapia ruim leva a transação inteira embora.
  *
  * Como roda (mesmo contrato de `guias.integration.test.ts`):
  *   - precisa de DATABASE_URL com as migrations aplicadas; sem ela o bloco é
@@ -892,6 +894,358 @@ describe.skipIf(!temBanco)("cadastro de requisicao contra o banco real", () => {
         { terapiaId: expect.any(Number), validade: resultado.digitada },
         { terapiaId: expect.any(Number), validade: null },
       ]);
+    });
+  });
+
+  describe("terapia repetida atualiza a guia existente", () => {
+    /** Lê a guia e o saldo dela pela view, numa linha só. */
+    async function lerGuia(
+      cliente: ClienteDaTransacao | ReturnType<typeof getPrismaClient>,
+      requisicaoId: number,
+      terapiaId: number,
+    ) {
+      return cliente.$queryRaw<
+        {
+          id: number;
+          qtdAutorizada: number;
+          validade: string | null;
+          qtdUtilizada: number;
+          saldoRestante: number;
+          statusAlerta: string;
+        }[]
+      >`
+        SELECT
+          "id",
+          "qtd_autorizada"   AS "qtdAutorizada",
+          "validade"::text   AS "validade",
+          "qtd_utilizada"    AS "qtdUtilizada",
+          "saldo_restante"   AS "saldoRestante",
+          "status_alerta"    AS "statusAlerta"
+        FROM "requisicao_terapia_saldo"
+        WHERE "requisicao_id" = ${requisicaoId}
+          AND "terapia_id" = ${terapiaId}
+        ORDER BY "id"
+      `;
+    }
+
+    it("atualiza qtd_autorizada e validade sem criar segunda linha", async () => {
+      const nome = `Paciente Repetida ${SUFIXO}`;
+      const numero = `REQ-REPETIDA-${SUFIXO}`;
+
+      const resultado = await comRollback(async (tx) => {
+        const terapia = await criarTerapia(tx, "repetida");
+        await comEncaminhamento(tx, nome);
+
+        const validadeAntiga = await dataEmDias(tx, 30);
+        const validadeNova = await dataEmDias(tx, 60);
+
+        const primeira = await criarRequisicaoNaTransacao(tx, {
+          pacienteNome: nome,
+          numeroRequisicao: numero,
+          linhas: [
+            { terapiaId: terapia, qtdAutorizada: 4, validade: validadeAntiga },
+          ],
+        });
+
+        if (!primeira.ok) {
+          throw new Error(`preparo falhou: ${primeira.erro}`);
+        }
+
+        const [antes] = await lerGuia(tx, primeira.requisicaoId, terapia);
+
+        const segunda = await criarRequisicaoNaTransacao(tx, {
+          pacienteNome: nome,
+          numeroRequisicao: numero,
+          linhas: [
+            { terapiaId: terapia, qtdAutorizada: 12, validade: validadeNova },
+          ],
+        });
+
+        const depois = await lerGuia(tx, primeira.requisicaoId, terapia);
+
+        return { antes, depois, segunda, validadeNova };
+      });
+
+      expect(resultado.segunda).toMatchObject({
+        ok: true,
+        requisicaoCriada: false,
+        terapiasAdicionadas: 0,
+        terapiasAtualizadas: 1,
+      });
+      // Uma linha só, e é a mesma (mesmo `id`) — atualizada no lugar.
+      expect(resultado.depois).toHaveLength(1);
+      expect(resultado.depois[0]).toMatchObject({
+        id: resultado.antes.id,
+        qtdAutorizada: 12,
+        validade: resultado.validadeNova,
+      });
+    });
+
+    it("mantém os atendimentos da guia e recalcula o saldo pela view", async () => {
+      const nome = `Paciente Saldo Repetida ${SUFIXO}`;
+      const numero = `REQ-SALDO-REP-${SUFIXO}`;
+
+      const resultado = await comRollback(async (tx) => {
+        const terapia = await criarTerapia(tx, "saldo-rep");
+        await comEncaminhamento(tx, nome);
+
+        const primeira = await criarRequisicaoNaTransacao(tx, {
+          pacienteNome: nome,
+          numeroRequisicao: numero,
+          linhas: [{ terapiaId: terapia, qtdAutorizada: 4, validade: null }],
+        });
+
+        if (!primeira.ok) {
+          throw new Error(`preparo falhou: ${primeira.erro}`);
+        }
+
+        const [guia] = await lerGuia(tx, primeira.requisicaoId, terapia);
+        const hoje = await dataEmDias(tx, 0);
+
+        // 3 de 4 consumidos: saldo 1, e 1 <= 4/4 -> Renovar.
+        for (const creditos of [2, 1]) {
+          await tx.atendimento.create({
+            data: {
+              requisicaoTerapiaId: guia.id,
+              dataAtendimento: new Date(`${hoje}T00:00:00.000Z`),
+              creditosConsumidos: creditos,
+            },
+          });
+        }
+
+        const [antes] = await lerGuia(tx, primeira.requisicaoId, terapia);
+
+        await criarRequisicaoNaTransacao(tx, {
+          pacienteNome: nome,
+          numeroRequisicao: numero,
+          linhas: [{ terapiaId: terapia, qtdAutorizada: 12, validade: null }],
+        });
+
+        const [depois] = await lerGuia(tx, primeira.requisicaoId, terapia);
+
+        const atendimentos = await tx.atendimento.findMany({
+          where: { requisicaoTerapiaId: guia.id },
+          select: { creditosConsumidos: true },
+          orderBy: { id: "asc" },
+        });
+
+        return { antes, depois, atendimentos };
+      });
+
+      expect(resultado.antes).toMatchObject({
+        qtdAutorizada: 4,
+        qtdUtilizada: 3,
+        saldoRestante: 1,
+        statusAlerta: "Renovar",
+      });
+      // Os dois atendimentos continuam pendurados na guia (nada de cascade), e
+      // a view refaz a conta com a quantidade nova: 12 - 3 = 9, e 9 > 12/4.
+      expect(resultado.atendimentos).toEqual([
+        { creditosConsumidos: 2 },
+        { creditosConsumidos: 1 },
+      ]);
+      expect(resultado.depois).toMatchObject({
+        id: resultado.antes.id,
+        qtdAutorizada: 12,
+        qtdUtilizada: 3,
+        saldoRestante: 9,
+        statusAlerta: "Regular",
+      });
+    });
+
+    it("no mesmo envio, atualiza a terapia repetida e insere a nova", async () => {
+      const nome = `Paciente Mistura ${SUFIXO}`;
+      const numero = `REQ-MISTURA-${SUFIXO}`;
+
+      const resultado = await comRollback(async (tx) => {
+        const repetida = await criarTerapia(tx, "mistura-rep");
+        const nova = await criarTerapia(tx, "mistura-nova");
+        await comEncaminhamento(tx, nome);
+
+        const primeira = await criarRequisicaoNaTransacao(tx, {
+          pacienteNome: nome,
+          numeroRequisicao: numero,
+          linhas: [{ terapiaId: repetida, qtdAutorizada: 4, validade: null }],
+        });
+
+        if (!primeira.ok) {
+          throw new Error(`preparo falhou: ${primeira.erro}`);
+        }
+
+        const segunda = await criarRequisicaoNaTransacao(tx, {
+          pacienteNome: nome,
+          numeroRequisicao: numero,
+          linhas: [
+            { terapiaId: repetida, qtdAutorizada: 8, validade: null },
+            { terapiaId: nova, qtdAutorizada: 6, validade: null },
+          ],
+        });
+
+        const guias = await tx.requisicaoTerapia.findMany({
+          where: { requisicaoId: primeira.requisicaoId },
+          select: { terapiaId: true, qtdAutorizada: true },
+          orderBy: { id: "asc" },
+        });
+
+        return { segunda, guias, repetida, nova };
+      });
+
+      expect(resultado.segunda).toMatchObject({
+        ok: true,
+        requisicaoCriada: false,
+        terapiasAdicionadas: 1,
+        terapiasAtualizadas: 1,
+      });
+      expect(resultado.guias).toEqual([
+        { terapiaId: resultado.repetida, qtdAutorizada: 8 },
+        { terapiaId: resultado.nova, qtdAutorizada: 6 },
+      ]);
+    });
+
+    it("não grava nenhuma alteração quando uma terapia do envio falha", async () => {
+      const nome = `Paciente Repetida Rollback ${SUFIXO}`;
+      const numero = `REQ-REP-ROLLBACK-${SUFIXO}`;
+
+      // Mesmo contrato de "não grava nenhuma terapia nova quando uma linha do
+      // acréscimo falha": o que está sob teste é a transação que
+      // `criarRequisicao` abre sozinha, então o preparo é commitado e o
+      // `finally` limpa.
+      const terapia = await getPrismaClient().terapia.create({
+        data: {
+          nome: `Terapia Repetida Rollback ${SUFIXO}`,
+          codigoTiss: `RRR${SUFIXO}`.slice(0, 10),
+        },
+        select: { id: true },
+      });
+
+      await getPrismaClient().$transaction(
+        (tx) => comEncaminhamento(tx, nome),
+        { maxWait: 30_000, timeout: 30_000 },
+      );
+
+      try {
+        const validade = await dataEmDias(getPrismaClient(), 30);
+
+        const primeira = await criarRequisicao({
+          pacienteNome: nome,
+          numeroRequisicao: numero,
+          linhas: [{ terapiaId: terapia.id, qtdAutorizada: 4, validade }],
+        });
+
+        if (!primeira.ok) {
+          throw new Error(`preparo falhou: ${primeira.erro}`);
+        }
+
+        const [antes] = await lerGuia(
+          getPrismaClient(),
+          primeira.requisicaoId,
+          terapia.id,
+        );
+
+        await getPrismaClient().atendimento.create({
+          data: {
+            requisicaoTerapiaId: antes.id,
+            dataAtendimento: new Date(`${validade}T00:00:00.000Z`),
+            creditosConsumidos: 1,
+          },
+        });
+
+        // A linha repetida (que seria um UPDATE) vem **antes** da ruim: o que
+        // o teste prova é que a atualização também não fica.
+        const falha = await criarRequisicao({
+          pacienteNome: nome,
+          numeroRequisicao: numero,
+          linhas: [
+            { terapiaId: terapia.id, qtdAutorizada: 20, validade: null },
+            {
+              terapiaId: TERAPIA_INEXISTENTE,
+              qtdAutorizada: 3,
+              validade: null,
+            },
+          ],
+        });
+
+        expect(falha).toEqual({
+          ok: false,
+          erro: ERRO_TERAPIA_INEXISTENTE,
+          linha: 1,
+        });
+
+        const depois = await lerGuia(
+          getPrismaClient(),
+          primeira.requisicaoId,
+          terapia.id,
+        );
+
+        expect(depois).toEqual([
+          {
+            ...antes,
+            qtdUtilizada: 1,
+            saldoRestante: 3,
+            statusAlerta: "Regular",
+          },
+        ]);
+        expect(depois[0]).toMatchObject({ qtdAutorizada: 4, validade });
+        expect(
+          await getPrismaClient().requisicaoTerapia.count({
+            where: { requisicaoId: primeira.requisicaoId },
+          }),
+        ).toBe(1);
+      } finally {
+        await getPrismaClient().$executeRaw`
+          DELETE FROM "requisicao_terapia"
+          WHERE "requisicao_id" IN (
+            SELECT "id" FROM "requisicao" WHERE "numero_requisicao" = ${numero}
+          )
+        `;
+        await getPrismaClient().$executeRaw`
+          DELETE FROM "requisicao" WHERE "numero_requisicao" = ${numero}
+        `;
+        await getPrismaClient().$executeRaw`
+          DELETE FROM "encaminhamento"
+          WHERE "paciente_id" IN (
+            SELECT "id" FROM "paciente" WHERE lower("nome") = lower(${nome})
+          )
+        `;
+        await getPrismaClient().$executeRaw`
+          DELETE FROM "paciente" WHERE lower("nome") = lower(${nome})
+        `;
+        await getPrismaClient().$executeRaw`
+          DELETE FROM "terapia" WHERE "id" = ${terapia.id}
+        `;
+      }
+    });
+
+    it("a UNIQUE recusa a segunda guia inserida direto no banco", async () => {
+      const nome = `Paciente Unique Guia ${SUFIXO}`;
+      const numero = `REQ-UNIQUE-GUIA-${SUFIXO}`;
+
+      // O INSERT cru passa ao largo de todo o código de domínio: quem recusa
+      // aqui é só o banco. O erro aborta a transação do teste, que é desfeita
+      // de qualquer jeito.
+      const tentativa = comRollback(async (tx) => {
+        const terapia = await criarTerapia(tx, "unique-guia");
+        await comEncaminhamento(tx, nome);
+
+        const primeira = await criarRequisicaoNaTransacao(tx, {
+          pacienteNome: nome,
+          numeroRequisicao: numero,
+          linhas: [{ terapiaId: terapia, qtdAutorizada: 4, validade: null }],
+        });
+
+        if (!primeira.ok) {
+          throw new Error(`preparo falhou: ${primeira.erro}`);
+        }
+
+        await tx.$executeRaw`
+          INSERT INTO "requisicao_terapia" ("requisicao_id", "terapia_id", "qtd_autorizada")
+          VALUES (${primeira.requisicaoId}, ${terapia}, 6)
+        `;
+      });
+
+      await expect(tentativa).rejects.toThrow(
+        "requisicao_terapia_requisicao_id_terapia_id_key",
+      );
     });
   });
 });

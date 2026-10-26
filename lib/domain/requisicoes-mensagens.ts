@@ -41,34 +41,73 @@ export function erroCorridaNaRequisicao(
 }
 
 /**
- * A confirmação do cadastro, que **diz qual dos dois caminhos aconteceu**.
+ * Recusa de um envio que repete a mesma terapia em duas linhas.
+ *
+ * Uma requisição tem **uma** guia por terapia (UNIQUE
+ * `(requisicao_id, terapia_id)`). Duas linhas da mesma terapia no mesmo envio
+ * não têm leitura certa — qual das duas quantidades vale? — então o formulário
+ * aponta a segunda em vez de escolher por conta própria.
+ */
+export const ERRO_TERAPIA_REPETIDA_NO_ENVIO =
+  "Esta terapia já está em outra linha deste cadastro. Use uma linha só por terapia.";
+
+/**
+ * Recusa do choque com `requisicao_terapia_requisicao_id_terapia_id_key`.
+ *
+ * Mesmo caso de {@link erroCorridaNaRequisicao}, um nível abaixo: o caminho
+ * normal olha as guias antes de gravar e atualiza a que já existe, então só
+ * chega aqui a corrida — dois envios simultâneos trazendo a mesma terapia
+ * nova para a mesma requisição. Reenviar resolve: a guia existe agora, e o
+ * envio seguinte cai no ramo que a atualiza.
+ */
+export function erroCorridaNaGuia(
+  numeroRequisicao: string,
+  pacienteNome: string,
+): string {
+  return `Outro cadastro acabou de gravar uma destas terapias na requisição ${numeroRequisicao} de ${pacienteNome}. Envie de novo para atualizar a guia.`;
+}
+
+/** "1 terapia adicionada", "2 terapias atualizadas"... */
+function contarTerapias(quantidade: number, verbo: string): string {
+  return quantidade === 1
+    ? `1 terapia ${verbo}`
+    : `${quantidade} terapias ${verbo}s`;
+}
+
+/**
+ * A confirmação do cadastro, que **diz qual dos caminhos aconteceu**.
  *
  * Mesma ideia de `mensagemDeCadastro` em `encaminhamentos-mensagens.ts`:
- * "criada" e "acrescentada" são eventos diferentes, e quem digitou precisa
- * saber em qual deles caiu. Aqui a diferença é o número da requisição — ele já
- * existia para aquele paciente, e em vez de ser recusado como duplicado
- * recebeu as terapias novas. Sem essa palavra, um número digitado por engano
- * pareceria ter criado uma requisição nova.
+ * "criada", "adicionada" e "atualizada" são eventos diferentes, e quem digitou
+ * precisa saber em qual deles caiu. Numa requisição que já existia, cada
+ * terapia do envio ou entrou como guia nova ou **atualizou** a guia que a
+ * requisição já tinha dela (quantidade e validade) — e a frase conta as duas
+ * coisas separadas. Sem isso, uma terapia repetida por engano pareceria ter
+ * criado uma segunda guia, e a quantidade antiga sumiria sem explicação.
  *
- * A distinção vem de olhar se a linha de `requisicao` existia antes de gravar,
- * não de adivinhar pelo resultado.
+ * A distinção vem de olhar o que existia antes de gravar, não de adivinhar
+ * pelo resultado.
  */
 export function mensagemDeCriacao(
   pacienteNome: string,
   numeroRequisicao: string,
   terapiasAdicionadas: number,
+  terapiasAtualizadas: number,
   requisicaoCriada: boolean,
 ): string {
   if (requisicaoCriada) {
     return `Requisição criada para ${pacienteNome}.`;
   }
 
-  const terapias =
-    terapiasAdicionadas === 1
-      ? "1 terapia adicionada"
-      : `${terapiasAdicionadas} terapias adicionadas`;
+  if (terapiasAtualizadas === 0) {
+    return `${contarTerapias(terapiasAdicionadas, "adicionada")} à requisição ${numeroRequisicao} de ${pacienteNome}.`;
+  }
 
-  return `${terapias} à requisição ${numeroRequisicao} de ${pacienteNome}.`;
+  if (terapiasAdicionadas === 0) {
+    return `${contarTerapias(terapiasAtualizadas, "atualizada")} na requisição ${numeroRequisicao} de ${pacienteNome}.`;
+  }
+
+  return `${contarTerapias(terapiasAdicionadas, "adicionada")} e ${terapiasAtualizadas} ${terapiasAtualizadas === 1 ? "atualizada" : "atualizadas"} na requisição ${numeroRequisicao} de ${pacienteNome}.`;
 }
 
 /**

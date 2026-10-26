@@ -3,7 +3,8 @@
  *
  * O que está sob teste é a decisão do nosso código: quando reaproveitar um
  * paciente, qual dos dois desfechos tomar diante de um número que aquele
- * paciente já tem (criar a requisição ou acrescentar terapias à que existe), e
+ * paciente já tem (criar a requisição ou acrescentar terapias à que existe),
+ * quando uma terapia repetida atualiza a guia em vez de criar outra, e
  * — o ponto principal — que a falha de uma linha de terapia **lança** de dentro
  * da transação, em vez de devolver `{ ok: false }` educadamente. Devolver seria
  * pior do que parece: o paciente recém-criado ficaria no banco, órfão, porque
@@ -36,6 +37,11 @@ const mocks = vi.hoisted(() => {
     temEncaminhamento: true,
     /** Ids de terapia que existem no banco. */
     terapiasExistentes: [1, 2],
+    /**
+     * Terapias que a requisição existente (id 42) já tem, cada uma com o id
+     * da sua guia. Só faz sentido com `numeroJaExiste`.
+     */
+    guiasDaPasta: [] as { id: number; terapiaId: number }[],
   };
 
   /** Registro do que a transação chegou a escrever antes de falhar. */
@@ -54,6 +60,20 @@ const mocks = vi.hoisted(() => {
   const criarGuias = vi.fn(async (args: { data: unknown[] }) => {
     escritas.push("requisicao_terapia");
     return { count: args.data.length };
+  });
+
+  /** As guias que a pasta já tem, filtradas pelas terapias pedidas. */
+  const buscarGuias = vi.fn(
+    async (args: { where: { terapiaId: { in: number[] } } }) =>
+      banco.guiasDaPasta.filter((guia) =>
+        args.where.terapiaId.in.includes(guia.terapiaId),
+      ),
+  );
+
+  /** O UPDATE da guia de uma terapia que a pasta já tinha. */
+  const atualizarGuia = vi.fn(async () => {
+    escritas.push("requisicao_terapia:update");
+    return {};
   });
 
   const buscarEncaminhamento = vi.fn(async () =>
@@ -99,7 +119,11 @@ const mocks = vi.hoisted(() => {
           $queryRaw: consultar,
           encaminhamento: { findFirst: buscarEncaminhamento },
           requisicao: { findFirst: buscarRequisicao, create: criarRequisicao },
-          requisicaoTerapia: { createMany: criarGuias },
+          requisicaoTerapia: {
+            createMany: criarGuias,
+            findMany: buscarGuias,
+            update: atualizarGuia,
+          },
           terapia: { findMany: buscarTerapias },
         });
       } catch (erro) {
@@ -121,9 +145,11 @@ const mocks = vi.hoisted(() => {
   const refresh = vi.fn();
 
   return {
+    atualizarGuia,
     autorizarRota,
     banco,
     buscarEncaminhamento,
+    buscarGuias,
     buscarRequisicao,
     buscarTerapias,
     consultar,
@@ -154,7 +180,9 @@ import {
   ERRO_SEM_TERAPIA,
   ERRO_TERAPIA_INEXISTENTE,
   ERRO_TERAPIA_OBRIGATORIA,
+  ERRO_TERAPIA_REPETIDA_NO_ENVIO,
   ERRO_VALIDADE_INVALIDA,
+  erroCorridaNaGuia,
   erroCorridaNaRequisicao,
   mensagemDeCriacao,
   type EntradaNovaRequisicao,
@@ -179,6 +207,7 @@ beforeEach(() => {
   mocks.banco.numeroJaExiste = false;
   mocks.banco.temEncaminhamento = true;
   mocks.banco.terapiasExistentes = [1, 2];
+  mocks.banco.guiasDaPasta = [];
   mocks.escritas.length = 0;
 });
 
@@ -196,6 +225,7 @@ describe("criarRequisicao — paciente novo vs. existente", () => {
       pacienteCriado: true,
       requisicaoCriada: true,
       terapiasAdicionadas: 1,
+      terapiasAtualizadas: 0,
     });
   });
 
@@ -264,6 +294,7 @@ describe("criarRequisicao — número que o paciente já tem", () => {
       pacienteCriado: true,
       requisicaoCriada: false,
       terapiasAdicionadas: 2,
+      terapiasAtualizadas: 0,
     });
   });
 
@@ -286,10 +317,7 @@ describe("criarRequisicao — número que o paciente já tem", () => {
       entrada({
         linhas: [
           { terapiaId: 1, qtdAutorizada: 5, validade: null },
-          // Mesma terapia da linha acima, com outra quantidade e outra
-          // validade: é a segunda autorização, e ela **não** é descartada.
-          { terapiaId: 1, qtdAutorizada: 8, validade: "2027-01-31" },
-          { terapiaId: 2, qtdAutorizada: 3, validade: null },
+          { terapiaId: 2, qtdAutorizada: 3, validade: "2027-01-31" },
         ],
       }),
     );
@@ -299,16 +327,104 @@ describe("criarRequisicao — número que o paciente já tem", () => {
         { requisicaoId: 42, terapiaId: 1, qtdAutorizada: 5, validade: null },
         {
           requisicaoId: 42,
-          terapiaId: 1,
-          qtdAutorizada: 8,
+          terapiaId: 2,
+          qtdAutorizada: 3,
           // A validade é por linha de `requisicao_terapia`: cada terapia
           // acrescentada carrega a sua, independente das que já estavam na
           // requisição.
           validade: new Date("2027-01-31T00:00:00.000Z"),
         },
+      ],
+    });
+    expect(mocks.atualizarGuia).not.toHaveBeenCalled();
+  });
+
+  it("atualiza a guia da terapia que a pasta já tem em vez de criar outra", async () => {
+    mocks.banco.numeroJaExiste = true;
+    mocks.banco.guiasDaPasta = [{ id: 500, terapiaId: 1 }];
+
+    const resultado = await criarRequisicao(
+      entrada({
+        linhas: [{ terapiaId: 1, qtdAutorizada: 8, validade: "2027-01-31" }],
+      }),
+    );
+
+    expect(resultado).toMatchObject({
+      ok: true,
+      requisicaoId: 42,
+      requisicaoCriada: false,
+      terapiasAdicionadas: 0,
+      terapiasAtualizadas: 1,
+    });
+    // UPDATE no `id` da guia que já estava lá — nunca DELETE + INSERT, que
+    // levaria os atendimentos dela pelo cascade.
+    expect(mocks.atualizarGuia).toHaveBeenCalledWith({
+      where: { id: 500 },
+      data: {
+        qtdAutorizada: 8,
+        validade: new Date("2027-01-31T00:00:00.000Z"),
+      },
+    });
+    // Nada novo a inserir: o `createMany` nem é chamado com lista vazia.
+    expect(mocks.criarGuias).not.toHaveBeenCalled();
+  });
+
+  it("procura as guias só dentro da requisição existente", async () => {
+    mocks.banco.numeroJaExiste = true;
+
+    await criarRequisicao(entrada());
+
+    // Sem o `requisicaoId`, a guia da mesma terapia em outra requisição do
+    // paciente (ou de outra pessoa) seria atualizada no lugar desta.
+    expect(mocks.buscarGuias).toHaveBeenCalledWith({
+      where: { requisicaoId: 42, terapiaId: { in: [1] } },
+      select: { id: true, terapiaId: true },
+    });
+  });
+
+  it("separa, no mesmo envio, a terapia repetida da terapia nova", async () => {
+    mocks.banco.numeroJaExiste = true;
+    mocks.banco.guiasDaPasta = [{ id: 500, terapiaId: 1 }];
+
+    const resultado = await criarRequisicao(
+      entrada({
+        linhas: [
+          { terapiaId: 1, qtdAutorizada: 8, validade: null },
+          { terapiaId: 2, qtdAutorizada: 3, validade: null },
+        ],
+      }),
+    );
+
+    expect(resultado).toMatchObject({
+      ok: true,
+      terapiasAdicionadas: 1,
+      terapiasAtualizadas: 1,
+    });
+    expect(mocks.atualizarGuia).toHaveBeenCalledTimes(1);
+    expect(mocks.criarGuias).toHaveBeenCalledWith({
+      data: [
         { requisicaoId: 42, terapiaId: 2, qtdAutorizada: 3, validade: null },
       ],
     });
+  });
+
+  it("não atualiza nada se uma terapia do envio não existe", async () => {
+    mocks.banco.numeroJaExiste = true;
+    mocks.banco.guiasDaPasta = [{ id: 500, terapiaId: 1 }];
+    mocks.banco.terapiasExistentes = [1];
+
+    const resultado = await criarRequisicao(
+      entrada({
+        linhas: [
+          { terapiaId: 1, qtdAutorizada: 8, validade: null },
+          { terapiaId: 404, qtdAutorizada: 3, validade: null },
+        ],
+      }),
+    );
+
+    expect(resultado).toMatchObject({ ok: false, linha: 1 });
+    expect(mocks.atualizarGuia).not.toHaveBeenCalled();
+    expect(mocks.escritas).toEqual([]);
   });
 
   it("recusa a terapia inexistente sem gravar nenhuma das linhas novas", async () => {
@@ -358,6 +474,58 @@ describe("criarRequisicao — número que o paciente já tem", () => {
     expect(resultado).toEqual({
       ok: false,
       erro: erroCorridaNaRequisicao("2026-001", "José Silva"),
+    });
+  });
+
+  it("traduz o adapter-pg, que manda o nome da unique fora de `target`", async () => {
+    // Formato real do `@prisma/adapter-pg`: sem `meta.target`, com o nome da
+    // constraint dentro de `driverAdapterError`.
+    mocks.transacao.mockRejectedValueOnce(
+      Object.assign(new Error("Unique constraint failed"), {
+        code: "P2002",
+        meta: {
+          modelName: "Requisicao",
+          driverAdapterError: {
+            cause: {
+              constraint: {
+                index: "requisicao_paciente_id_numero_requisicao_key",
+              },
+            },
+          },
+        },
+      }),
+    );
+
+    const resultado = await criarRequisicao(entrada());
+
+    expect(resultado).toEqual({
+      ok: false,
+      erro: erroCorridaNaRequisicao("2026-001", "José Silva"),
+    });
+  });
+
+  it("traduz a unique da guia quando dois envios trazem a mesma terapia nova", async () => {
+    mocks.transacao.mockRejectedValueOnce(
+      Object.assign(new Error("Unique constraint failed"), {
+        code: "P2002",
+        meta: {
+          modelName: "RequisicaoTerapia",
+          driverAdapterError: {
+            cause: {
+              constraint: {
+                index: "requisicao_terapia_requisicao_id_terapia_id_key",
+              },
+            },
+          },
+        },
+      }),
+    );
+
+    const resultado = await criarRequisicao(entrada());
+
+    expect(resultado).toEqual({
+      ok: false,
+      erro: erroCorridaNaGuia("2026-001", "José Silva"),
     });
   });
 
@@ -528,6 +696,26 @@ describe("criarRequisicao — validação de entrada", () => {
     },
   );
 
+  it("recusa a mesma terapia em duas linhas do envio, apontando a segunda", async () => {
+    const resultado = await criarRequisicao(
+      entrada({
+        linhas: [
+          { terapiaId: 1, qtdAutorizada: 5, validade: null },
+          { terapiaId: 2, qtdAutorizada: 3, validade: null },
+          { terapiaId: 1, qtdAutorizada: 8, validade: null },
+        ],
+      }),
+    );
+
+    // Uma guia por terapia: não há como saber qual das duas quantidades vale.
+    expect(resultado).toEqual({
+      ok: false,
+      erro: ERRO_TERAPIA_REPETIDA_NO_ENVIO,
+      linha: 2,
+    });
+    expect(mocks.transacao).not.toHaveBeenCalled();
+  });
+
   it("aceita validade ausente e validade real", async () => {
     const resultado = await criarRequisicao(
       entrada({
@@ -609,6 +797,7 @@ describe("criarRequisicaoAction (Server Action)", () => {
         numeroRequisicao: "2026-001",
         requisicaoCriada: true,
         terapiasAdicionadas: 1,
+        terapiasAtualizadas: 0,
         token: expect.any(String),
       },
     });
@@ -638,8 +827,9 @@ describe("criarRequisicaoAction (Server Action)", () => {
     expect(mocks.refresh).not.toHaveBeenCalled();
   });
 
-  it("conta as terapias acrescentadas quando o número já existia", async () => {
+  it("conta as terapias acrescentadas e atualizadas quando o número já existia", async () => {
     mocks.banco.numeroJaExiste = true;
+    mocks.banco.guiasDaPasta = [{ id: 500, terapiaId: 2 }];
 
     const estado = await criarRequisicaoAction(
       {},
@@ -651,11 +841,13 @@ describe("criarRequisicaoAction (Server Action)", () => {
       }),
     );
 
-    // O formulário monta a confirmação com estes dois campos; sem eles, um
-    // envio que só acrescentou terapias diria "Requisição criada".
+    // O formulário monta a confirmação com estes campos; sem eles, um envio
+    // que só acrescentou terapias diria "Requisição criada", e uma guia
+    // sobrescrita passaria por terapia nova.
     expect(estado.sucesso).toMatchObject({
       requisicaoCriada: false,
-      terapiasAdicionadas: 2,
+      terapiasAdicionadas: 1,
+      terapiasAtualizadas: 1,
     });
   });
 
@@ -732,13 +924,13 @@ describe("criarRequisicaoAction (Server Action)", () => {
 
 describe("mensagemDeCriacao", () => {
   it("anuncia a requisição nova pelo paciente", () => {
-    expect(mensagemDeCriacao("José Silva", "2026-001", 3, true)).toBe(
+    expect(mensagemDeCriacao("José Silva", "2026-001", 3, 0, true)).toBe(
       "Requisição criada para José Silva.",
     );
   });
 
   it("anuncia a terapia acrescentada no singular", () => {
-    expect(mensagemDeCriacao("José Silva", "2026-001", 1, false)).toBe(
+    expect(mensagemDeCriacao("José Silva", "2026-001", 1, 0, false)).toBe(
       "1 terapia adicionada à requisição 2026-001 de José Silva.",
     );
   });
@@ -746,8 +938,43 @@ describe("mensagemDeCriacao", () => {
   it("anuncia as terapias acrescentadas no plural", () => {
     // Os dois desfechos são sucesso, e a frase é o único lugar onde eles se
     // distinguem para quem digitou.
-    expect(mensagemDeCriacao("José Silva", "2026-001", 3, false)).toBe(
+    expect(mensagemDeCriacao("José Silva", "2026-001", 3, 0, false)).toBe(
       "3 terapias adicionadas à requisição 2026-001 de José Silva.",
     );
   });
+
+  it.each([
+    [1, "1 terapia atualizada na requisição 2026-001 de José Silva."],
+    [2, "2 terapias atualizadas na requisição 2026-001 de José Silva."],
+  ])("anuncia %i guia(s) só atualizada(s)", (atualizadas, frase) => {
+    expect(
+      mensagemDeCriacao("José Silva", "2026-001", 0, atualizadas, false),
+    ).toBe(frase);
+  });
+
+  it.each([
+    [
+      1,
+      1,
+      "1 terapia adicionada e 1 atualizada na requisição 2026-001 de José Silva.",
+    ],
+    [
+      2,
+      3,
+      "2 terapias adicionadas e 3 atualizadas na requisição 2026-001 de José Silva.",
+    ],
+  ])(
+    "conta %i adicionada(s) e %i atualizada(s) separadas",
+    (adicionadas, atualizadas, frase) => {
+      expect(
+        mensagemDeCriacao(
+          "José Silva",
+          "2026-001",
+          adicionadas,
+          atualizadas,
+          false,
+        ),
+      ).toBe(frase);
+    },
+  );
 });

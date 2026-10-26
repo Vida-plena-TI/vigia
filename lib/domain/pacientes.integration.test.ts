@@ -137,7 +137,7 @@ async function contarLinhas(
 }
 
 /** O cenário completo do enunciado, montado com o cliente que for entregue. */
-type Cenario = { pacienteId: number; terapiaId: number };
+type Cenario = { pacienteId: number; terapiaIds: number[] };
 
 /**
  * Um paciente com 1 encaminhamento, 1 requisição, 2 guias e 3 atendimentos.
@@ -145,6 +145,10 @@ type Cenario = { pacienteId: number; terapiaId: number };
  * Os 3 atendimentos ficam distribuídos 2 + 1 entre as duas guias de propósito:
  * uma guia vazia junto de uma guia cheia é o arranjo que pega um `DELETE` que
  * só alcance a primeira linha de cada tabela.
+ *
+ * As duas guias são de terapias diferentes: desde a UNIQUE
+ * `(requisicao_id, terapia_id)`, a mesma terapia não aparece duas vezes na
+ * mesma requisição.
  */
 async function montarCenario(
   tx: ClienteDaTransacao,
@@ -164,11 +168,11 @@ async function montarCenario(
     SELECT "id" FROM "paciente" WHERE lower("nome") = lower(${nome})
   `;
 
-  const terapia = await tx.terapia.create({
-    data: {
-      nome: `Terapia Exclusao ${rotulo} ${SUFIXO}`,
-      codigoTiss: `X${rotulo}`.slice(0, 10),
-    },
+  const terapias = await tx.terapia.createManyAndReturn({
+    data: ["a", "b"].map((letra) => ({
+      nome: `Terapia Exclusao ${rotulo} ${letra} ${SUFIXO}`,
+      codigoTiss: `X${letra}${rotulo}`.slice(0, 10),
+    })),
     select: { id: true },
   });
 
@@ -178,8 +182,8 @@ async function montarCenario(
       pacienteId: paciente.id,
       guias: {
         create: [
-          { terapiaId: terapia.id, qtdAutorizada: 10, validade: null },
-          { terapiaId: terapia.id, qtdAutorizada: 20, validade: null },
+          { terapiaId: terapias[0].id, qtdAutorizada: 10, validade: null },
+          { terapiaId: terapias[1].id, qtdAutorizada: 20, validade: null },
         ],
       },
     },
@@ -206,7 +210,10 @@ async function montarCenario(
     ],
   });
 
-  return { pacienteId: paciente.id, terapiaId: terapia.id };
+  return {
+    pacienteId: paciente.id,
+    terapiaIds: terapias.map((terapia) => terapia.id),
+  };
 }
 
 /**
@@ -418,7 +425,7 @@ describe.skipIf(!temBanco)("exclusao permanente de paciente", () => {
         DELETE FROM "paciente" WHERE "id" = ${cenario.pacienteId}
       `;
       await getPrismaClient().$executeRaw`
-        DELETE FROM "terapia" WHERE "id" = ${cenario.terapiaId}
+        DELETE FROM "terapia" WHERE "id" = ANY(${cenario.terapiaIds})
       `;
     }
   });

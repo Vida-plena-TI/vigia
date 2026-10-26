@@ -188,14 +188,24 @@ teste passar hoje e mentir no mês que vem.
    `(paciente_id, numero_requisicao)`:
    - **número inédito para aquele paciente** — cria a `requisicao` e pendura as N linhas
      de `requisicao_terapia` nela (o caminho de sempre);
-   - **número que aquele paciente já tem** — **não** cria segunda `requisicao`; insere as
-     N linhas de `requisicao_terapia` sob o `requisicao_id` que já existe.
-   Nenhuma linha é descartada por "essa terapia já está na requisição": a mesma
-   `terapia_id` sob a mesma `requisicao_id` é legítima e comum — é a segunda autorização
-   da mesma terapia, com outra quantidade e outra validade. Cada linha é uma autorização,
-   não um vínculo. A `validade` continua sendo de cada `requisicao_terapia`, nunca da
-   requisição: uma terapia acrescentada hoje a uma pasta antiga carrega a validade dela
-   própria, sem tocar nas que já estavam lá.
+   - **número que aquele paciente já tem** — **não** cria segunda `requisicao`; cada
+     terapia do envio vai para o `requisicao_id` que já existe, de um de dois jeitos:
+     - **terapia que a requisição ainda não tem** — INSERT de uma linha nova de
+       `requisicao_terapia`;
+     - **terapia que a requisição já tem** (mesmo `terapia_id`) — **UPDATE** de
+       `qtd_autorizada` e `validade` na guia que já está lá. Nunca segunda guia, e nunca
+       DELETE + INSERT: o `id` da guia não muda e os atendimentos dela continuam
+       pendurados nele (o DELETE os levaria pelo `ON DELETE CASCADE`). A view recalcula o
+       saldo com a quantidade nova.
+   **Uma guia por terapia dentro da requisição** — garantido no banco pela UNIQUE
+   `requisicao_terapia_requisicao_id_terapia_id_key` (desde 26/10/2026). Isto **reverte**
+   a decisão de 14/09/2026, que tratava a mesma terapia repetida como "segunda
+   autorização" e inseria outra linha — ver "Terapia repetida atualiza a guia existente"
+   nas decisões de implementação. Repetir a mesma terapia em duas linhas **do mesmo envio**
+   é recusado (`ERRO_TERAPIA_REPETIDA_NO_ENVIO`, apontando a segunda linha). A `validade`
+   continua sendo de cada `requisicao_terapia`, nunca da requisição: uma terapia
+   acrescentada hoje a uma pasta antiga carrega a validade dela própria, sem tocar nas guias
+   das outras terapias.
 6. Só terapias com `saldo_restante > 0` aparecem na tela de lançar atendimento.
 7. Lançamento de atendimento em lote:
    - pelo menos 1 terapia selecionada;
@@ -290,11 +300,60 @@ teste passar hoje e mentir no mês que vem.
   paciente **não é erro**: acrescenta terapias à requisição que já existe (regra 5). O
   índice único continua no banco — ver "Número repetido acrescenta em vez de recusar" nas
   decisões de implementação.
-- `qtd_autorizada`: deve ser > 0 na criação da guia.
+- `qtd_autorizada`: deve ser > 0 na criação da guia (e na atualização pela terapia
+  repetida, que passa pela mesma validação).
+- `(requisicao_id, terapia_id)`: único. Repetir a terapia na mesma requisição **atualiza**
+  a guia (regra 5). ~~Mesma terapia repetida = segunda guia~~ — revertido em 26/10/2026.
 - ~~Exclusão de guia `"Regular"` bloqueada no backend.~~ Revertida — ver regra 9.
 - Edição de atendimento para 0 créditos continua permitida.
 
 ## Decisões tomadas durante a implementação (não estavam no relatório original)
+
+- **Terapia repetida atualiza a guia existente (26/10/2026, branch
+  `feat/terapia-repetida-atualiza-guia`). REVERTE uma decisão anterior.** Em 14/09/2026
+  (`feat/adicionar-terapia-requisicao-existente`) ficou registrado que a mesma
+  `terapia_id` sob a mesma `requisicao_id` era "legítima e comum — a segunda autorização
+  da mesma terapia", e o ramo que acrescenta terapias a uma requisição existente inseria
+  todas as linhas sem olhar se a terapia já estava lá. **Isso deixou de valer.** Agora:
+  - Dentro da mesma transação de sempre, o ramo "requisição já existe" faz um `findMany`
+    das guias daquela requisição para as terapias pedidas. A terapia que já tem guia vira
+    `tx.requisicaoTerapia.update` no `id` dela (`qtd_autorizada` e `validade`, inclusive
+    `validade = null` se o campo veio vazio — o campo nasce preenchido, então vazio é
+    apagado de propósito); as outras entram por `createMany`. **Nunca DELETE + INSERT**:
+    apagar a guia levaria os atendimentos pelo cascade e zeraria saldo e histórico.
+  - A conferência de terapia inexistente continua antes de qualquer escrita, e o `throw`
+    continua desfazendo tudo: um envio com uma terapia repetida e uma linha ruim não
+    atualiza nada (teste de integração commitado, não só dentro de rollback).
+  - `ResultadoCriacao` ganhou `terapiasAtualizadas` (e `terapiasAdicionadas` passou a
+    contar só inserções). `mensagemDeCriacao` recebe os dois números: "N terapia(s)
+    adicionada(s) à requisição Y de X", "N terapia(s) atualizada(s) na requisição Y de X"
+    ou "N adicionada(s) e M atualizada(s) na requisição Y de X". Requisição nova continua
+    "Requisição criada para X".
+  - Duas linhas da mesma terapia **no mesmo envio** são recusadas em `validarEntrada` (e
+    no cliente) com `ERRO_TERAPIA_REPETIDA_NO_ENVIO`, apontando a segunda linha: não há
+    leitura certa de qual quantidade vale, e o envio de requisição nova esbarraria na
+    UNIQUE.
+  - Migration `20261026120000_guia_unica_por_terapia_na_requisicao`: troca o índice comum
+    `requisicao_terapia_requisicao_id_idx` pela UNIQUE
+    `requisicao_terapia_requisicao_id_terapia_id_key` (que começa por `requisicao_id` e
+    serve às mesmas buscas — mesmo raciocínio da migration de `encaminhamento`). No schema:
+    `@@unique([requisicaoId, terapiaId])` sem `map`, porque o nome segue a convenção do
+    Prisma; `prisma migrate diff --from-config-datasource --to-schema` deu migration vazia.
+    **A migration não deduplica**: antes do índice, um bloco `DO` aborta com a consulta de
+    duplicatas na mensagem se houver alguma. Juntar guias mexe em saldo e histórico de
+    atendimentos, então a decisão é humana, caso a caso. No banco local não havia nenhuma.
+  - A corrida de dois envios simultâneos trazendo a mesma terapia **nova** para a mesma
+    requisição é pega pela UNIQUE e traduzida em `erroCorridaNaGuia` (pede reenvio, que
+    cai no UPDATE). Nisso apareceu um defeito latente: com o `@prisma/adapter-pg`, o
+    `meta` do `P2002` **não tem `target`** — o nome da constraint vem em
+    `meta.driverAdapterError.cause.constraint.index`. O antigo `ehNumeroDuplicado` lia só
+    `target`, então a tradução da corrida do **número** nunca casava em produção. O novo
+    `violouUnique(erro, nome)` serializa o `meta` inteiro e cobre as duas formas; há teste
+    unitário com o formato real do adapter.
+  - Uma consequência a saber: atualizar para uma `qtd_autorizada` **menor** que o já
+    consumido é aceito (nada mudou na validação de quantidade), e a view mostra saldo
+    negativo / `Esgotada`. Não foi pedido bloqueio; se vier a ser, é uma checagem contra a
+    view dentro da transação, antes do UPDATE.
 
 - **SulAmérica — Fase D (17/09/2026, branch `feat/sulamerica`).** Migration
   `20260917160000_autorizacao_sulamerica` cria tabela, CHECK, UNIQUE, FK RESTRICT e view.
@@ -1175,6 +1234,13 @@ parecer íntegro na tela.
 - Não recriar o campo `arquivada` em `requisicao_terapia` (foi removido no sistema
   original, sem uso).
 - Não guardar `validade` em `requisicao` — ela pertence a `requisicao_terapia`.
+- Não "atualizar" guia com DELETE + INSERT. A guia é pai dos atendimentos por
+  `ON DELETE CASCADE`; recriá-la apaga o histórico e zera o saldo. Terapia repetida é
+  UPDATE no `id` existente.
+- Não remover nem afrouxar a UNIQUE `requisicao_terapia_requisicao_id_terapia_id_key`, e
+  não voltar a criar segunda guia da mesma terapia na mesma requisição (decisão revertida
+  em 26/10/2026). Não deduplicar guias em migration automaticamente: cada uma pode ter
+  atendimentos.
 - Não usar `localStorage`/sessão em memória do servidor para autenticação — sessão é
   sempre cookie assinado (iron-session), sem estado no servidor.
 - Não fazer nenhum código da aplicação (fora dos scripts de migration) importar
@@ -1652,6 +1718,25 @@ parecer íntegro na tela.
   - **Interação manual no navegador pendente:** nenhum navegador estava conectado nesta
     sessão. HTTP valida respostas e gravações, mas não cliques, foco, toast ou layout.
 
+- [x] Terapia repetida atualiza a guia existente (26/10/2026, branch
+      `feat/terapia-repetida-atualiza-guia`, **sem merge e sem push**) — **reverte** a
+      decisão de 14/09/2026 de criar segunda guia da mesma terapia. Ver "Terapia repetida
+      atualiza a guia existente" nas decisões de implementação.
+  - Migration `20261026120000_guia_unica_por_terapia_na_requisicao` aplicada **somente no
+    Postgres local** (`localhost:5432/klini`), depois de a consulta de duplicatas por
+    `(requisicao_id, terapia_id)` voltar vazia. `migrate diff` contra o schema: vazio.
+    **Pendente: aplicar no Supabase depois do merge.**
+  - Integração nova (contra o banco local): terapia repetida atualiza `qtd_autorizada` e
+    `validade` no mesmo `id`, sem segunda linha; atendimentos lançados continuam e a view
+    recalcula (4 → 12 autorizados, 3 usados: saldo 1/`Renovar` → 9/`Regular`); mistura
+    repetida + nova = 1 atualização e 1 inserção; envio com repetida + terapia inexistente
+    via `criarRequisicao` commitado não altera nada; INSERT cru duplicado recusado pela
+    UNIQUE. A fixture de `pacientes.integration.test.ts` usava a mesma terapia em duas
+    guias e passou a usar duas terapias.
+  - `tsc --noEmit` limpo, **348 testes passando em 23 arquivos**, `next build` concluído.
+  - **Interação manual no navegador pendente** — passo 5 do roteiro do acréscimo de
+    terapia (pendências) foi reescrito para o comportamento novo.
+
 ### Plano de papéis e convênios — 4 fases
 
 Registrado aqui inteiro de propósito: a Fase A sozinha não explica por que existe, e as
@@ -1675,6 +1760,12 @@ sessões seguintes precisam do plano completo para não implementar a fase errad
       interativa do usuário antes de merge e publicação.
 
 ## Pendências conhecidas (não bloqueiam o próximo passo, mas não esquecer)
+
+- **Migration `20261026120000_guia_unica_por_terapia_na_requisicao` a aplicar no
+  Supabase depois do merge** de `feat/terapia-repetida-atualiza-guia`. Antes, rodar lá
+  `SELECT requisicao_id, terapia_id, count(*) FROM requisicao_terapia GROUP BY
+  requisicao_id, terapia_id HAVING count(*) > 1;` — se voltar linha, a migration aborta de
+  propósito e as duplicatas precisam de decisão manual (cada guia pode ter atendimentos).
 
 - **Fase D: validação local interativa antes de merge.** Como admin, abrir SulAmérica
   pela raiz, cadastrar cada prazo e conferir vencimento, substituir cadastro, filtrar
@@ -1772,8 +1863,15 @@ sessões seguintes precisam do plano completo para não implementar a fase errad
      dela.
   4. Lançar um atendimento numa das terapias antigas e outro numa das novas, e conferir
      que o saldo e o selo de status mudam só na linha certa.
-  5. Repetir o envio com uma terapia **que já está na requisição**, com outra quantidade:
-     tem de entrar como uma **segunda linha**, não substituir a primeira nem dar erro.
+  5. Repetir o envio com uma terapia **que já está na requisição**, com outra quantidade e
+     outra validade: **não** pode aparecer segunda linha — a linha existente passa a
+     mostrar a quantidade e a validade novas, o atendimento lançado no passo 4 continua lá
+     e o saldo é refeito sobre a quantidade nova. O toast diz "1 terapia atualizada na
+     requisição <número> de <paciente>." (Revertido em 26/10/2026: antes este passo
+     pedia uma segunda linha.)
+  6. No mesmo envio, uma terapia repetida e uma nova: toast "1 terapia adicionada e 1
+     atualizada …". E duas linhas com a mesma terapia no formulário: erro na segunda linha,
+     nada gravado.
 - **O banco de desenvolvimento local ficou com cinco encaminhamentos de demonstração**
   ("Zoe Vencida Manual", "Bruno Este Mes Manual", "Carla Fim Deste Mes Manual", "Diego A
   Vencer Manual", "Elisa Longe Manual"), um em cada caso da classificação, criados para a

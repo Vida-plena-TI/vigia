@@ -190,8 +190,8 @@ async function main() {
         throw new Error(`Terapia "${g.terapia}" nao esta em TERAPIAS.`);
       }
 
-      // Guia nao tem unique natural no schema, entao o get-or-create e por
-      // (requisicao, terapia) — o par que o formulario nunca repete.
+      // O get-or-create e por (requisicao, terapia) — o par da UNIQUE
+      // `requisicao_terapia_requisicao_id_terapia_id_key`.
       const guia =
         (await prisma.requisicaoTerapia.findFirst({
           where: { requisicaoId: requisicao.id, terapiaId },

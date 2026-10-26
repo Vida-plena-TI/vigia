@@ -16,6 +16,7 @@ import {
   ERRO_QTD_INVALIDA,
   ERRO_SEM_TERAPIA,
   ERRO_TERAPIA_OBRIGATORIA,
+  ERRO_TERAPIA_REPETIDA_NO_ENVIO,
   mensagemDeCriacao,
 } from "@/lib/domain/requisicoes-mensagens";
 import type { TerapiaParaEscolha } from "@/lib/domain/requisicoes";
@@ -133,15 +134,17 @@ export function FormularioDeRequisicao({
 
     tokenTratado.current = sucesso.token;
 
-    // "Criada" e "adicionada" são eventos diferentes. Repetir o número de uma
-    // requisição que o paciente já tem **não** é mais recusado: as terapias
-    // entram na requisição que já existe. Sem essa palavra, quem digitou o
-    // número errado acharia ter criado uma requisição nova — e o painel
-    // mostraria as terapias penduradas na pasta errada, sem explicação.
+    // "Criada", "adicionada" e "atualizada" são eventos diferentes. Repetir o
+    // número de uma requisição que o paciente já tem **não** é recusado: as
+    // terapias entram na requisição que já existe, e a terapia que ela já
+    // tinha atualiza a guia em vez de virar outra. Sem essas palavras, quem
+    // digitou o número errado acharia ter criado uma requisição nova — e uma
+    // quantidade sobrescrita passaria sem aviso.
     const mensagem = mensagemDeCriacao(
       sucesso.pacienteNome,
       sucesso.numeroRequisicao,
       sucesso.terapiasAdicionadas,
+      sucesso.terapiasAtualizadas,
       sucesso.requisicaoCriada,
     );
 
@@ -213,6 +216,16 @@ export function FormularioDeRequisicao({
       if (!Number.isInteger(quantidade) || quantidade <= 0) {
         evento.preventDefault();
         setErroLocal({ erro: ERRO_QTD_INVALIDA, linha: indice });
+        return;
+      }
+
+      if (
+        linhas
+          .slice(0, indice)
+          .some((anterior) => anterior.terapiaId === linha.terapiaId)
+      ) {
+        evento.preventDefault();
+        setErroLocal({ erro: ERRO_TERAPIA_REPETIDA_NO_ENVIO, linha: indice });
         return;
       }
     }
@@ -287,8 +300,11 @@ export function FormularioDeRequisicao({
             />
             <p className="text-xs text-muted-foreground">
               Repetir um número que este paciente já tem acrescenta as terapias
-              àquela requisição, em vez de criar outra. O mesmo número em
-              pacientes diferentes continua sendo requisições diferentes.
+              àquela requisição, em vez de criar outra. Uma terapia que a
+              requisição já tem não vira segunda guia: a quantidade e a validade
+              dela são atualizadas, e os atendimentos já lançados continuam. O
+              mesmo número em pacientes diferentes continua sendo requisições
+              diferentes.
             </p>
           </div>
         </div>
