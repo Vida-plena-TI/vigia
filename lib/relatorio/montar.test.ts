@@ -33,6 +33,7 @@ function guia(alteracoes: Partial<GuiaDoDashboard>): GuiaDoDashboard {
     saldoRestante: 8,
     validade: null,
     statusAlerta: "Regular",
+    situacaoRequisicao: "aprovada",
     ...alteracoes,
   };
 }

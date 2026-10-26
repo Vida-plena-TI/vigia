@@ -125,10 +125,20 @@ model Terapia {
 
 /// Requisicao (autorizacao) de um paciente. `numero_requisicao` e unico
 /// por paciente, nao globalmente.
+///
+/// `situacao` ('solicitada' ou 'aprovada') e da requisicao inteira, nao de
+/// cada guia. `String` aqui, mas o banco restringe com
+/// `CHECK (situacao IN ('solicitada', 'aprovada'))` (migration
+/// `20261026130000_situacao_da_requisicao`); o espelho em TypeScript e
+/// `SITUACOES_DE_REQUISICAO` em `lib/domain/situacao-requisicao.ts`.
+/// **Sem `@default` de proposito**, como `Usuario.papel`: o default da
+/// migration so existe para o backfill ('aprovada') e e derrubado em seguida,
+/// entao todo `create` precisa informar a situacao.
 model Requisicao {
   id               Int    @id @default(autoincrement())
   numeroRequisicao String @map("numero_requisicao")
   pacienteId       Int    @map("paciente_id")
+  situacao         String
 
   paciente Paciente            @relation(fields: [pacienteId], references: [id])
   guias    RequisicaoTerapia[]

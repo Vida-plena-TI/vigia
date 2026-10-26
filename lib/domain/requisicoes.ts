@@ -36,10 +36,19 @@ import type { Prisma } from "@/lib/generated/prisma/client";
 
 import { obterOuCriarPaciente } from "./pacientes";
 import {
+  SITUACAO_INICIAL,
+  comoSituacao,
+  ehSituacaoValida,
+  type SituacaoDeRequisicao,
+} from "./situacao-requisicao";
+import {
   ERRO_NUMERO_OBRIGATORIO,
   ERRO_PACIENTE_OBRIGATORIO,
   ERRO_QTD_INVALIDA,
+  ERRO_REQUISICAO_ID_INVALIDO,
+  ERRO_REQUISICAO_INEXISTENTE,
   ERRO_SEM_ENCAMINHAMENTO,
+  ERRO_SITUACAO_INVALIDA,
   ERRO_SEM_TERAPIA,
   ERRO_TERAPIA_INEXISTENTE,
   ERRO_TERAPIA_OBRIGATORIA,
@@ -371,10 +380,17 @@ async function criarNaTransacao(
 
   // Desfecho 1: número inédito para este paciente. Requisição e guias nascem
   // no mesmo comando aninhado, como sempre foi.
+  //
+  // A requisição nova nasce "solicitada" (enviada ao convênio, ainda em
+  // análise) e só aceita atendimento depois que um admin a aprovar. A
+  // situação vai **explícita**: a coluna não tem default. O desfecho 2, acima,
+  // não toca nela — acrescentar ou atualizar terapia numa pasta que já existe
+  // não muda a situação da pasta.
   const requisicao = await tx.requisicao.create({
     data: {
       numeroRequisicao,
       pacienteId: paciente.id,
+      situacao: SITUACAO_INICIAL,
       guias: { create: guias },
     },
     select: { id: true },
@@ -560,4 +576,70 @@ export async function validadePadraoDeGuia(
   `;
 
   return linha.validade;
+}
+
+export type ResultadoAlteracaoDeSituacao =
+  | {
+      ok: true;
+      requisicaoId: number;
+      numeroRequisicao: string;
+      situacao: SituacaoDeRequisicao;
+    }
+  | { ok: false; erro: string };
+
+/**
+ * Grava a situação de uma requisição ("solicitada" ou "aprovada").
+ *
+ * Vale nos dois sentidos — voltar uma aprovada para solicitada corrige um
+ * clique errado — e é idempotente: gravar a situação que já está lá não é
+ * erro. Quem pode chamar isto é decidido na Server Action
+ * (`alterarSituacaoDaRequisicaoAction`), com o papel lido do banco.
+ *
+ * Um único UPDATE, sem transação aberta à mão e sem travar nenhuma outra
+ * tabela: ele pede `FOR NO KEY UPDATE` só nesta linha de `requisicao`, que
+ * conflita com o `FOR SHARE` de um lançamento de atendimento em curso. Um
+ * lançamento que já travou a requisição faz este UPDATE esperar o commit
+ * dele; o contrário faz o lançamento esperar e enxergar a situação nova. Como
+ * segura um lock só e não espera nenhum outro segurando-o, não entra em ciclo
+ * de deadlock — ver a ordem de lock em `lib/domain/atendimentos.ts`.
+ *
+ * A situação é dado gravado, não calculado: a view `requisicao_terapia_saldo`
+ * e o `status_alerta` não mudam com ela.
+ */
+export async function alterarSituacaoDaRequisicao(
+  requisicaoId: number,
+  situacao: string,
+): Promise<ResultadoAlteracaoDeSituacao> {
+  if (!Number.isInteger(requisicaoId) || requisicaoId <= 0) {
+    return { ok: false, erro: ERRO_REQUISICAO_ID_INVALIDO };
+  }
+
+  // Validada aqui contra a lista, e o CHECK do banco é o backstop: uma
+  // situação inventada vira mensagem, não exceção de driver.
+  if (!ehSituacaoValida(situacao)) {
+    return { ok: false, erro: ERRO_SITUACAO_INVALIDA };
+  }
+
+  const [linha] = await getPrismaClient().$queryRaw<
+    { id: number; numeroRequisicao: string; situacao: string }[]
+  >`
+    UPDATE "requisicao"
+    SET "situacao" = ${situacao}
+    WHERE "id" = ${requisicaoId}
+    RETURNING
+      "id"                AS "id",
+      "numero_requisicao" AS "numeroRequisicao",
+      "situacao"          AS "situacao"
+  `;
+
+  if (!linha) {
+    return { ok: false, erro: ERRO_REQUISICAO_INEXISTENTE };
+  }
+
+  return {
+    ok: true,
+    requisicaoId: linha.id,
+    numeroRequisicao: linha.numeroRequisicao,
+    situacao: comoSituacao(linha.situacao),
+  };
 }

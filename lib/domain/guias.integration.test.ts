@@ -88,6 +88,7 @@ async function criarGuia(
     data: {
       numeroRequisicao: `EXC-${rotulo}-${SUFIXO}`,
       pacienteId: paciente.id,
+      situacao: "aprovada",
     },
   });
 

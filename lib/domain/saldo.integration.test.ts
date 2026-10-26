@@ -193,7 +193,11 @@ async function lerViewParaOsCenarios(): Promise<{
         });
 
         const requisicao = await tx.requisicao.create({
-          data: { numeroRequisicao: `REQ-${SUFIXO}`, pacienteId: paciente.id },
+          data: {
+            numeroRequisicao: `REQ-${SUFIXO}`,
+            pacienteId: paciente.id,
+            situacao: "aprovada",
+          },
         });
 
         for (const [indice, cenario] of CENARIOS.entries()) {
@@ -312,6 +316,7 @@ describe.skipIf(!temBanco)(
               data: {
                 numeroRequisicao: `CHK-${SUFIXO}`,
                 pacienteId: paciente.id,
+                situacao: "aprovada",
               },
             });
             const terapia = await tx.terapia.create({

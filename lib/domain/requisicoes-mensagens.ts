@@ -119,3 +119,19 @@ export function mensagemDeCriacao(
  */
 export const ERRO_SEM_ENCAMINHAMENTO =
   "Paciente sem encaminhamento cadastrado. Cadastre o encaminhamento antes de criar uma requisição.";
+
+export const ERRO_REQUISICAO_ID_INVALIDO = "Identificador de requisição inválido.";
+export const ERRO_SITUACAO_INVALIDA =
+  "Situação inválida. Use \"solicitada\" ou \"aprovada\".";
+export const ERRO_REQUISICAO_INEXISTENTE =
+  "Requisição não encontrada. Recarregue a página e tente de novo.";
+
+/** Confirmação da troca de situação, para o toast do painel. */
+export function mensagemDeSituacaoAlterada(
+  numeroRequisicao: string,
+  situacao: "solicitada" | "aprovada",
+): string {
+  return situacao === "aprovada"
+    ? `Requisição ${numeroRequisicao} aprovada. Já aceita lançamento de atendimento.`
+    : `Requisição ${numeroRequisicao} voltou para "Solicitada". Novos lançamentos ficam bloqueados.`;
+}

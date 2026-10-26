@@ -21,6 +21,7 @@ export {
   ROTA_NOVA_REQUISICAO,
   ROTA_PADRAO_DA_RECEPCAO,
   podeAcessarRota,
+  podeAlterarSituacaoDeRequisicao,
 } from "./acesso";
 export {
   MIN_SENHA,

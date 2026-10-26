@@ -57,3 +57,18 @@ export function erroEdicaoUltrapassaAutorizado(
 ): string {
   return `A guia autoriza ${qtdAutorizada} crédito(s). Os outros atendimentos já usam ${creditosDosOutrosAtendimentos}, e esta edição pede ${creditosDaEdicao}.`;
 }
+
+/**
+ * Mensagem para um lote que inclui guia de requisição ainda "Solicitada".
+ *
+ * Cita o número porque a tela agrupa por terapia, não por requisição: sem ele
+ * o usuário não sabe qual pasta está pendente.
+ */
+export function erroRequisicaoSolicitada(numeroRequisicao: string): string {
+  return `A requisição ${numeroRequisicao} ainda está "Solicitada" (aguardando aprovação do convênio). Nenhum atendimento foi lançado. Um administrador precisa aprová-la antes do lançamento.`;
+}
+
+/** Texto da guia desabilitada na tela de lançamento. */
+export function avisoAguardandoAprovacao(numeroRequisicao: string): string {
+  return `Aguardando aprovação (requisição ${numeroRequisicao})`;
+}

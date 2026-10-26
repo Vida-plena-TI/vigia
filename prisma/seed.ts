@@ -3,7 +3,9 @@
  *
  * Popula o banco com um usuario, tres terapias e tres pacientes cujas guias
  * cobrem os tres valores de `status_alerta` da view `requisicao_terapia_saldo`:
- * "Regular", "Renovar" e "Esgotada".
+ * "Regular", "Renovar" e "Esgotada". Essas tres requisicoes sao "aprovada"; uma
+ * quarta, sem atendimentos, fica "solicitada" para demonstrar o bloqueio de
+ * lancamento e o botao "Aprovar" do painel.
  *
  * E idempotente: pode rodar quantas vezes quiser sem duplicar nada e sem
  * apagar dados criados na mao.
@@ -67,6 +69,12 @@ type GuiaSeed = {
 type RequisicaoSeed = {
   paciente: string;
   numeroRequisicao: string;
+  /**
+   * Obrigatoria desde a migration `20261026130000_situacao_da_requisicao`: a
+   * coluna nao tem default. As requisicoes com atendimento sao "aprovada" —
+   * requisicao "solicitada" nao aceita lancamento.
+   */
+  situacao: "solicitada" | "aprovada";
   guias: GuiaSeed[];
 };
 
@@ -81,6 +89,7 @@ const REQUISICOES: RequisicaoSeed[] = [
     // Guias saudaveis: sobra saldo e a validade esta longe -> "Regular".
     paciente: "Ana Beatriz Moraes",
     numeroRequisicao: "2026-0001",
+    situacao: "aprovada",
     guias: [
       {
         terapia: "Fonoaudiologia",
@@ -100,6 +109,7 @@ const REQUISICOES: RequisicaoSeed[] = [
     // Uma guia perto do fim do saldo e outra vencendo em 5 dias -> "Renovar".
     paciente: "Carlos Eduardo Lima",
     numeroRequisicao: "2026-0002",
+    situacao: "aprovada",
     guias: [
       {
         terapia: "Terapia Ocupacional",
@@ -121,6 +131,7 @@ const REQUISICOES: RequisicaoSeed[] = [
     // Saldo zerado -> "Esgotada"; a segunda guia fica "Regular".
     paciente: "Mariana Souza Ribeiro",
     numeroRequisicao: "2026-0003",
+    situacao: "aprovada",
     guias: [
       {
         terapia: "Psicologia",
@@ -133,6 +144,22 @@ const REQUISICOES: RequisicaoSeed[] = [
         qtdAutorizada: 20,
         validade: emDias(45),
         atendimentos: [2],
+      },
+    ],
+  },
+  {
+    // Requisicao recem-enviada ao convenio, ainda em analise: aparece no
+    // painel como "Solicitada" e nao aceita lancamento ate um admin aprovar.
+    // Sem atendimentos, por isso mesmo.
+    paciente: "Ana Beatriz Moraes",
+    numeroRequisicao: "2026-0004",
+    situacao: "solicitada",
+    guias: [
+      {
+        terapia: "Terapia Ocupacional",
+        qtdAutorizada: 16,
+        validade: emDias(30),
+        atendimentos: [],
       },
     ],
   },
@@ -176,10 +203,13 @@ async function main() {
           numeroRequisicao: r.numeroRequisicao,
         },
       },
+      // `update` vazio: rodar o seed de novo nao desfaz uma aprovacao feita na
+      // tela.
       update: {},
       create: {
         numeroRequisicao: r.numeroRequisicao,
         pacienteId: paciente.id,
+        situacao: r.situacao,
       },
     });
 

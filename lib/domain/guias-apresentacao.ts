@@ -12,6 +12,7 @@
  * do recolhimento que dependem de ordem/precedência e merecem teste.
  */
 import type { StatusAlerta } from "./saldo";
+import type { SituacaoDeRequisicao } from "./situacao-requisicao";
 
 /**
  * Precedência do CONTEXT.md ("Campos calculados"): Esgotada > Renovar >
@@ -52,6 +53,21 @@ export function piorStatus(
   }
 
   return null;
+}
+
+/**
+ * Alguma guia do paciente é de requisição "solicitada"?
+ *
+ * É o que o cabeçalho recolhido usa para mostrar o indicador "Solicitada" — a
+ * mesma ideia de `piorStatus`: nada que pede atenção fica escondido dentro de
+ * um paciente fechado. Só resume o que a listagem já trouxe; não decide nada.
+ * Sem contagem, de propósito: o indicador diz "há pendência aqui", e o número
+ * aparece guia a guia ao abrir.
+ */
+export function temRequisicaoSolicitada(
+  guias: readonly { situacaoRequisicao: SituacaoDeRequisicao }[],
+): boolean {
+  return guias.some((guia) => guia.situacaoRequisicao === "solicitada");
 }
 
 /**

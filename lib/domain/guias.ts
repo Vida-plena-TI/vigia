@@ -17,6 +17,10 @@ import { OPCOES_DE_TRANSACAO } from "@/lib/db/transacao";
 import type { Prisma } from "@/lib/generated/prisma/client";
 
 import type { StatusAlerta } from "./saldo";
+import {
+  comoSituacao,
+  type SituacaoDeRequisicao,
+} from "./situacao-requisicao";
 
 /** Uma guia como o dashboard precisa dela: view + paciente + terapia. */
 export type GuiaDoDashboard = {
@@ -41,6 +45,12 @@ export type GuiaDoDashboard = {
    */
   validade: string | null;
   statusAlerta: StatusAlerta;
+  /**
+   * Situação da **requisição** desta guia — compartilhada por todas as guias
+   * do mesmo número. Dado gravado, não calculado: não vem da view e não
+   * interfere em `statusAlerta`.
+   */
+  situacaoRequisicao: SituacaoDeRequisicao;
 };
 
 /** Guias de um mesmo paciente, na ordem em que devem aparecer. */
@@ -69,8 +79,12 @@ export const ERRO_ID_INVALIDO = "Identificador de guia inválido.";
 export const ERRO_GUIA_INEXISTENTE = "Guia não encontrada.";
 
 /** Linha crua da consulta do dashboard, antes da validação do status. */
-type LinhaDoDashboard = Omit<GuiaDoDashboard, "statusAlerta"> & {
+type LinhaDoDashboard = Omit<
+  GuiaDoDashboard,
+  "statusAlerta" | "situacaoRequisicao"
+> & {
   statusAlerta: string;
+  situacaoRequisicao: string;
 };
 
 /**
@@ -118,7 +132,8 @@ export async function listarGuiasDoDashboard(): Promise<GuiaDoDashboard[]> {
       s."qtd_utilizada"     AS "qtdUtilizada",
       s."saldo_restante"    AS "saldoRestante",
       s."validade"::text    AS "validade",
-      s."status_alerta"     AS "statusAlerta"
+      s."status_alerta"     AS "statusAlerta",
+      r."situacao"          AS "situacaoRequisicao"
     FROM "requisicao_terapia_saldo" s
     JOIN "requisicao" r ON r."id" = s."requisicao_id"
     JOIN "paciente"   p ON p."id" = r."paciente_id"
@@ -129,6 +144,7 @@ export async function listarGuiasDoDashboard(): Promise<GuiaDoDashboard[]> {
   return linhas.map((linha) => ({
     ...linha,
     statusAlerta: comoStatusAlerta(linha.statusAlerta),
+    situacaoRequisicao: comoSituacao(linha.situacaoRequisicao),
   }));
 }
 

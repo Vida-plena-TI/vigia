@@ -2,7 +2,11 @@ import type { Metadata } from "next";
 import Link from "next/link";
 
 import { Button } from "@/components/ui/button";
-import { ROTA_NOVA_REQUISICAO, podeAcessarRota } from "@/lib/auth/acesso";
+import {
+  ROTA_NOVA_REQUISICAO,
+  podeAcessarRota,
+  podeAlterarSituacaoDeRequisicao,
+} from "@/lib/auth/acesso";
 import { requireUsuario } from "@/lib/auth/current-user";
 import {
   agruparPorPaciente,
@@ -29,7 +33,9 @@ export const metadata: Metadata = {
  * (`requireUsuario`), além da triagem do `proxy.ts`. A tela é aberta aos dois
  * papéis; o que depende de papel é o botão "Nova requisição", que é uma segunda
  * porta para uma rota restrita e some para a recepção pelo mesmo motivo que o
- * item do menu some — ver `itensDeNavegacaoPara`.
+ * item do menu some — ver `itensDeNavegacaoPara`. O mesmo vale para o botão
+ * que troca a situação da requisição em cada guia: só o admin o vê, e a
+ * Server Action reconfirma o papel no banco.
  *
  * Esta é uma tela densa: ocupa a largura toda disponível, alinhada à mesma
  * borda esquerda do cabeçalho. As telas de formulário fazem o contrário
@@ -72,7 +78,10 @@ export default async function DashboardPage() {
 
       <ResumoDeStatus resumo={contarPorStatus(guias)} />
 
-      <ListaDeGuias pacientes={agruparPorPaciente(guias)} />
+      <ListaDeGuias
+        pacientes={agruparPorPaciente(guias)}
+        podeAlterarSituacao={podeAlterarSituacaoDeRequisicao(usuario.papel)}
+      />
     </div>
   );
 }

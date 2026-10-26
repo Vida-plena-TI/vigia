@@ -1,6 +1,7 @@
 "use client";
 
 import { useActionState, useEffect, useRef, useState, useTransition } from "react";
+import { Clock } from "lucide-react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
@@ -20,8 +21,10 @@ import {
   ERRO_CREDITOS_INVALIDOS,
   ERRO_PACIENTE_OBRIGATORIO,
   ERRO_SEM_SELECAO,
+  avisoAguardandoAprovacao,
   erroSaldoInsuficiente,
 } from "@/lib/domain/atendimentos-mensagens";
+import { aceitaLancamento } from "@/lib/domain/situacao-requisicao";
 
 import { formatarData, MARCADOR_POR_STATUS } from "../../dashboard/formato";
 import { StatusBadge } from "../../dashboard/status-badge";
@@ -87,7 +90,17 @@ export function FormularioDeAtendimento({
   // é a resposta do servidor.
   const erroExibido = erroLocal ?? estado;
 
-  const marcadas = (guias ?? []).filter((guia) => selecoes[guia.id]?.marcada);
+  // Guias de requisição "Solicitada" aparecem na lista, desabilitadas, mas
+  // ficam fora de tudo que monta o lote: não podem ser marcadas e o "Marcar
+  // todas" as ignora. É conveniência — o servidor recusa o lote de qualquer
+  // jeito (`lancarLoteNaTransacao`), inclusive vindo de uma aba velha.
+  const lancaveis = (guias ?? []).filter((guia) =>
+    aceitaLancamento(guia.situacaoRequisicao),
+  );
+  const todasAguardandoAprovacao =
+    (guias?.length ?? 0) > 0 && lancaveis.length === 0;
+
+  const marcadas = lancaveis.filter((guia) => selecoes[guia.id]?.marcada);
   const pacienteEscolhido = pacientes.find(
     (paciente) => String(paciente.id) === pacienteId,
   );
@@ -97,7 +110,7 @@ export function FormularioDeAtendimento({
   // linha na mão depois de usar o mestre — e voltar sozinho ao vazio quando
   // `selecoes` é limpo (troca de paciente, limpeza pós-sucesso), sem precisar
   // lembrar de resetar um segundo estado que ficaria obsoleto.
-  const totalDeGuias = guias?.length ?? 0;
+  const totalDeGuias = lancaveis.length;
   const todasMarcadas = totalDeGuias > 0 && marcadas.length === totalDeGuias;
   const parcialmenteMarcadas =
     marcadas.length > 0 && marcadas.length < totalDeGuias;
@@ -190,7 +203,7 @@ export function FormularioDeAtendimento({
     setSelecoes((atuais) => {
       const proximas: Record<number, Selecao> = { ...atuais };
 
-      for (const guia of guias ?? []) {
+      for (const guia of lancaveis) {
         proximas[guia.id] = {
           marcada,
           creditos: atuais[guia.id]?.creditos ?? CREDITOS_PADRAO,
@@ -410,11 +423,14 @@ export function FormularioDeAtendimento({
                 type="checkbox"
                 className="size-4 shrink-0"
                 checked={todasMarcadas}
+                disabled={totalDeGuias === 0}
                 aria-checked={parcialmenteMarcadas ? "mixed" : undefined}
                 aria-label={
-                  totalDeGuias === 1
-                    ? "Marcar a única terapia com saldo deste paciente"
-                    : `Marcar todas as ${totalDeGuias} terapias com saldo deste paciente`
+                  totalDeGuias === 0
+                    ? "Nenhuma terapia deste paciente pode ser marcada: todas aguardam aprovação"
+                    : totalDeGuias === 1
+                      ? "Marcar a única terapia disponível deste paciente"
+                      : `Marcar todas as ${totalDeGuias} terapias disponíveis deste paciente`
                 }
                 onChange={(evento) => alternarTodas(evento.target.checked)}
               />
@@ -433,6 +449,7 @@ export function FormularioDeAtendimento({
               <LinhaDeGuia
                 key={guia.id}
                 guia={guia}
+                aguardandoAprovacao={!aceitaLancamento(guia.situacaoRequisicao)}
                 selecao={selecoes[guia.id]}
                 // Índice do item no lote enviado: a posição entre as marcadas.
                 // -1 quando a guia não está marcada, e aí nenhum erro aponta
@@ -458,13 +475,21 @@ export function FormularioDeAtendimento({
           type="submit"
           size="lg"
           disabled={enviando || marcadas.length === 0}
+          aria-describedby={
+            todasAguardandoAprovacao ? "explicacao-aguardando" : undefined
+          }
         >
           {enviando ? "Lançando..." : "Lançar atendimentos"}
         </Button>
-        <span className="text-sm text-muted-foreground">
-          {marcadas.length === 0
-            ? "Nenhuma terapia marcada."
-            : `${marcadas.length} terapia(s) marcada(s).`}
+        <span
+          id={todasAguardandoAprovacao ? "explicacao-aguardando" : undefined}
+          className="text-sm text-muted-foreground"
+        >
+          {todasAguardandoAprovacao
+            ? "As requisições deste paciente ainda estão \"Solicitada\". Só dá para lançar depois que um administrador aprovar."
+            : marcadas.length === 0
+              ? "Nenhuma terapia marcada."
+              : `${marcadas.length} terapia(s) marcada(s).`}
         </span>
       </div>
     </form>
@@ -485,9 +510,15 @@ export function FormularioDeAtendimento({
  *
  * O filete de margem repete o do painel: status da guia quando está tudo bem,
  * carmim quando o erro do servidor aponta para esta linha.
+ *
+ * Guia de requisição "Solicitada" (`aguardandoAprovacao`) é mostrada, mas com
+ * checkbox e créditos desabilitados — portanto fora do envio, o que mantém os
+ * vetores do `getAll` alinhados — e o aviso "Aguardando aprovação" no lugar
+ * da explicação de saldo.
  */
 function LinhaDeGuia({
   guia,
+  aguardandoAprovacao,
   selecao,
   indiceNoLote,
   itemComErro,
@@ -495,13 +526,14 @@ function LinhaDeGuia({
   aoAlterarCreditos,
 }: {
   guia: GuiaDisponivel;
+  aguardandoAprovacao: boolean;
   selecao: Selecao | undefined;
   indiceNoLote: number;
   itemComErro: number | undefined;
   aoAlternar: (guiaId: number, marcada: boolean) => void;
   aoAlterarCreditos: (guiaId: number, creditos: string) => void;
 }) {
-  const marcada = selecao?.marcada ?? false;
+  const marcada = !aguardandoAprovacao && (selecao?.marcada ?? false);
   const creditos = selecao?.creditos ?? CREDITOS_PADRAO;
   const temErro = indiceNoLote !== -1 && indiceNoLote === itemComErro;
 
@@ -516,6 +548,7 @@ function LinhaDeGuia({
           ? "border-l-esgotada bg-esgotada-fundo/50"
           : MARCADOR_POR_STATUS[guia.statusAlerta],
         marcada && !temErro ? "bg-secondary/50" : null,
+        aguardandoAprovacao ? "bg-muted/40" : null,
       )}
     >
       <div className="flex min-w-0 flex-1 items-start gap-3">
@@ -525,17 +558,37 @@ function LinhaDeGuia({
           name="requisicaoTerapiaId"
           value={guia.id}
           checked={marcada}
+          disabled={aguardandoAprovacao}
+          aria-describedby={
+            aguardandoAprovacao ? `aguardando-${guia.id}` : undefined
+          }
           onChange={(evento) => aoAlternar(guia.id, evento.target.checked)}
           className="mt-1 size-4 shrink-0"
         />
 
         <div className="flex min-w-0 flex-col gap-1">
-          <Label htmlFor={idCheckbox} className="text-sm font-medium">
+          <Label
+            htmlFor={idCheckbox}
+            className={cn(
+              "text-sm font-medium",
+              aguardandoAprovacao && "text-muted-foreground",
+            )}
+          >
             {guia.terapiaNome}
             <span className="text-2xs font-normal text-muted-foreground">
               {guia.codigoTiss}
             </span>
           </Label>
+
+          {aguardandoAprovacao ? (
+            <p
+              id={`aguardando-${guia.id}`}
+              className="flex items-center gap-1 text-xs font-semibold text-foreground"
+            >
+              <Clock aria-hidden className="size-3.5" strokeWidth={2.5} />
+              {avisoAguardandoAprovacao(guia.numeroRequisicao)}
+            </p>
+          ) : null}
 
           <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
             <StatusBadge status={guia.statusAlerta} />
@@ -570,7 +623,7 @@ function LinhaDeGuia({
           max={guia.saldoRestante}
           // Fora do envio quando a terapia não está marcada — é isso que
           // mantém os dois vetores do `getAll` alinhados.
-          disabled={!marcada}
+          disabled={!marcada || aguardandoAprovacao}
           className="h-9 text-right"
           value={creditos}
           aria-invalid={temErro ? true : undefined}

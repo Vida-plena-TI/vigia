@@ -61,7 +61,7 @@ describe.skipIf(!process.env.DATABASE_URL)("SulAmérica contra Postgres real", (
     const pacienteId = linha.pacienteId;
     const encaminhamento = await tx.encaminhamento.create({ data: { pacienteId, dataEncaminhamento: new Date("2026-01-01") } });
     const terapia = await tx.terapia.create({ data: { nome: nome(), codigoTiss: "teste" } });
-    const requisicao = await tx.requisicao.create({ data: { pacienteId, numeroRequisicao: "sul-teste" } });
+    const requisicao = await tx.requisicao.create({ data: { pacienteId, numeroRequisicao: "sul-teste", situacao: "aprovada" } });
     const guia = await tx.requisicaoTerapia.create({ data: { requisicaoId: requisicao.id, terapiaId: terapia.id, qtdAutorizada: 8 } });
     const atendimento = await tx.atendimento.create({ data: { requisicaoTerapiaId: guia.id, dataAtendimento: new Date("2026-01-01") } });
     return { autorizacao, pacienteId, encaminhamento, terapia, requisicao, guia, atendimento };

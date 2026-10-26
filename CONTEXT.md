@@ -48,8 +48,11 @@ Sistema de controle de autorizações de terapia de uma clínica.
   documento e "Papéis de usuário" nas decisões de implementação. As contas que já existiam
   foram backfilladas como `admin` pela migration `20260917120000_papel_de_usuario`.
 - **terapia**: id, nome (único), codigo_tiss (texto).
-- **requisicao**: id, numero_requisicao (texto), paciente_id (FK). Único por
-  `(paciente_id, numero_requisicao)` — não único globalmente.
+- **requisicao**: id, numero_requisicao (texto), paciente_id (FK), **situacao** (texto,
+  `NOT NULL`, `CHECK (situacao IN ('solicitada', 'aprovada'))`, **sem default**). Único
+  por `(paciente_id, numero_requisicao)` — não único globalmente. A `situacao` entrou em
+  26/10/2026 (regra 19); as requisições que já existiam foram backfilladas como
+  `aprovada` pela migration `20261026130000_situacao_da_requisicao`.
 - **requisicao_terapia** ("guia"): id, qtd_autorizada (int, CHECK > 0), validade (date,
   opcional), requisicao_id (FK), terapia_id (FK).
 - **atendimento**: id, data_atendimento (date), creditos_consumidos (int, default 1,
@@ -215,7 +218,9 @@ teste passar hoje e mentir no mês que vem.
    - falha se o saldo já está esgotado ou se os créditos pedidos excedem o saldo
      disponível;
    - usa `SELECT ... FOR UPDATE` (transação) travando as guias envolvidas em ordem
-     determinística por id, para evitar deadlock e corrida de saldo.
+     determinística por id, para evitar deadlock e corrida de saldo;
+   - falha (o lote **inteiro**) se qualquer guia for de requisição `solicitada` — regra 19.
+     As requisições das guias são travadas com `FOR SHARE`, por id, **depois** das guias.
 8. Edição de atendimento: permite `creditos_consumidos = 0`, rejeita negativo. Recalcula a
    soma dos **outros** atendimentos da mesma guia e rejeita se o total após a edição
    exceder `qtd_autorizada`. (Intencionalmente mais permissiva que a regra de lançamento.)
@@ -293,6 +298,22 @@ teste passar hoje e mentir no mês que vem.
     A exclusão completa de paciente no Klini continua completa: inclui sua autorização
     SulAmérica, caso exista, e a confirmação informa isso antes de exigir EXCLUIR.
 
+19. **Situação da requisição (26/10/2026).** Toda requisição está `solicitada` (enviada
+    ao convênio, em análise) ou `aprovada`. A situação é da **requisição** (a pasta
+    numerada), não de cada guia: todas as guias do mesmo número compartilham a mesma.
+    - Requisição nova nasce `solicitada`, gravada explicitamente por `criarRequisicao`.
+      Acrescentar ou atualizar terapia numa requisição existente **não** muda a situação.
+    - **Só o admin altera**, nos dois sentidos (aprovar e voltar para solicitada, para
+      corrigir clique errado). Recepção vê, não altera. Marcar a situação que já está
+      gravada não é erro.
+    - Requisição `solicitada` **não aceita lançamento de atendimento novo**: o lote que
+      contiver qualquer guia dela é recusado inteiro, citando o número da requisição.
+      **Editar e excluir** atendimento que já existe continuam permitidos em qualquer
+      situação, para não deixar histórico preso.
+    - A situação é dado gravado, não calculado: **não** entra na view
+      `requisicao_terapia_saldo` nem no `status_alerta`. Uma guia de requisição
+      solicitada continua avaliada pelas mesmas regras de saldo e validade.
+
 ## Decisões assumidas (perguntas em aberto no relatório de auditoria original)
 
 - `paciente.nome`: único case-insensitive no banco.
@@ -308,6 +329,107 @@ teste passar hoje e mentir no mês que vem.
 - Edição de atendimento para 0 créditos continua permitida.
 
 ## Decisões tomadas durante a implementação (não estavam no relatório original)
+
+- **Situação da requisição (26/10/2026, branch `feat/situacao-requisicao`, sem merge e
+  sem push).** Regra 19. As decisões do caminho:
+  - **Escopo na requisição, não na guia.** Coluna `requisicao.situacao`, não em
+    `requisicao_terapia`: é a pasta que é enviada ao convênio e aprovada. O botão de
+    qualquer guia muda todas as guias do mesmo número, e o `aria-label` diz isso.
+  - **Nome `situacao`, não `status`**, para não confundir com `status_alerta`.
+  - **Migration no mesmo desenho da de `papel`** (`20261026130000_situacao_da_requisicao`):
+    `ADD COLUMN ... NOT NULL DEFAULT 'aprovada'` só para backfillar, `DROP DEFAULT` logo
+    em seguida, e então o `CHECK` `requisicao_situacao_valida`. **Backfill como
+    `aprovada`** porque toda requisição que existia já tinha quantidade autorizada e
+    atendimentos lançados — no banco local, as quatro saíram `aprovada`. Sem default
+    permanente: toda inserção informa a situação, e o schema declara `situacao String`
+    sem `@default` (`migrate diff --from-config-datasource --to-schema` vazio). O espelho
+    em TypeScript é `SITUACOES_DE_REQUISICAO` em `lib/domain/situacao-requisicao.ts`
+    (módulo sem banco, lido também pelo cliente), junto de `aceitaLancamento` — a mesma
+    função decide no servidor e desabilita a guia na tela.
+  - **Quem pode alterar** é `podeAlterarSituacaoDeRequisicao(papel)` em
+    `lib/auth/acesso.ts`, a fonte única que a action e o painel leem. Não é regra de rota
+    (o painel é dos dois papéis), por isso não passa por `podeAcessarRota`. A action
+    `alterarSituacaoDaRequisicaoAction` (`lib/domain/situacao-requisicao-actions.ts`)
+    chama `requireUsuario()` e decide pelo papel **do banco**; recusa devolve
+    `MENSAGEM_SEM_PERMISSAO`. No sucesso, `revalidatePath` do painel e de
+    `/klini/atendimentos/novo`. O domínio (`alterarSituacaoDaRequisicao`, em
+    `requisicoes.ts`) valida id e situação e faz **um** `UPDATE ... RETURNING`.
+  - **Bloqueio só no lançamento.** `lancarLoteNaTransacao`, depois do `FOR UPDATE` das
+    guias, faz `SELECT ... FROM requisicao WHERE id IN (requisições dessas guias) ORDER BY
+    id FOR SHARE` e lê a situação **no mesmo comando que trava** — se uma mudança estava
+    em curso, o `FOR SHARE` esperou o commit dela e o READ COMMITTED devolve a linha nova.
+    A checagem de situação roda para todos os itens **antes** da de saldo (requisição
+    pendente torna o ajuste de créditos inútil) e devolve `erroRequisicaoSolicitada(N)`.
+    Editar e excluir atendimento não leem a situação.
+  - **Por que `FOR SHARE`, e não `FOR UPDATE`:** o UPDATE da situação pede
+    `FOR NO KEY UPDATE`, que conflita com `FOR SHARE` — é o que serializa lançamento e
+    mudança de situação. Dois lançamentos na mesma requisição não precisam se esperar por
+    ela (`FOR SHARE` não conflita consigo mesmo); quem serializa o saldo continua sendo a
+    guia.
+  - **Ordem de lock completa** (analisada caminho a caminho, documentada no topo de
+    `lib/domain/atendimentos.ts`): lançamento trava guia (FOR UPDATE, por id) → requisição
+    (FOR SHARE, por id) e nunca `paciente`; alterar situação trava **só** a linha de
+    `requisicao`, segura um lock e não espera outro com ele de pé; exclusão de guia e
+    edição de atendimento travam só a guia; exclusão de atendimento não trava a guia pai;
+    exclusão de paciente vai `paciente` → guias (DELETE) → requisições (DELETE), a mesma
+    direção guia → requisição; o INSERT de guia do cadastro pede `FOR KEY SHARE` na
+    requisição, que não conflita nem com `FOR SHARE` nem com o UPDATE da situação. Nenhum
+    caminho segura requisição esperando guia, então não há ciclo novo. (Fica como estava
+    um risco **pré-existente**, não introduzido aqui: o DELETE das guias na exclusão de
+    paciente trava várias guias sem `ORDER BY`, e um lançamento simultâneo com duas ou
+    mais guias do mesmo paciente poderia, em tese, cruzar com ele. O Postgres detectaria
+    o deadlock e abortaria uma das duas transações; nada fica pela metade.)
+  - **Tela de lançamento:** `listarGuiasDisponiveisDoPaciente` traz `situacaoRequisicao`;
+    as guias de requisição solicitada aparecem desabilitadas com "Aguardando aprovação
+    (requisição N)", ficam fora do "Marcar todas" e da contagem dele, e se nenhuma guia do
+    paciente for lançável o botão fica desabilitado com a explicação ao lado
+    (`aria-describedby`). A lista de pacientes não mudou: um paciente só com guias
+    solicitadas continua no `select`, para a tela poder explicar o porquê.
+  - **Painel:** `listarGuiasDoDashboard` traz `r.situacao` (o join já existia). Selo
+    `SeloDeSituacao` sobre `components/selo-de-status.tsx`, ao lado do `StatusBadge`, nas
+    duas versões (tabela, coluna "Status · situação", e bloco móvel). "Solicitada": contorno
+    grafite, `Clock`, peso 600. "Aprovada": texto `muted-foreground`, `CircleCheck`, sem
+    contorno nem fundo, peso 400 — quase tudo é aprovada depois do backfill. **Nenhuma cor
+    saturada nova.** Para admin, botão `xs` "Aprovar" / "Voltar para solicitada" com
+    `aria-label` descritivo e toast (sonner) no sucesso e no erro.
+  - **Cabeçalho do paciente recolhido** (mesmo dia, mesma branch): mostra o mesmo
+    `SeloDeSituacao` "Solicitada" (relógio, contorno grafite, sem cor nova) quando
+    **qualquer** guia do paciente é de requisição solicitada — sem contagem, e nada quando
+    todas estão aprovadas. Mesmo raciocínio do pior status: nenhuma pendência fica
+    escondida num paciente fechado. A decisão é `temRequisicaoSolicitada`, em
+    `lib/domain/guias-apresentacao.ts`, ao lado de `piorStatus`, e só resume o
+    `situacaoRequisicao` que a listagem já trazia: nenhuma query nem regra mudou. O selo
+    vem **depois** do pior status, dentro do botão de abrir (com prefixo `sr-only`
+    "Requisição pendente:"); checkbox e copiar continuam controles irmãos, fora dele. O
+    cabeçalho é a mesma linha para a tabela e para a lista móvel, então vale nos dois; no
+    celular é o nome que trunca primeiro. Testes: unitário do helper e
+    `app/(app)/klini/dashboard/lista-de-guias.test.ts`, que renderiza a lista recolhida e
+    confere presença, ausência, ordem em relação ao pior status e a separação dos três
+    controles.
+  - O relatório semanal (`lib/relatorio/`) não olha a situação; só os fixtures dos
+    testes ganharam o campo novo do tipo.
+  - **Validação:** `tsc --noEmit` limpo; **370 testes em 25 arquivos**; `next build`
+    concluído; `npm run lint` só com o erro pré-existente de `acoes-da-guia.tsx:335`.
+    Integração nova em `lib/domain/situacao-requisicao.integration.test.ts` (17 testes):
+    backfill lido do arquivo sobre cópia temporária, CHECK, insert sem situação recusado,
+    nasce solicitada, acréscimo não muda, recusa simples e lote misto sem gravar nada,
+    editar/excluir em solicitada, action com papel lido do banco (recepção recusada, admin
+    aprova, idempotente, volta para solicitada), listagem e **duas corridas** com portão e
+    `pg_stat_activity` (lançamento segura e o UPDATE espera; UPDATE segura e o lançamento
+    espera e decide com a situação nova). Mutação conferida: sem o `FOR SHARE`, as duas
+    corridas falham. Unitário renderiza `SituacaoDaRequisicao` em HTML estático: botão
+    para admin, nenhum para recepção.
+  - **Verificação ponta a ponta por HTTP** contra `next start` local, com duas contas
+    temporárias (admin e recepção, login real pela action): requisição nova gravada
+    `solicitada`; a guia dela veio marcada `solicitada` para a recepção; lançamento
+    recusado com a mensagem e 0 atendimentos; recepção chamando a action direto recebeu
+    `MENSAGEM_SEM_PERMISSAO` e a situação não mudou; admin aprovou; o mesmo lançamento
+    gravou 1 atendimento; voltar para solicitada bloqueou de novo. O payload do painel
+    levou `podeAlterarSituacao: true` para o admin e `false` para a recepção. Requisição,
+    guia, atendimento e contas da verificação foram apagados.
+  - **Interação manual no navegador pendente:** nenhum navegador disponível nesta sessão
+    (o Chromium em cache do Playwright não abre no WSL por falta de `libnss3`). Ver
+    pendências.
 
 - **Terapia repetida atualiza a guia existente (26/10/2026, branch
   `feat/terapia-repetida-atualiza-guia`). REVERTE uma decisão anterior.** Em 14/09/2026
@@ -1328,6 +1450,22 @@ parecer íntegro na tela.
   própria é um menu que um dia vai discordar da permissão de verdade.
 - Não esconder link achando que isso protege. O item do menu some por conveniência; quem
   barra são as duas camadas de backend.
+- Não pôr a situação da requisição na view `requisicao_terapia_saldo`, nem fazê-la
+  influir no `status_alerta`. É dado gravado, não calculado; uma guia solicitada continua
+  avaliada pelas mesmas regras de saldo e validade.
+- Não repor default em `requisicao.situacao` (nem `'solicitada'`, nem `'aprovada'`). O
+  `DEFAULT 'aprovada'` existe só dentro da migration
+  `20261026130000_situacao_da_requisicao`, como backfill, e é derrubado no comando
+  seguinte; há teste que cai. Toda inserção informa a situação.
+- Não acrescentar situação só no `CHECK` ou só em `SITUACOES_DE_REQUISICAO`
+  (`lib/domain/situacao-requisicao.ts`): mudam no mesmo commit.
+- Não mover a situação para a guia (`requisicao_terapia`). Ela é da requisição inteira.
+- Não estender o bloqueio de requisição solicitada à edição ou exclusão de atendimento:
+  ele vale só para lançar atendimento novo.
+- Não ler a situação num SELECT separado do `FOR SHARE` em `lancarLoteNaTransacao`, nem
+  trocar a ordem guias → requisições, nem fazer `alterarSituacaoDaRequisicao` travar
+  outra tabela. A ausência de deadlock depende dessa ordem.
+- Não decidir quem altera a situação fora de `podeAlterarSituacaoDeRequisicao`.
 
 ## Progresso
 
@@ -1737,6 +1875,17 @@ parecer íntegro na tela.
   - **Interação manual no navegador pendente** — passo 5 do roteiro do acréscimo de
     terapia (pendências) foi reescrito para o comportamento novo.
 
+- [x] Situação da requisição — solicitada/aprovada (26/10/2026, branch
+      `feat/situacao-requisicao`, **sem merge e sem push**). Ver regra 19 e "Situação da
+      requisição" nas decisões de implementação.
+  - Migration `20261026130000_situacao_da_requisicao` aplicada **somente no Postgres
+    local**. `migrate diff` contra o schema: vazio. Seed rodado no local: a requisição
+    `2026-0004` (Ana Beatriz Moraes) existe como `solicitada` para demonstração.
+    **Pendente: aplicar no Supabase — ver a ordem em pendências.**
+  - `tsc --noEmit` limpo, **376 testes passando em 26 arquivos** (depois do indicador no
+    cabeçalho recolhido), `next build` concluído.
+  - Verificação ponta a ponta por HTTP feita; **interação manual no navegador pendente**.
+
 ### Plano de papéis e convênios — 4 fases
 
 Registrado aqui inteiro de propósito: a Fase A sozinha não explica por que existe, e as
@@ -1760,6 +1909,29 @@ sessões seguintes precisam do plano completo para não implementar a fase errad
       interativa do usuário antes de merge e publicação.
 
 ## Pendências conhecidas (não bloqueiam o próximo passo, mas não esquecer)
+
+- **Migration `20261026130000_situacao_da_requisicao` a aplicar no Supabase — e a ordem
+  em relação ao deploy importa.** Nenhuma das duas ordens é sem janela:
+  - código novo **antes** da migration quebra painel, lançamento e cadastro (todos leem
+    ou gravam `situacao`);
+  - migration **antes** do código novo deixa o código antigo funcionando para leitura e
+    lançamento, e quebra **só** "Nova requisição" (o `create` antigo não informa a
+    situação, e a coluna não tem default) até o deploy subir.
+  Por isso: **(1)** merge; **(2)** `npm run db:migrate:deploy` contra o Supabase —
+  aplica, em ordem, a `20261026120000_guia_unica_por_terapia_na_requisicao` (ainda
+  pendente lá; rodar antes a consulta de duplicatas da pendência abaixo) e esta; **(3)**
+  deploy na Vercel logo em seguida; não cadastrar requisição entre (2) e (3). Toda
+  requisição de produção sai `aprovada`. Depois, conferir no Supabase:
+  `SELECT situacao, count(*) FROM requisicao GROUP BY situacao;`.
+- **Situação da requisição: validação manual no navegador.** Com as duas contas: como
+  admin, criar uma requisição e vê-la "Solicitada" no painel (abrir o paciente); como
+  recepção, abrir "Lançar atendimento", conferir a guia desabilitada com "Aguardando
+  aprovação (requisição N)", "Marcar todas" ignorando-a e, se for a única, o botão
+  desabilitado com a explicação; confirmar que a recepção não vê o botão no painel; como
+  admin, "Aprovar" (toast) e lançar com sucesso; "Voltar para solicitada" e conferir o
+  bloqueio de novo. Conferir também a lista móvel (abaixo de `md`) e o indicador
+  "Solicitada" no cabeçalho do paciente recolhido, sobretudo num nome longo a 390px. O fluxo de dados já
+  foi exercitado por HTTP; falta clique, foco, toast e layout.
 
 - **Migration `20261026120000_guia_unica_por_terapia_na_requisicao` a aplicar no
   Supabase depois do merge** de `feat/terapia-repetida-atualiza-guia`. Antes, rodar lá
@@ -1785,8 +1957,9 @@ sessões seguintes precisam do plano completo para não implementar a fase errad
 - `ADMIN_PASSWORD` e `RECEPCAO_PASSWORD` de produção devem ficar só no terminal local ao
   rodar `npm run create-admin` / `npm run create-recepcao`; não versionar e não configurar
   na Vercel.
-- **Duas contas de teste ficaram no banco de desenvolvimento, com senhas conhecidas por
-  quem leu esta sessão.** `recepcao_teste` (id 44, papel `recepcao`) e `codex_teste` (id
+- **(Conferido em 26/10/2026: no banco local só existe a conta `admin`, id 1 — as duas
+  contas abaixo já não existem. Item mantido como histórico.)** **Duas contas de teste
+  ficaram no banco de desenvolvimento, com senhas conhecidas por quem leu esta sessão.** `recepcao_teste` (id 44, papel `recepcao`) e `codex_teste` (id
   6, papel `admin`) tiveram a senha redefinida em 17/09/2026 para a verificação da Fase C
   — as duas com senhas escolhidas na hora e escritas no terminal. Nenhuma das duas existe
   em produção, e a conta `admin` (id 1) **não** foi tocada. Antes de usar qualquer uma

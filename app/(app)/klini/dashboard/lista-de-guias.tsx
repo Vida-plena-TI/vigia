@@ -6,7 +6,10 @@ import { ChevronRight, Search } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { cn } from "@/lib/utils";
-import { piorStatus } from "@/lib/domain/guias-apresentacao";
+import {
+  piorStatus,
+  temRequisicaoSolicitada,
+} from "@/lib/domain/guias-apresentacao";
 import type { GuiaDoDashboard, PacienteComGuias } from "@/lib/domain/guias";
 
 import { AcoesDaGuia } from "./acoes-da-guia";
@@ -17,6 +20,10 @@ import {
   formatarData,
   normalizarParaBusca,
 } from "./formato";
+import {
+  SeloDeSituacao,
+  SituacaoDaRequisicao,
+} from "./situacao-da-requisicao";
 import { StatusBadge } from "./status-badge";
 
 /**
@@ -42,11 +49,17 @@ import { StatusBadge } from "./status-badge";
  * barra de "Copiar selecionados" que aparece quando há pelo menos um marcado.
  * As duas peças precisam de um dono comum acima da lista filtrada — ver o
  * comentário de `selecionados`.
+ *
+ * `podeAlterarSituacao` decide só se o botão de trocar a situação da
+ * requisição aparece em cada guia (conveniência visual — quem recusa é a
+ * Server Action). O selo da situação aparece para todos.
  */
 export function ListaDeGuias({
   pacientes,
+  podeAlterarSituacao,
 }: {
   pacientes: PacienteComGuias[];
+  podeAlterarSituacao: boolean;
 }) {
   const [busca, setBusca] = useState("");
 
@@ -192,6 +205,7 @@ export function ListaDeGuias({
               aoAlternarSelecao={(marcado) =>
                 alternarSelecao(paciente.id, marcado)
               }
+              podeAlterarSituacao={podeAlterarSituacao}
             />
           ))}
         </div>
@@ -221,15 +235,18 @@ function PacienteRecolhivel({
   aoAlternar,
   selecionado,
   aoAlternarSelecao,
+  podeAlterarSituacao,
 }: {
   paciente: PacienteComGuias;
   aberto: boolean;
   aoAlternar: () => void;
   selecionado: boolean;
   aoAlternarSelecao: (marcado: boolean) => void;
+  podeAlterarSituacao: boolean;
 }) {
   const idPainel = useId();
   const pior = piorStatus(paciente.guias);
+  const temSolicitada = temRequisicaoSolicitada(paciente.guias);
 
   return (
     <section>
@@ -294,6 +311,22 @@ function PacienteRecolhivel({
             ) : null}
 
             {/*
+              Mesmo raciocínio do selo do pior status: o que pede atenção não
+              fica escondido dentro do paciente fechado. É o mesmo selo da
+              linha da guia (contorno grafite + relógio, sem cor nova), sem
+              contagem, e nada quando todas as requisições estão aprovadas.
+              Vem depois do pior status para não deslocá-lo, e fica dentro do
+              botão de abrir — o checkbox e o copiar continuam irmãos, fora
+              dele. No celular o nome trunca antes de o selo sumir.
+            */}
+            {temSolicitada ? (
+              <>
+                <span className="sr-only">Requisição pendente: </span>
+                <SeloDeSituacao situacao="solicitada" />
+              </>
+            ) : null}
+
+            {/*
               No celular a contagem sai de cena: com marca, selo, contagem e
               botão de copiar na mesma linha de 390px, quem era cortado era o
               nome do paciente — que é o que se lê primeiro. A contagem
@@ -316,13 +349,19 @@ function PacienteRecolhivel({
           <>
             {/* Densa no desktop, empilhada no celular: ver `GuiaEmBloco`. */}
             <div className="hidden md:block">
-              <TabelaDeGuias guias={paciente.guias} />
+              <TabelaDeGuias
+                guias={paciente.guias}
+                podeAlterarSituacao={podeAlterarSituacao}
+              />
             </div>
 
             <ul className="divide-y divide-regua md:hidden">
               {paciente.guias.map((guia) => (
                 <li key={guia.id}>
-                  <GuiaEmBloco guia={guia} />
+                  <GuiaEmBloco
+                    guia={guia}
+                    podeAlterarSituacao={podeAlterarSituacao}
+                  />
                 </li>
               ))}
             </ul>
@@ -337,7 +376,13 @@ function PacienteRecolhivel({
 const CLASSE_CABECALHO =
   "px-3 py-1.5 text-left text-2xs font-medium text-muted-foreground";
 
-function TabelaDeGuias({ guias }: { guias: GuiaDoDashboard[] }) {
+function TabelaDeGuias({
+  guias,
+  podeAlterarSituacao,
+}: {
+  guias: GuiaDoDashboard[];
+  podeAlterarSituacao: boolean;
+}) {
   return (
     <table className="w-full border-collapse text-sm">
       <thead>
@@ -364,7 +409,7 @@ function TabelaDeGuias({ guias }: { guias: GuiaDoDashboard[] }) {
             Validade
           </th>
           <th scope="col" className={CLASSE_CABECALHO}>
-            Status
+            Status · situação
           </th>
           <th scope="col" className={cn(CLASSE_CABECALHO, "text-right")}>
             Ações
@@ -415,7 +460,18 @@ function TabelaDeGuias({ guias }: { guias: GuiaDoDashboard[] }) {
               {formatarData(guia.validade)}
             </td>
             <td className="px-3 py-2">
-              <StatusBadge status={guia.statusAlerta} />
+              {/*
+                O status de saldo/vencimento e a situação da requisição lado a
+                lado: são independentes (uma guia "Solicitada" continua sendo
+                avaliada pelas mesmas regras de saldo e validade).
+              */}
+              <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                <StatusBadge status={guia.statusAlerta} />
+                <SituacaoDaRequisicao
+                  guia={guia}
+                  podeAlterar={podeAlterarSituacao}
+                />
+              </div>
             </td>
             <td className="px-3 py-2">
               <AcoesDaGuia guia={guia} />
@@ -435,7 +491,13 @@ function TabelaDeGuias({ guias }: { guias: GuiaDoDashboard[] }) {
  * hierarquia da tabela: terapia e status no topo, saldo em destaque, o resto
  * como contexto.
  */
-function GuiaEmBloco({ guia }: { guia: GuiaDoDashboard }) {
+function GuiaEmBloco({
+  guia,
+  podeAlterarSituacao,
+}: {
+  guia: GuiaDoDashboard;
+  podeAlterarSituacao: boolean;
+}) {
   return (
     <div
       className={cn(
@@ -450,7 +512,13 @@ function GuiaEmBloco({ guia }: { guia: GuiaDoDashboard }) {
             {guia.codigoTiss} · requisição {guia.numeroRequisicao}
           </p>
         </div>
-        <StatusBadge status={guia.statusAlerta} />
+        <div className="flex flex-col items-end gap-1">
+          <StatusBadge status={guia.statusAlerta} />
+          <SituacaoDaRequisicao
+            guia={guia}
+            podeAlterar={podeAlterarSituacao}
+          />
+        </div>
       </div>
 
       <dl className="flex flex-wrap gap-x-5 gap-y-1 text-xs">

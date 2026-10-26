@@ -26,6 +26,7 @@ function relatorio(): PacienteDoRelatorioSemanal[] {
           saldoRestante: 1,
           validade: null,
           statusAlerta: "Renovar",
+          situacaoRequisicao: "aprovada",
         },
       ],
     },

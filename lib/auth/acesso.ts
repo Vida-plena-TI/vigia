@@ -85,3 +85,16 @@ export function podeAcessarRota(
 
   return ROTAS_DA_RECEPCAO.some((rota) => casaPrefixo(pathname, rota));
 }
+
+/**
+ * O papel pode alterar a situação de uma requisição (solicitada/aprovada)?
+ *
+ * Só o `admin`. A recepção vê a situação no painel, mas não a altera. Não é
+ * regra de rota — o painel é aberto aos dois papéis —, por isso não passa por
+ * `podeAcessarRota`. Mora aqui pelo mesmo motivo das rotas: a Server Action
+ * (camada que vale, com o papel lido do banco) e o painel (que esconde o
+ * botão, por conveniência) leem a mesma função.
+ */
+export function podeAlterarSituacaoDeRequisicao(papel: PapelUsuario): boolean {
+  return papel === "admin";
+}

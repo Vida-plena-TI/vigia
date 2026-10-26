@@ -180,6 +180,7 @@ async function montarCenario(
     data: {
       numeroRequisicao: `REQ-EXC-${rotulo}-${SUFIXO}`,
       pacienteId: paciente.id,
+      situacao: "aprovada",
       guias: {
         create: [
           { terapiaId: terapias[0].id, qtdAutorizada: 10, validade: null },

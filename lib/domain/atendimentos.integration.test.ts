@@ -119,6 +119,8 @@ async function criarCenario(
     data: {
       numeroRequisicao: `ATD-${rotulo}-${SUFIXO}`,
       pacienteId: paciente.id,
+      // A coluna não tem default; "aprovada" é a que aceita lançamento.
+      situacao: "aprovada",
     },
   });
 

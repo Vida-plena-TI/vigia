@@ -13,6 +13,7 @@ import {
   ROTA_ENCAMINHAMENTOS,
   ROTA_NOVA_REQUISICAO,
   podeAcessarRota,
+  podeAlterarSituacaoDeRequisicao,
 } from "./acesso";
 
 const ROTAS_RESTRITAS = [ROTA_NOVA_REQUISICAO, ROTA_ENCAMINHAMENTOS];
@@ -64,5 +65,12 @@ describe("podeAcessarRota — recepcao", () => {
   it("a raiz casa exata, e nao como prefixo de tudo", () => {
     expect(podeAcessarRota("recepcao", "/")).toBe(true);
     expect(podeAcessarRota("recepcao", "/klini")).toBe(false);
+  });
+});
+
+describe("podeAlterarSituacaoDeRequisicao", () => {
+  it("só o admin altera a situação da requisição", () => {
+    expect(podeAlterarSituacaoDeRequisicao("admin")).toBe(true);
+    expect(podeAlterarSituacaoDeRequisicao("recepcao")).toBe(false);
   });
 });

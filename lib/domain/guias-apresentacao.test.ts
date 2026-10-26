@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   numeroDaRequisicaoMaisRecente,
   piorStatus,
+  temRequisicaoSolicitada,
   textoDeCopia,
   textoDeCopiaEmLote,
 } from "./guias-apresentacao";
@@ -169,5 +170,29 @@ describe("textoDeCopiaEmLote", () => {
     expect(textoDeCopiaEmLote([{ nome: "Carlos Eduardo Lima", guias: [] }, ana])).toBe(
       "Carlos Eduardo Lima\nAna Beatriz Moraes - 2026-0001",
     );
+  });
+});
+
+describe("temRequisicaoSolicitada", () => {
+  it("é falso quando todas as guias são de requisição aprovada", () => {
+    expect(
+      temRequisicaoSolicitada([
+        { situacaoRequisicao: "aprovada" },
+        { situacaoRequisicao: "aprovada" },
+      ]),
+    ).toBe(false);
+  });
+
+  it("é verdadeiro quando qualquer guia é de requisição solicitada", () => {
+    expect(
+      temRequisicaoSolicitada([
+        { situacaoRequisicao: "aprovada" },
+        { situacaoRequisicao: "solicitada" },
+      ]),
+    ).toBe(true);
+  });
+
+  it("é falso para lista vazia", () => {
+    expect(temRequisicaoSolicitada([])).toBe(false);
   });
 });

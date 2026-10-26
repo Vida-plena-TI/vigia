@@ -27,12 +27,55 @@
  * A ordenação por id evita deadlock: dois lotes que compartilham as guias 7 e 9
  * pedem os locks na mesma sequência (7 depois 9), então um espera o outro em
  * vez de se travarem em cruz.
+ *
+ * ## Situação da requisição (desde 26/10/2026)
+ *
+ * Requisição "solicitada" não aceita atendimento novo. Entre o passo 1 e o 2,
+ * o lote trava com `FOR SHARE` as linhas de `requisicao` das guias envolvidas
+ * (também em ordem de id) e lê a situação **no mesmo comando que trava**. Se
+ * qualquer uma estiver "solicitada", o lote inteiro é recusado.
+ *
+ * O `FOR SHARE` é o que fecha a corrida com `alterarSituacaoDaRequisicao`: o
+ * UPDATE da situação pede `FOR NO KEY UPDATE` na mesma linha, que conflita com
+ * `FOR SHARE`. Um lançamento em curso faz a mudança de situação esperar o
+ * commit dele; uma mudança em curso faz o lançamento esperar, e o Postgres
+ * devolve a linha **já atualizada** ao destravar (re-checagem do READ
+ * COMMITTED), então o lote decide com a situação nova. `FOR SHARE`, e não
+ * `FOR UPDATE`: dois lotes simultâneos na mesma requisição não precisam se
+ * esperar por causa dela — quem serializa o saldo continua sendo a guia.
+ *
+ * Ordem de lock completa, e por que não cria deadlock com os outros caminhos:
+ *
+ *   - **lançamento**: `requisicao_terapia` (FOR UPDATE, por id) ->
+ *     `requisicao` (FOR SHARE, por id). Nunca trava `paciente`.
+ *   - **alterar situação**: só `requisicao` (o UPDATE de uma linha). Segura um
+ *     lock só e não espera nenhum outro enquanto o segura — não tem como
+ *     fechar ciclo.
+ *   - **exclusão de guia** e **edição de atendimento**: só
+ *     `requisicao_terapia` (uma linha, FOR UPDATE). Não pedem `requisicao`.
+ *   - **exclusão de atendimento**: DELETE em `atendimento`; apagar filho não
+ *     trava a guia pai.
+ *   - **exclusão de paciente**: `paciente` -> `requisicao_terapia` (DELETE) ->
+ *     `requisicao` (DELETE). A mesma direção guia -> requisição do lançamento,
+ *     e o lançamento não segura nada em `paciente`.
+ *   - **cadastro de requisição** (terapia repetida): UPDATE em
+ *     `requisicao_terapia`, e o INSERT de guia pede `FOR KEY SHARE` na
+ *     requisição, que não conflita com `FOR SHARE` nem com o UPDATE da
+ *     situação (que não mexe em chave).
+ *
+ * Em todos, quem trava as duas tabelas trava guia antes de requisição; nenhum
+ * caminho segura requisição esperando guia. Sem ordem invertida, não há ciclo.
  */
 import { getPrismaClient } from "@/lib/db";
 import { OPCOES_DE_TRANSACAO } from "@/lib/db/transacao";
 import type { Prisma } from "@/lib/generated/prisma/client";
 
 import type { StatusAlerta } from "./saldo";
+import {
+  aceitaLancamento,
+  comoSituacao,
+  type SituacaoDeRequisicao,
+} from "./situacao-requisicao";
 import {
   ERRO_ATENDIMENTO_ID_INVALIDO,
   ERRO_ATENDIMENTO_INEXISTENTE,
@@ -46,6 +89,7 @@ import {
   ERRO_PACIENTE_OBRIGATORIO,
   ERRO_SEM_SELECAO,
   erroEdicaoUltrapassaAutorizado,
+  erroRequisicaoSolicitada,
   erroSaldoInsuficiente,
 } from "./atendimentos-mensagens";
 
@@ -78,6 +122,11 @@ export type GuiaDisponivel = {
    */
   validade: string | null;
   statusAlerta: StatusAlerta;
+  /**
+   * Situação da requisição desta guia. Guia de requisição "solicitada"
+   * aparece na lista, mas não pode ser marcada — ver `aceitaLancamento`.
+   */
+  situacaoRequisicao: SituacaoDeRequisicao;
 };
 
 /** Atendimento lançado hoje, como a página `/klini/atendimentos/hoje` precisa. */
@@ -145,8 +194,9 @@ export type ResultadoExclusaoDeAtendimento =
   | { ok: false; erro: string };
 
 /** Linha crua da consulta de guias, antes da validação do status. */
-type LinhaDeGuia = Omit<GuiaDisponivel, "statusAlerta"> & {
+type LinhaDeGuia = Omit<GuiaDisponivel, "statusAlerta" | "situacaoRequisicao"> & {
   statusAlerta: string;
+  situacaoRequisicao: string;
 };
 
 /**
@@ -214,6 +264,11 @@ export async function listarPacientesComGuiasDisponiveis(): Promise<
  * `saldo_restante > 0` é o que mantém fora da tela a guia esgotada — e ele é
  * refeito dentro da transação de lançamento, porque esta lista é só o que o
  * usuário viu quando escolheu o paciente, não uma garantia.
+ *
+ * Guias de requisição "solicitada" **continuam** na lista, com a situação ao
+ * lado, para a tela mostrá-las desabilitadas ("Aguardando aprovação") em vez
+ * de fazê-las sumir sem explicação. A recusa de verdade também é refeita na
+ * transação de lançamento.
  */
 export async function listarGuiasDisponiveisDoPaciente(
   pacienteId: number,
@@ -232,7 +287,8 @@ export async function listarGuiasDisponiveisDoPaciente(
       s."qtd_utilizada"     AS "qtdUtilizada",
       s."saldo_restante"    AS "saldoRestante",
       s."validade"::text    AS "validade",
-      s."status_alerta"     AS "statusAlerta"
+      s."status_alerta"     AS "statusAlerta",
+      r."situacao"          AS "situacaoRequisicao"
     FROM "requisicao_terapia_saldo" s
     JOIN "requisicao" r ON r."id" = s."requisicao_id"
     JOIN "terapia"    t ON t."id" = s."terapia_id"
@@ -244,6 +300,7 @@ export async function listarGuiasDisponiveisDoPaciente(
   return linhas.map((linha) => ({
     ...linha,
     statusAlerta: comoStatusAlerta(linha.statusAlerta),
+    situacaoRequisicao: comoSituacao(linha.situacaoRequisicao),
   }));
 }
 
@@ -360,9 +417,17 @@ export function validarEdicaoDeAtendimento(
 /** Saldo e identidade de uma guia, como a transação precisa vê-los. */
 type GuiaTravada = {
   id: number;
+  requisicaoId: number;
   pacienteId: number;
   terapiaNome: string;
   saldoRestante: number;
+};
+
+/** Uma requisição travada com `FOR SHARE`, com a situação lida sob o lock. */
+type RequisicaoTravada = {
+  id: number;
+  numeroRequisicao: string;
+  situacao: string;
 };
 
 /**
@@ -418,10 +483,39 @@ export async function lancarLoteNaTransacao(
     };
   }
 
+  // Passo 1b: travar as requisições dessas guias e ler a situação delas.
+  //
+  // Depois das guias, nunca antes: é a mesma direção (guia -> requisição) de
+  // todo caminho que trava as duas tabelas — ver o comentário do módulo.
+  // `ORDER BY "id"` pelo mesmo motivo do passo 1.
+  //
+  // A situação é lida **neste** comando, não num SELECT seguinte: se uma
+  // mudança de situação estava em curso, o `FOR SHARE` esperou o commit dela
+  // e o Postgres devolve aqui a versão nova da linha. O `FOR SHARE` só trava
+  // `requisicao` (a tabela do FROM); a subconsulta em `requisicao_terapia`
+  // apenas lê as guias que o passo 1 já travou.
+  const requisicoes = await tx.$queryRaw<RequisicaoTravada[]>`
+    SELECT
+      r."id"                AS "id",
+      r."numero_requisicao" AS "numeroRequisicao",
+      r."situacao"          AS "situacao"
+    FROM "requisicao" r
+    WHERE r."id" IN (
+      SELECT "requisicao_id" FROM "requisicao_terapia" WHERE "id" = ANY(${ids}::int[])
+    )
+    ORDER BY r."id"
+    FOR SHARE
+  `;
+
+  const requisicaoPorId = new Map(
+    requisicoes.map((requisicao) => [requisicao.id, requisicao]),
+  );
+
   // Passo 2: só agora o saldo, e sempre da view.
   const guias = await tx.$queryRaw<GuiaTravada[]>`
     SELECT
       s."id"             AS "id",
+      s."requisicao_id"  AS "requisicaoId",
       r."paciente_id"    AS "pacienteId",
       t."nome"           AS "terapiaNome",
       s."saldo_restante" AS "saldoRestante"
@@ -446,6 +540,29 @@ export async function lancarLoteNaTransacao(
     if (guia.pacienteId !== entrada.pacienteId) {
       return { ok: false, erro: ERRO_GUIA_DE_OUTRO_PACIENTE, item: indice };
     }
+
+    // Requisição "solicitada" recusa o lote **inteiro**, mesmo que as outras
+    // guias sejam de requisição aprovada: nada é gravado (o INSERT só vem
+    // depois deste laço). Fica antes do saldo de propósito — com a requisição
+    // pendente, ajustar créditos não resolveria nada.
+    const requisicao = requisicaoPorId.get(guia.requisicaoId);
+
+    if (!requisicao) {
+      return { ok: false, erro: ERRO_GUIA_INEXISTENTE, item: indice };
+    }
+
+    if (!aceitaLancamento(comoSituacao(requisicao.situacao))) {
+      return {
+        ok: false,
+        erro: erroRequisicaoSolicitada(requisicao.numeroRequisicao),
+        item: indice,
+      };
+    }
+  }
+
+  for (const [indice, item] of entrada.itens.entries()) {
+    // Já conferida no laço anterior; o `!` não esconde caso nenhum.
+    const guia = porId.get(item.requisicaoTerapiaId)!;
 
     // Cobre os dois casos da regra 7: saldo já esgotado (`saldoRestante <= 0`)
     // e pedido acima do disponível.
