@@ -320,7 +320,8 @@ teste passar hoje e mentir no mês que vem.
     (obrigatório no formulário**; 3 a 120 caracteres depois de normalizar espaços, ao menos
     uma letra, sem caractere de controle; acento, ponto, apóstrofo e hífen aceitos; caixa
     gravada como veio — `lib/domain/nome-medico.ts`). O painel `/sulamerica/dashboard`
-    ficou com listagem, status, resumo, exclusão e o link "Cadastrar encaminhamento". A view
+    ficou com listagem, status, resumo, exclusão e o botão "Registrar Encaminhamento" (no
+    cabeçalho da seção "Registradas", leva à aba nova). A view
     classifica os mesmos quatro casos mensais de Encaminhamentos; a lista ordena por
     urgência e depois lower(nome). Excluir na SulAmérica remove só a autorização.
     A exclusão completa de paciente no Klini continua completa: inclui sua autorização
@@ -504,6 +505,14 @@ teste passar hoje e mentir no mês que vem.
     cai.
   - **Não testado**: navegador (clique, cópia, foco, layout, celular) — roteiro nas
     pendências.
+  - **Botão no painel (ajuste do mesmo dia)**: o link de texto "Cadastrar encaminhamento"
+    no parágrafo de apresentação era difícil de ver e virou o botão "Registrar
+    Encaminhamento" — `Button` variante padrão com `asChild` sobre o `Link` do Next (é um
+    `<a>`, não `<button>` com `onClick`), ícone `Plus` antes do texto, `h-10` (40px), à
+    direita do cabeçalho "Registradas"; abaixo de `sm`, linha própria em `w-full`. Ficou no
+    cabeçalho da seção, e não na linha da busca, porque esta mora dentro de
+    `ListaDeAutorizacoes`, que não foi tocada. Teste:
+    `app/(app)/sulamerica/dashboard/botao-registrar-encaminhamento.test.ts`.
 
 - **Paciente só pelo encaminhamento (28/10/2026, branch
   `feat/paciente-so-por-encaminhamento`, a partir de `feat/carteirinha-crm-klini-ui` em
@@ -2419,8 +2428,11 @@ sessões seguintes precisam do plano completo para não implementar a fase errad
   9. **Menus separados**: como admin, o menu em `/sulamerica/*` mostra só "Painel" e
      "Encaminhamentos" (da SulAmérica), sem nenhum item da Klini; em `/klini/*`, nenhum da
      SulAmérica. "Trocar convênio" continua no cabeçalho das duas páginas da SulAmérica.
-  10. **Painel**: `/sulamerica/dashboard` sem formulário, com o link "Cadastrar
-      encaminhamento" para a aba nova; excluir autorização continua funcionando.
+  10. **Painel**: `/sulamerica/dashboard` sem formulário e sem link de texto no parágrafo.
+      O botão "Registrar Encaminhamento" (com "+") fica à direita do título "Registradas";
+      a 390px desce para linha própria na largura útil, sem rolagem lateral. Clicar (e
+      Tab + Enter, com o anel de foco visível) leva a `/sulamerica/encaminhamentos`.
+      Excluir autorização continua funcionando.
 - **Preencher carteirinha/CRM do legado.** Pacientes de antes de 28/10/2026 continuam
   recebendo requisição sem esses dados (decisão deliberada, regra 21). O preenchimento é
   pelo próprio cadastro de encaminhamento (mesmo nome **e mesma data**, ver a dica da

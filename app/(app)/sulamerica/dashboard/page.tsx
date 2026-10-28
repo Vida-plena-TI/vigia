@@ -1,6 +1,8 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { headers } from "next/headers";
+import { Plus } from "lucide-react";
+import { Button } from "@/components/ui/button";
 import { ROTA_SULAMERICA, ROTA_SULAMERICA_ENCAMINHAMENTOS } from "@/lib/auth/acesso";
 import { requireAcessoARota } from "@/lib/auth/current-user";
 import { PATHNAME_HEADER } from "@/lib/auth/pathname-header";
@@ -30,16 +32,23 @@ export default async function SulamericaPage() {
         </div>
         <p className="max-w-prose text-sm text-muted-foreground">
           Autorizações com validade de 3, 6 ou 12 meses a partir da data de início.
-          Cada paciente tem uma autorização — cadastrar outra substitui a anterior.{" "}
-          <Link href={ROTA_SULAMERICA_ENCAMINHAMENTOS} className="underline underline-offset-4">
-            Cadastrar encaminhamento
-          </Link>
+          Cada paciente tem uma autorização — cadastrar outra substitui a anterior.
+          O cadastro é feito pelo registro de encaminhamento.
         </p>
       </div>
       <section className="flex flex-col gap-4">
-        <h2 className="regua-de-secao">Registradas
-          <span className="text-sm font-normal text-muted-foreground">{autorizacoes.length}</span>
-        </h2>
+        {/* Em tela estreita o botão desce para linha própria, na largura útil. */}
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+          <h2 className="regua-de-secao flex-1">Registradas
+            <span className="text-sm font-normal text-muted-foreground">{autorizacoes.length}</span>
+          </h2>
+          <Button asChild size="lg" className="h-10 w-full px-4 sm:w-auto">
+            <Link href={ROTA_SULAMERICA_ENCAMINHAMENTOS}>
+              <Plus aria-hidden data-icon="inline-start" />
+              Registrar Encaminhamento
+            </Link>
+          </Button>
+        </div>
         <ResumoDeVencimentos resumo={contarPorStatusDeAutorizacao(autorizacoes)}
           rotulo="Resumo de autorizações SulAmérica por vencimento" />
         <ListaDeAutorizacoes autorizacoes={autorizacoes} />
