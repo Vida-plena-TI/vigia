@@ -45,6 +45,7 @@ export const ROTAS_DA_RECEPCAO = [
 export const ROTA_NOVA_REQUISICAO = "/klini/requisicoes/nova";
 export const ROTA_ENCAMINHAMENTOS = "/klini/encaminhamentos";
 export const ROTA_SULAMERICA = "/sulamerica/dashboard";
+export const ROTA_SULAMERICA_ENCAMINHAMENTOS = "/sulamerica/encaminhamentos";
 
 /** Para onde mandar quem esta autenticado mas nao alcanca a rota pedida. */
 export const ROTA_PADRAO_DA_RECEPCAO = "/klini/dashboard";

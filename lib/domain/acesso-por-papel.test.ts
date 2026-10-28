@@ -54,7 +54,7 @@ vi.mock("./autorizacoes-sulamerica", () => ({
   registrarAutorizacao: mocks.registrarAutorizacao,
   excluirAutorizacao: mocks.excluirAutorizacao,
 }));
-import { criarAutorizacaoAction, excluirAutorizacaoAction } from "./autorizacoes-sulamerica-actions";
+import { criarEncaminhamentoSulamericaAction, excluirAutorizacaoAction } from "./autorizacoes-sulamerica-actions";
 
 import { criarEncaminhamentoAction } from "./encaminhamentos-actions";
 import {
@@ -100,6 +100,9 @@ function formularioSulamerica() {
   dados.set("pacienteNome", "Fulano de Tal");
   dados.set("dataInicio", "2026-01-31");
   dados.set("prazoMeses", "3");
+  dados.set("numeroCarteirinha", "TESTE12345");
+  dados.set("crmMedico", "123456");
+  dados.set("nomeMedico", "Dra. Teste");
   return dados;
 }
 
@@ -107,7 +110,7 @@ describe("SulAmérica — actions decidem pelo banco, não pelo cookie", () => {
   it("cookie admin desatualizado não permite criar nem excluir como recepção", async () => {
     logadoComoPapelNoBanco("recepcao");
     mocks.getSession.mockResolvedValue({ usuarioId: 7, papel: "admin" });
-    expect(await criarAutorizacaoAction({}, formularioSulamerica())).toEqual({ erro: MENSAGEM_SEM_PERMISSAO });
+    expect(await criarEncaminhamentoSulamericaAction({}, formularioSulamerica())).toEqual({ erro: MENSAGEM_SEM_PERMISSAO });
     expect(await excluirAutorizacaoAction(3)).toEqual({ ok: false, erro: MENSAGEM_SEM_PERMISSAO });
     expect(mocks.registrarAutorizacao).not.toHaveBeenCalled();
     expect(mocks.excluirAutorizacao).not.toHaveBeenCalled();
@@ -119,8 +122,11 @@ describe("SulAmérica — actions decidem pelo banco, não pelo cookie", () => {
     logadoComoPapelNoBanco("admin");
     mocks.registrarAutorizacao.mockResolvedValue({ ok: true, dataVencimento: "2026-04-30" });
     mocks.excluirAutorizacao.mockResolvedValue({ ok: true });
-    expect(await criarAutorizacaoAction({}, formularioSulamerica())).toMatchObject({ sucesso: { dataVencimento: "2026-04-30" } });
-    expect(mocks.registrarAutorizacao).toHaveBeenCalledWith({ pacienteNome: "Fulano de Tal", dataInicio: "2026-01-31", prazoMeses: 3 });
+    expect(await criarEncaminhamentoSulamericaAction({}, formularioSulamerica())).toMatchObject({ sucesso: { dataVencimento: "2026-04-30" } });
+    expect(mocks.registrarAutorizacao).toHaveBeenCalledWith({
+      pacienteNome: "Fulano de Tal", dataInicio: "2026-01-31", prazoMeses: 3,
+      numeroCarteirinha: "TESTE12345", crmMedico: "123456", nomeMedico: "Dra. Teste",
+    });
     expect(await excluirAutorizacaoAction(3)).toEqual({ ok: true });
     expect(mocks.excluirAutorizacao).toHaveBeenCalledWith(3);
     expect(mocks.refresh).toHaveBeenCalledTimes(2);

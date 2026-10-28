@@ -72,8 +72,11 @@ Sistema de controle de autorizações de terapia de uma clínica.
 
 - **autorizacao_sulamerica**: id, paciente_id (FK RESTRICT e UNIQUE), data_inicio
   (DATE NOT NULL), prazo_meses (INT NOT NULL, CHECK em 3, 6 ou 12), data_vencimento
-  (DATE gerada STORED). Uma autorização por paciente, substituída por novo cadastro.
-  O status mensal vem da view `autorizacao_sulamerica_status`. O paciente é compartilhado
+  (DATE gerada STORED), **nome_medico** (TEXT, **NULL permitido**, `CHECK
+  (char_length(btrim(nome_medico)) BETWEEN 3 AND 120)`, desde 28/10/2026, só SulAmérica —
+  NULL nas autorizações antigas, obrigatório no formulário). Uma autorização por paciente,
+  substituída por novo cadastro. O status mensal vem da view `autorizacao_sulamerica_status`
+  (que **não** tem `nome_medico`: a listagem o lê da tabela). O paciente é compartilhado
   com o Klini; excluir esta autorização não exclui nenhum outro registro.
 
 Demais FKs (ex: requisicao → paciente) ficam no padrão `RESTRICT`. Só o caminho
@@ -267,8 +270,8 @@ teste passar hoje e mentir no mês que vem.
       **trava a linha com `FOR KEY SHARE`**; nome de ninguém → "Paciente não
       cadastrado. Cadastre primeiro o encaminhamento em Encaminhamentos." e **nada é
       criado** (a requisição não cria mais paciente);
-    - paciente achado sem encaminhamento (legado de antes desta regra, ou criado pela
-      SulAmérica) → a recusa de sempre, "Paciente sem encaminhamento cadastrado.
+    - paciente achado sem encaminhamento Klini (legado de antes desta regra, ou criado
+      pelo encaminhamento da SulAmérica) → a recusa de sempre, "Paciente sem encaminhamento cadastrado.
       Cadastre o encaminhamento antes de criar uma requisição.".
     O lock é o mesmo `FOR KEY SHARE` que o INSERT da requisição já pediria na linha do
     paciente, só que tomado antes das checagens: ele conflita com o `FOR UPDATE` da
@@ -309,7 +312,15 @@ teste passar hoje e mentir no mês que vem.
     no banco na página e nas actions. Prazo escolhido explicitamente entre 3, 6 e 12
     **meses de calendário**, sem opção pré-selecionada. O vencimento é calculado pelo
     Postgres, inclusive o ajuste para o último dia de mês, e nunca em TypeScript.
-    Cadastro faz upsert por paciente_id dentro da transação do get-or-create. A view
+    Cadastro faz upsert por paciente_id dentro da transação do get-or-create.
+    **Desde 28/10/2026 o cadastro mora na aba `/sulamerica/encaminhamentos`** (só admin),
+    não mais no painel: nome do paciente, data do encaminhamento (**= `data_inicio`**: a
+    autorização começa na data do encaminhamento), prazo (obrigatório, 3/6/12, sem
+    pré-seleção), carteirinha e CRM (regra 20, mesmas regras da Klini) e **nome do médico
+    (obrigatório no formulário**; 3 a 120 caracteres depois de normalizar espaços, ao menos
+    uma letra, sem caractere de controle; acento, ponto, apóstrofo e hífen aceitos; caixa
+    gravada como veio — `lib/domain/nome-medico.ts`). O painel `/sulamerica/dashboard`
+    ficou com listagem, status, resumo, exclusão e o link "Cadastrar encaminhamento". A view
     classifica os mesmos quatro casos mensais de Encaminhamentos; a lista ordena por
     urgência e depois lower(nome). Excluir na SulAmérica remove só a autorização.
     A exclusão completa de paciente no Klini continua completa: inclui sua autorização
@@ -334,8 +345,9 @@ teste passar hoje e mentir no mês que vem.
 20. **Carteirinha e CRM no paciente (28/10/2026).** O número da carteirinha do convênio e
     o CRM do médico que encaminhou são dados **do paciente** (colunas
     `paciente.numero_carteirinha` e `paciente.crm_medico`), não do encaminhamento.
-    - **CRM obrigatório em todo cadastro de encaminhamento** (Klini), junto de nome e
-      data — cada encaminhamento pode vir de um médico diferente.
+    - **CRM obrigatório em todo cadastro de encaminhamento** (Klini e, desde 28/10/2026,
+      SulAmérica), junto de nome e data — cada encaminhamento pode vir de um médico
+      diferente.
     - **Carteirinha obrigatória só enquanto o paciente não tem uma** (ajuste de
       28/10/2026). Paciente novo ou paciente existente sem carteirinha (legado): campo
       vazio é recusado — o legado com "Este paciente ainda não tem carteirinha
@@ -366,31 +378,44 @@ teste passar hoje e mentir no mês que vem.
       carteirinha (até em outra caixa) não é conflito.
     - **Carteirinha e CRM nunca vão para log, mensagem de erro, exceção não tratada,
       URL ou query string.**
-    - **Onde aparecem (desde 28/10/2026):** só na lista de `/klini/encaminhamentos`
-      (tela de admin), em colunas próprias, cada uma com o seu botão de copiar. O botão
+    - **Onde aparecem (desde 28/10/2026):** só nas listas de `/klini/encaminhamentos` e
+      `/sulamerica/encaminhamentos` (telas de admin), em colunas próprias, cada uma com o
+      seu botão de copiar. O painel da SulAmérica não os recebe. O botão
       copia no navegador o valor que a página já recebeu — não existe rota que devolva
       esses números. Paciente sem o dado mostra "falta preencher" e o botão desabilitado.
+    - **Limitação conhecida (28/10/2026): carteirinha e CRM são do paciente, não do
+      convênio.** Um mesmo paciente cadastrado nos dois convênios compartilha os dois
+      campos: no cadastro SulAmérica de quem já tem encaminhamento Klini, a carteirinha
+      é opcional (vazio mantém a gravada pela Klini; preenchida, **substitui** a do
+      paciente para os dois) e o CRM digitado **substitui** o do paciente para os dois. O
+      encaminhamento Klini em si não é tocado. Não resolvido de propósito; há teste de
+      integração que fixa este comportamento.
 
-21. **Paciente só nasce pelo cadastro de encaminhamento (28/10/2026).** No Klini, a
-    **única** forma de criar paciente é o cadastro de encaminhamento
-    (`/klini/encaminhamentos`: nome + data + carteirinha + CRM, regra 20), que chama
-    `obterOuCriarPaciente`. "Nova requisição" só procura (regra 15) e recusa nome
-    inexistente sem gravar nada. Nenhuma rota, action ou script cria paciente fora disso
-    — afirmado por `lib/domain/pacientes-origem.test.ts`, que varre `app/`, `lib/`,
-    `components/` e `scripts/`.
-    - **Exceção temporária: SulAmérica.** O cadastro de autorização
-      (`lib/domain/autorizacoes-sulamerica.ts`) ainda chama `obterOuCriarPaciente` e
-      portanto cria paciente. É temporário, até a SulAmérica ganhar a própria aba de
-      Encaminhamentos (próximo passo planejado); o teste de varredura o lista
-      explicitamente e precisa ser ajustado quando isso mudar. Um paciente criado só pela
+21. **Paciente só nasce pelos dois cadastros de encaminhamento (28/10/2026).** As
+    **únicas** formas de criar paciente são o cadastro de encaminhamento da Klini
+    (`/klini/encaminhamentos`: nome + data + carteirinha + CRM, regra 20,
+    `encaminhamentos.ts`) e o da SulAmérica (`/sulamerica/encaminhamentos`: nome + data +
+    prazo + carteirinha + CRM + nome do médico, regra 18, `autorizacoes-sulamerica.ts`).
+    Os dois chamam `obterOuCriarPaciente` na mesma ordem de transação e de lock. "Nova
+    requisição" só procura (regra 15) e recusa nome inexistente sem gravar nada. Nenhuma
+    rota, action ou script cria paciente fora disso — afirmado por
+    `lib/domain/pacientes-origem.test.ts`, que varre `app/`, `lib/`, `components/` e
+    `scripts/`, **sem exceção temporária**.
+    - **Fim do caminho temporário (28/10/2026).** Até esta data o formulário do painel
+      `/sulamerica/dashboard` criava paciente com só nome + data + prazo, e era listado no
+      teste de varredura como exceção temporária. O formulário saiu do painel; a mesma
+      função de domínio (`registrarAutorizacao`) agora só é chamada pela action da aba
+      Encaminhamentos, que exige carteirinha, CRM e médico. Um paciente criado só pela
       SulAmérica não tem encaminhamento Klini e cai na recusa da regra 15.
     - **Legado sem carteirinha/CRM não é bloqueado** (decisão deliberada): quem já tem
       encaminhamento recebe requisição mesmo com `numero_carteirinha`/`crm_medico` nulos.
       Bloquear pararia a operação da clínica até o preenchimento. Pendência: preencher
       carteirinha/CRM do legado.
     - **Sugestões**: o `datalist` de "Nova requisição" lista só quem tem encaminhamento
-      (`listarNomesParaRequisicao`, em `pacientes.ts`). `listarNomesDePacientes` segue
-      igual, para atendimento e SulAmérica. É sugestão; quem decide é a transação.
+      (`listarNomesParaRequisicao`, em `pacientes.ts`). Os dois formulários de
+      encaminhamento sugerem todos os pacientes (`listarPacientesParaEncaminhamento`, nome
+      + booleano). `listarNomesDePacientes` saiu em 28/10/2026: o único uso era o
+      formulário removido do painel SulAmérica. É sugestão; quem decide é a transação.
     - O seed de desenvolvimento (`prisma/seed.ts`) cria pacientes **fictícios** pelo
       Prisma, sem encaminhamento — fica, por ser só de desenvolvimento.
       `scripts/seed-terapias.ts` não toca em paciente.
@@ -410,6 +435,75 @@ teste passar hoje e mentir no mês que vem.
 - Edição de atendimento para 0 créditos continua permitida.
 
 ## Decisões tomadas durante a implementação (não estavam no relatório original)
+
+- **Encaminhamentos da SulAmérica (28/10/2026, branch `feat/sulamerica-encaminhamentos`, a
+  partir de `feat/paciente-so-por-encaminhamento` em `168a848`; sem commit, sem merge, sem
+  push).** Regras 18, 20 e 21.
+  - **Migration `20261028140000_nome_do_medico_sulamerica`**: `nome_medico TEXT NULL` +
+    CHECK `autorizacao_sulamerica_nome_medico_tamanho` (`char_length(btrim(...))` entre 3 e
+    120). Schema: `nomeMedico String? @map("nome_medico")`. Depois de aplicada, `migrate dev
+    --create-only` gerou migration vazia (apagada) e `db pull --print` bate com o schema.
+    A view `autorizacao_sulamerica_status` **não** foi recriada: a listagem faz `JOIN` na
+    tabela para ler `nome_medico` (menos DDL numa migration de produção).
+  - **Antes, o painel** tinha um formulário inline (nome com `datalist` de todos os
+    pacientes, data de início padrão hoje, prazo 3/6/12 sem pré-seleção) que chamava
+    `criarAutorizacaoAction` → `registrarAutorizacao`: get-or-create do paciente, `FOR
+    UPDATE` na linha do paciente e upsert da autorização. Criava paciente só com o nome, sem
+    carteirinha nem CRM. Saíram: `formulario-de-autorizacao.tsx` (`git rm`),
+    `criarAutorizacaoAction`/`EstadoNovaAutorizacao` e `listarNomesDePacientes` (único uso).
+  - **Extraído para `lib/domain/carteirinha-crm-gravacao.ts`** (movido de
+    `encaminhamentos.ts`, não copiado): `ErroDeNegocio`, checagem de dono, `SAVEPOINT`,
+    saneamento de erro, `situacaoDaCarteirinha` e a nova `gravarCarteirinhaECrmNaTransacao`
+    (situação travada → `decidirCarteirinha` → gravação). Klini e SulAmérica chamam a mesma.
+    No cliente, `components/usar-situacao-da-carteirinha.ts` (`useSituacaoDaCarteirinha`) e
+    `components/campos-carteirinha-crm.tsx` (`CampoDeCarteirinha`, `CampoDeCrm`) saíram do
+    formulário da Klini, com o mesmo HTML, para os dois formulários terem rótulo,
+    "(opcional)" e texto de apoio iguais.
+  - **Ordem de lock da SulAmérica agora é a da Klini**: get-or-create → paciente `FOR NO KEY
+    UPDATE` (na leitura da situação da carteirinha) → `SELECT ... FROM
+    autorizacao_sulamerica ... FOR UPDATE` → upsert com `nome_medico`. O `FOR UPDATE` que
+    havia na linha do paciente saiu: o `FOR NO KEY UPDATE` já serializa dois cadastros do
+    mesmo paciente e, ao contrário dele, não bloqueia o `FOR KEY SHARE` de uma requisição.
+    Recusa (carteirinha, dono) é `throw` de `ErroDeNegocio` e desfaz o paciente recém-criado;
+    `registrarAutorizacaoNaTransacao` (teste) devolve `{ ok: false }` sem desfazer, como na
+    Klini. O nome do médico é validado em `validarEntrada`, antes da transação. O erro
+    inesperado do upsert é saneado (sem `cause`), como o do UPDATE da carteirinha.
+  - **Duas leituras**: `listarEncaminhamentosSulamerica()` (com carteirinha, CRM e médico,
+    só para a página da aba) e `listarAutorizacoes()` (painel), que monta a linha sem esses
+    três campos — o painel não passa a carregar os números no payload.
+  - **Rota e acesso**: `ROTA_SULAMERICA_ENCAMINHAMENTOS` em `lib/auth/acesso.ts`. O
+    allowlist da recepção já fechava todo `/sulamerica`, então o `proxy.ts` não mudou; a
+    página usa `requireAcessoARota` e a action `autorizarRota` com a rota nova. Menu da
+    SulAmérica: "Painel" e "Encaminhamentos". "Trocar convênio" nas duas páginas.
+  - **Formulário**: duas faixas com `sm:items-start` (seis campos e o botão não cabem numa
+    linha nem em `lg`, a página é `max-w-5xl`): nome/data/prazo (entre `sm` e `lg` o nome
+    ocupa a linha, como na Klini) e carteirinha/CRM/médico/botão (o médico cresce). Mensagens
+    da SulAmérica: "Informe uma data de encaminhamento válida." (era "de início") e
+    "Encaminhamento cadastrado/atualizado para X." (era "Autorização ...").
+  - **Lista**: colunas Paciente, Data do encaminhamento (é `data_inicio`; o rótulo do
+    painel continua "Data de início"), Prazo, Vencimento, Situação (`SeloDeVencimento`),
+    Carteirinha e CRM (`ValorCopiavel` da Klini) e Médico (só texto). Sem coluna de ações
+    (a exclusão continua no painel). Tabela a partir de `lg` com `overflow-x-auto`, blocos
+    abaixo. Dica de "falta preencher" pede mesmo nome **e mesma data e prazo**.
+  - **Testes** (555 em 36 arquivos; eram 476 em 33). Alterados: `autorizacoes-sulamerica`
+    unitário e integração (a entrada ganhou carteirinha/CRM/médico — o helper `registrar`
+    passou a mandar os três; os testes de vencimento, upsert, exclusão, CHECK de prazo,
+    coluna gerada, FK e view continuam iguais), `acesso-por-papel.test.ts`
+    (`criarAutorizacaoAction` → `criarEncaminhamentoSulamericaAction`, com os campos novos),
+    `itens-de-navegacao.test.ts` (admin vê dois itens SulAmérica; menus não se cruzam),
+    `acesso.test.ts` e `proxy.test.ts` (rota nova restrita), `pacientes-origem.test.ts`
+    (sem exceção temporária; só a action da aba chama `registrarAutorizacao`). Novos:
+    `nome-medico.test.ts`; integração de paciente novo com os seis campos, reenvio, branco
+    mantendo, legado/novo recusados, médico inválido, CHECK do `nome_medico`, carteirinha
+    da Klini recusada com o nome do dono, paciente nos dois convênios, legado listando,
+    erro saneado, e três recusas pela transação **de produção** (`registrarAutorizacao`,
+    com `finally` de limpeza) mostrando que o paciente novo não sobra;
+    `app/(app)/sulamerica/encaminhamentos/acesso-da-recepcao.test.ts` e
+    `lista-de-encaminhamentos-sulamerica.test.ts`. Mutação conferida: sem a checagem de
+    papel na página e na action, dois testes da recepção caem; sem o saneamento, o do erro
+    cai.
+  - **Não testado**: navegador (clique, cópia, foco, layout, celular) — roteiro nas
+    pendências.
 
 - **Paciente só pelo encaminhamento (28/10/2026, branch
   `feat/paciente-so-por-encaminhamento`, a partir de `feat/carteirinha-crm-klini-ui` em
@@ -785,7 +879,8 @@ teste passar hoje e mentir no mês que vem.
     Datas entram e saem como AAAA-MM-DD; vencimento só volta pelo RETURNING do banco.
   - A view compara date_trunc('month', data_vencimento) ao CURRENT_DATE do banco:
     Vencido / Vence este mês / A vencer / NULL. O CASE de prioridade mora só no ORDER BY.
-  - `/sulamerica/dashboard` tem formulário inline, autocomplete, início editável com
+  - (Desde 28/10/2026 o formulário saiu do painel para `/sulamerica/encaminhamentos` — ver
+    "Encaminhamentos da SulAmérica" nas decisões.) `/sulamerica/dashboard` tinha formulário inline, autocomplete, início editável com
     padrão vindo de `dataDeHoje()`, prazo obrigatório sem seleção inicial, resumo,
     busca sem acento/caixa e tabela/lista móvel. Reutiliza `SeloDeVencimento` (sobre
     `components/selo-de-status.tsx`) e `ResumoDeVencimentos`, que ganhou rótulo acessível
@@ -803,8 +898,9 @@ teste passar hoje e mentir no mês que vem.
 - **Menu por convênio (17/09/2026, branch `fix/navegacao-por-convenio`).**
   `itensDeNavegacaoPara(papel, caminho)` seleciona uma lista pelo prefixo exato
   `/klini` ou `/sulamerica` (incluindo subrotas), depois aplica o mesmo
-  `podeAcessarRota` da Fase C. Klini tem seus cinco itens; SulAmérica tem apenas
-  “Painel”, para `/sulamerica/dashboard`, em lista própria pronta para novas páginas.
+  `podeAcessarRota` da Fase C. Klini tem seus cinco itens; SulAmérica tinha apenas
+  “Painel”, para `/sulamerica/dashboard`, em lista própria pronta para novas páginas
+  (desde 28/10/2026 também “Encaminhamentos”, `/sulamerica/encaminhamentos`).
   A raiz de escolha não exibe itens de nenhum convênio. Não há links cruzados nas listas.
   O layout reaproveita `PATHNAME_HEADER` (`x-klini-pathname`) como caminho inicial
   da navegação, sem novo header nem alteração no proxy. A `Navegacao` reutiliza seu
@@ -1047,8 +1143,8 @@ teste passar hoje e mentir no mês que vem.
   terapias) em Server Component; o formulário é Client Component porque a lista de
   terapias cresce e encolhe por estado do React. Decisões do caminho:
   - **Get-or-create do paciente em uma consulta só** (desde 28/10/2026 usado só pelo
-    cadastro de encaminhamento e, temporariamente, pela SulAmérica — a requisição só
-    busca; ver regra 21): `INSERT ... ON CONFLICT
+    cadastro de encaminhamento da Klini e pelo da SulAmérica — a requisição só busca; ver
+    regra 21): `INSERT ... ON CONFLICT
 (lower("nome")) DO NOTHING RETURNING ...` dentro de uma CTE, com `UNION ALL` para o
     `SELECT` do já existente. Um `SELECT` seguido de `INSERT` deixaria aberta a corrida
     entre dois cadastros simultâneos do mesmo nome. A comparação é
@@ -1690,10 +1786,22 @@ parecer íntegro na tela.
   (criação, só no encaminhamento) ou `buscarPacientePorNome` (busca, com lock) de
   `lib/domain/pacientes.ts`. Uma segunda implementação com outra regra de comparação
   discordaria do índice `UNIQUE (lower(nome))`.
-- Não criar paciente fora do cadastro de encaminhamento (regra 21) — nem em requisição,
-  nem em atendimento, nem em script ou rota nova. A SulAmérica é a exceção temporária
-  registrada; não acrescentar outra. Não "afrouxar" `pacientes-origem.test.ts` para um
-  caminho novo passar: um caminho novo que crie paciente é conversa, não ajuste.
+- Não criar paciente fora dos dois cadastros de encaminhamento, Klini e SulAmérica
+  (regra 21) — nem em requisição, nem em atendimento, nem no painel da SulAmérica, nem em
+  script ou rota nova. Não há mais exceção temporária; não acrescentar uma. Não
+  "afrouxar" `pacientes-origem.test.ts` para um caminho novo passar: um caminho novo que
+  crie paciente é conversa, não ajuste.
+- Não duplicar a gravação de carteirinha/CRM num terceiro fluxo nem copiá-la para a
+  SulAmérica: ela mora em `lib/domain/carteirinha-crm-gravacao.ts`
+  (`gravarCarteirinhaECrmNaTransacao`, `ErroDeNegocio`), usada pelos dois cadastros.
+- Não pôr `NOT NULL` (nem default) em `autorizacao_sulamerica.nome_medico`: as autorizações
+  antigas não têm o dado. Não mudar a regra do nome do médico só no `CHECK` ou só em
+  `lib/domain/nome-medico.ts`. Não padronizar a caixa do nome. Não logar o nome do médico,
+  nem repeti-lo em mensagem de erro ou URL (o erro do upsert é saneado como o da
+  carteirinha).
+- Não pôr carteirinha, CRM nem nome do médico na lista do painel da SulAmérica
+  (`listarAutorizacoes`, que os descarta): só a página `/sulamerica/encaminhamentos` chama
+  `listarEncaminhamentosSulamerica`, e há teste de varredura que cai se outro chamar.
 - Não bloquear requisição de paciente antigo por falta de carteirinha/CRM: o legado é
   aceito de propósito (regra 21); a pendência é preencher, não barrar.
 - Não declarar `encaminhamento.data_vencimento` no `schema.prisma` sem o
@@ -2261,10 +2369,58 @@ sessões seguintes precisam do plano completo para não implementar a fase errad
 
 ## Pendências conhecidas (não bloqueiam o próximo passo, mas não esquecer)
 
-- **SulAmérica ainda cria paciente** (`autorizacoes-sulamerica.ts` →
-  `obterOuCriarPaciente`). Caminho temporário (regra 21), a resolver no próximo passo com
-  a aba de Encaminhamentos da SulAmérica. Ao resolver, tirar o arquivo da lista
-  permitida em `lib/domain/pacientes-origem.test.ts`.
+- **Migration `20261028140000_nome_do_medico_sulamerica` a aplicar no Supabase ANTES do
+  deploy.** Aditiva (coluna NULL + CHECK que NULL passa; nenhuma linha reescrita), então a
+  ordem segura é **migration antes do código**: o código antigo não lê nem grava
+  `nome_medico`; o código novo lê e grava, e sem a coluna quebra a aba Encaminhamentos
+  **e** o painel da SulAmérica (a listagem lê `a.nome_medico`). Conferir antes que o
+  `vigia_app` tem grant de tabela (não por coluna) em `autorizacao_sulamerica`. Depois:
+  `SELECT count(*), count(nome_medico) FROM autorizacao_sulamerica;` — o segundo deve ser 0.
+  Ela depende de `20261028120000_carteirinha_e_crm_do_paciente` (pendência abaixo), que
+  também precisa estar aplicada.
+- **Preencher o legado da SulAmérica (as ~50 autorizações de antes de 28/10/2026):**
+  carteirinha, CRM e **nome do médico**. Pela aba `/sulamerica/encaminhamentos`, com o
+  mesmo nome **e a mesma data e prazo** exibidos (data ou prazo diferente substitui a
+  autorização e muda o vencimento); nesse reenvio o nome do médico e o CRM são exigidos, e
+  a carteirinha também se o paciente ainda não tiver uma. Conferir quantos faltam:
+  `SELECT count(*) FROM autorizacao_sulamerica a JOIN paciente p ON p.id = a.paciente_id
+  WHERE a.nome_medico IS NULL OR p.numero_carteirinha IS NULL OR p.crm_medico IS NULL;`.
+- **Paciente nos dois convênios compartilha carteirinha e CRM** (limitação registrada na
+  regra 20). Se a clínica precisar de carteirinha/CRM por convênio, é mudança de modelo
+  (colunas na autorização/encaminhamento, ou tabela por convênio), não ajuste.
+- **Encaminhamentos da SulAmérica: roteiro manual de navegador** (nada disto foi feito;
+  sem navegador nesta sessão). Como admin, em `/sulamerica/encaminhamentos`:
+  1. **Paciente novo com os seis campos**: nome inédito, data, prazo 6 meses, carteirinha
+     `ABC 123 45`, CRM `123.456`, médico `  Dr.  João D'Ávila-Silva `. Toast "Encaminhamento
+     cadastrado para …" com o vencimento; a linha mostra `ABC12345`, `123456` e
+     `Dr. João D'Ávila-Silva`. Paciente, carteirinha, CRM e médico voltam vazios, a data
+     volta para hoje, o prazo volta para "Escolha o prazo" e o foco volta ao nome.
+  2. **Reenvio com carteirinha em branco**: mesmo nome (rótulo "(opcional)" e placeholder
+     "Manter a cadastrada"), CRM e médico novos. Toast "atualizado", uma linha só,
+     carteirinha intacta, CRM e médico novos.
+  3. **Nome do médico vazio recusado**: qualquer paciente com o médico em branco (e depois
+     com 2 letras, e só com números) → mensagem do nome do médico, campo marcado, nada
+     gravado, digitação mantida.
+  4. **Carteirinha repetida de outro paciente**: um nome novo com a carteirinha de um
+     paciente da Klini (inclusive em minúsculas) → "Esta carteirinha já está cadastrada
+     para <nome>.", campo da carteirinha marcado; recarregar e conferir que o nome novo
+     **não** virou paciente.
+  5. **Copiar**: em cada linha, clicar o ícone ao lado da carteirinha e colar num editor
+     (só o número); idem o CRM. O ícone vira check por ~2 s; leitor de tela anuncia
+     "Carteirinha de <nome> copiada." sem ler o número. Conferir que o médico não tem botão.
+  6. **Paciente antigo**: um dos legados mostra "— falta preencher" em carteirinha, CRM e
+     médico, botões de copiar desabilitados e esmaecidos, e a dica acima da lista.
+  7. **Celular (390px)**: a lista vira blocos ("Carteirinha:", "CRM:", "Médico:"), o
+     formulário empilha, a página não rola de lado. Entre `sm` e `lg` o nome ocupa a linha
+     de cima com data e prazo embaixo; em `lg`, nome/data/prazo numa linha e
+     carteirinha/CRM/médico/botão na outra.
+  8. **Recepção sem acesso**: logado como recepção, `/sulamerica/encaminhamentos` (digitado
+     na barra) cai em `/klini/dashboard`; o menu não mostra item da SulAmérica.
+  9. **Menus separados**: como admin, o menu em `/sulamerica/*` mostra só "Painel" e
+     "Encaminhamentos" (da SulAmérica), sem nenhum item da Klini; em `/klini/*`, nenhum da
+     SulAmérica. "Trocar convênio" continua no cabeçalho das duas páginas da SulAmérica.
+  10. **Painel**: `/sulamerica/dashboard` sem formulário, com o link "Cadastrar
+      encaminhamento" para a aba nova; excluir autorização continua funcionando.
 - **Preencher carteirinha/CRM do legado.** Pacientes de antes de 28/10/2026 continuam
   recebendo requisição sem esses dados (decisão deliberada, regra 21). O preenchimento é
   pelo próprio cadastro de encaminhamento (mesmo nome **e mesma data**, ver a dica da

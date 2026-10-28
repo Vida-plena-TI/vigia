@@ -1,10 +1,15 @@
 "use client";
 
-import { useActionState, useEffect, useMemo, useRef, useState } from "react";
+import { useActionState, useEffect, useRef, useState } from "react";
 import { useFormStatus } from "react-dom";
 import { toast } from "sonner";
 
+import {
+  CampoDeCarteirinha,
+  CampoDeCrm,
+} from "@/components/campos-carteirinha-crm";
 import { Button } from "@/components/ui/button";
+import { useSituacaoDaCarteirinha } from "@/components/usar-situacao-da-carteirinha";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -16,7 +21,6 @@ import {
   ehErroDaCarteirinha,
   ehErroDoCrm,
   validarCrm,
-  type SituacaoDaCarteirinha,
 } from "@/lib/domain/carteirinha-crm";
 import {
   ERRO_DATA_OBRIGATORIA,
@@ -86,28 +90,10 @@ export function FormularioDeEncaminhamento({
   // é a resposta do servidor.
   const erroExibido = erroLocal ?? estado.erro;
 
-  // Chave `toLowerCase()` para casar com o get-or-create, que compara por
-  // `lower(nome)`. Pode discordar do Postgres em letra exótica; aí o pior caso
-  // é a dica errada, e o servidor responde com a frase certa.
-  const temCarteirinhaPorNome = useMemo(
-    () =>
-      new Map(
-        pacientes.map((paciente) => [
-          paciente.nome.toLowerCase(),
-          paciente.temCarteirinha,
-        ]),
-      ),
-    [pacientes],
+  const situacaoDaCarteirinha = useSituacaoDaCarteirinha(
+    pacientes,
+    pacienteNome,
   );
-  const temCarteirinha = temCarteirinhaPorNome.get(
-    pacienteNome.trim().toLowerCase(),
-  );
-  const situacaoDaCarteirinha: SituacaoDaCarteirinha =
-    temCarteirinha === undefined
-      ? "paciente-novo"
-      : temCarteirinha
-        ? "com-carteirinha"
-        : "sem-carteirinha";
   const carteirinhaOpcional = situacaoDaCarteirinha === "com-carteirinha";
 
   useEffect(() => {
@@ -256,60 +242,24 @@ export function FormularioDeEncaminhamento({
           />
         </div>
 
-        <div className="flex flex-col gap-1.5 sm:w-48">
-          <Label htmlFor="numeroCarteirinha" className="text-xs">
-            Nº da carteirinha
-            {carteirinhaOpcional ? (
-              <span className="font-normal text-muted-foreground">
-                (opcional)
-              </span>
-            ) : null}
-          </Label>
-          <Input
-            id="numeroCarteirinha"
-            name="numeroCarteirinha"
-            autoComplete="off"
-            spellCheck={false}
-            maxLength={40}
-            className="h-9"
-            value={numeroCarteirinha}
-            placeholder={
-              carteirinhaOpcional ? "Manter a cadastrada" : undefined
-            }
-            aria-describedby="numeroCarteirinha-apoio"
-            aria-invalid={ehErroDaCarteirinha(erroExibido) ? true : undefined}
-            onChange={(evento) => {
-              setMensagemDeSucesso(null);
-              setNumeroCarteirinha(evento.target.value);
-            }}
-          />
-          <p
-            id="numeroCarteirinha-apoio"
-            className="text-xs text-muted-foreground"
-          >
-            Opcional se o paciente já tem carteirinha cadastrada.
-          </p>
-        </div>
+        <CampoDeCarteirinha
+          valor={numeroCarteirinha}
+          opcional={carteirinhaOpcional}
+          invalido={ehErroDaCarteirinha(erroExibido)}
+          aoMudar={(valor) => {
+            setMensagemDeSucesso(null);
+            setNumeroCarteirinha(valor);
+          }}
+        />
 
-        <div className="flex flex-col gap-1.5 sm:w-32">
-          <Label htmlFor="crmMedico" className="text-xs">
-            CRM do médico
-          </Label>
-          <Input
-            id="crmMedico"
-            name="crmMedico"
-            inputMode="numeric"
-            autoComplete="off"
-            maxLength={20}
-            className="h-9"
-            value={crmMedico}
-            aria-invalid={ehErroDoCrm(erroExibido) ? true : undefined}
-            onChange={(evento) => {
-              setMensagemDeSucesso(null);
-              setCrmMedico(evento.target.value);
-            }}
-          />
-        </div>
+        <CampoDeCrm
+          valor={crmMedico}
+          invalido={ehErroDoCrm(erroExibido)}
+          aoMudar={(valor) => {
+            setMensagemDeSucesso(null);
+            setCrmMedico(valor);
+          }}
+        />
 
         {/* Espaço da altura do rótulo, para o botão ficar na linha dos campos. */}
         <div className="flex flex-col gap-1.5">

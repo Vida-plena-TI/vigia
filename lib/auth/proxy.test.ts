@@ -211,6 +211,7 @@ describe("proxy — acesso por papel", () => {
     "/klini/encaminhamentos/qualquer-coisa",
     "/sulamerica",
     "/sulamerica/dashboard",
+    "/sulamerica/encaminhamentos",
     "/sulamerica/qualquer/subrota",
   ];
 

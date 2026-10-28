@@ -42,14 +42,24 @@ describe("itensDeNavegacaoPara", () => {
     "/sulamerica/dashboard",
     "/sulamerica/futura/subpagina",
     "/sulamerica?busca=klini",
-  ])("admin ve so o Painel SulAmerica em %s", (caminho) => {
+    "/sulamerica/encaminhamentos",
+  ])("admin ve so os itens SulAmerica (Painel e Encaminhamentos) em %s", (caminho) => {
     expect(itensDeNavegacaoPara("admin", caminho)).toEqual([
       { href: "/sulamerica/dashboard", rotulo: "Painel" },
+      { href: "/sulamerica/encaminhamentos", rotulo: "Encaminhamentos" },
     ]);
   });
 
   it("recepcao continua sem itens SulAmerica", () => {
     expect(itensDeNavegacaoPara("recepcao", "/sulamerica/dashboard")).toEqual([]);
+    expect(itensDeNavegacaoPara("recepcao", "/sulamerica/encaminhamentos")).toEqual([]);
+  });
+
+  it("menu Klini nao aponta para SulAmerica, e vice-versa", () => {
+    const klini = itensDeNavegacaoPara("admin", "/klini/encaminhamentos").map((i) => i.href);
+    const sulamerica = itensDeNavegacaoPara("admin", "/sulamerica/encaminhamentos").map((i) => i.href);
+    expect(klini.every((href) => href.startsWith("/klini/"))).toBe(true);
+    expect(sulamerica.every((href) => href.startsWith("/sulamerica/"))).toBe(true);
   });
 
   it.each([

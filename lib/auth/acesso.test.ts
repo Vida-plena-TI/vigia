@@ -12,11 +12,18 @@ import {
   ROTAS_DA_RECEPCAO,
   ROTA_ENCAMINHAMENTOS,
   ROTA_NOVA_REQUISICAO,
+  ROTA_SULAMERICA,
+  ROTA_SULAMERICA_ENCAMINHAMENTOS,
   podeAcessarRota,
   podeAlterarSituacaoDeRequisicao,
 } from "./acesso";
 
-const ROTAS_RESTRITAS = [ROTA_NOVA_REQUISICAO, ROTA_ENCAMINHAMENTOS];
+const ROTAS_RESTRITAS = [
+  ROTA_NOVA_REQUISICAO,
+  ROTA_ENCAMINHAMENTOS,
+  ROTA_SULAMERICA,
+  ROTA_SULAMERICA_ENCAMINHAMENTOS,
+];
 
 describe("podeAcessarRota — admin", () => {
   it("alcanca todas as rotas que existem hoje", () => {

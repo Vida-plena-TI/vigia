@@ -134,27 +134,10 @@ export async function buscarPacientePorNome(
 }
 
 /**
- * Nomes de pacientes para o `datalist` dos formulários.
- *
- * Só o nome: o `datalist` sugere texto, e o paciente é resolvido no servidor
- * pelo nome mesmo (get-or-create), não por id. Mandar o id junto daria a falsa
- * impressão de que escolher da lista é diferente de digitar o nome inteiro.
- */
-export async function listarNomesDePacientes(): Promise<string[]> {
-  const pacientes = await getPrismaClient().$queryRaw<{ nome: string }[]>`
-    SELECT "nome" FROM "paciente" ORDER BY lower("nome"), "id"
-  `;
-
-  return pacientes.map((paciente) => paciente.nome);
-}
-
-/**
  * Nomes para o `datalist` de "Nova requisição": só quem **já tem
  * encaminhamento** (regra 15) — os demais seriam recusados de qualquer jeito.
  *
- * Separada de {@link listarNomesDePacientes} para não mudar o que atendimento
- * e SulAmérica sugerem. Só o nome: nada de carteirinha nem CRM vai para o
- * cliente por aqui. É sugestão de tela; quem decide é a transação da
+ * Só o nome: nada de carteirinha nem CRM vai para o cliente por aqui. É sugestão de tela; quem decide é a transação da
  * requisição.
  */
 export async function listarNomesParaRequisicao(): Promise<string[]> {
@@ -185,9 +168,11 @@ export type PacienteParaEncaminhamento = {
 };
 
 /**
- * Nomes de pacientes para o formulário de encaminhamento.
+ * Nomes de pacientes para os dois formulários de encaminhamento (Klini e
+ * SulAmérica), todos os pacientes.
  *
- * Igual a {@link listarNomesDePacientes}, mais um booleano: com ele o campo da
+ * Só o nome — o `datalist` sugere texto, e o paciente é resolvido no servidor
+ * pelo nome (get-or-create), não por id — mais um booleano: com ele o campo da
  * carteirinha aparece como opcional quando o nome digitado é de quem já tem
  * uma (regra 20). É dica de tela; quem decide é a transação do cadastro.
  */

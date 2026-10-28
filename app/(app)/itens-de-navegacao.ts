@@ -2,6 +2,7 @@ import {
   ROTA_ENCAMINHAMENTOS,
   ROTA_NOVA_REQUISICAO,
   ROTA_SULAMERICA,
+  ROTA_SULAMERICA_ENCAMINHAMENTOS,
   podeAcessarRota,
 } from "@/lib/auth/acesso";
 import type { PapelUsuario } from "@/lib/auth/papel";
@@ -25,6 +26,7 @@ const ITENS_KLINI = [
 
 const ITENS_SULAMERICA = [
   { href: ROTA_SULAMERICA, rotulo: "Painel" },
+  { href: ROTA_SULAMERICA_ENCAMINHAMENTOS, rotulo: "Encaminhamentos" },
 ] as const;
 
 const MENUS = [

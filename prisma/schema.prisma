@@ -208,6 +208,10 @@ model AutorizacaoSulamerica {
   dataInicio     DateTime  @map("data_inicio") @db.Date
   prazoMeses     Int       @map("prazo_meses")
   dataVencimento DateTime? @default(dbgenerated("((data_inicio + ((prazo_meses)::double precision * '1 mon'::interval)))::date")) @map("data_vencimento") @db.Date
+  /// Nome do medico do encaminhamento SulAmerica. NULL nas autorizacoes de
+  /// antes de 28/10/2026; obrigatorio so no formulario. CHECK de tamanho na
+  /// migration `20261028140000_nome_do_medico_sulamerica`.
+  nomeMedico     String?   @map("nome_medico")
 
   paciente Paciente @relation(fields: [pacienteId], references: [id], onDelete: Restrict)
 
