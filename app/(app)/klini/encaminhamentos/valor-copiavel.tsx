@@ -1,7 +1,6 @@
 "use client";
 
 import { BotaoDeCopiar } from "@/components/botao-de-copiar";
-import { cn } from "@/lib/utils";
 
 /** Os dois dados do paciente que a lista mostra com botão de copiar. */
 export type CampoCopiavel = "carteirinha" | "crm";
@@ -41,9 +40,9 @@ export function ValorCopiavel({
   valor: string | null;
   pacienteNome: string;
   /**
-   * `tabela`: botão compacto "Copiar" (o cabeçalho da coluna já diz qual campo).
-   * `bloco`: celular — título do campo por escrito e botão com rótulo completo
-   * e área de toque maior.
+   * `tabela`: só o número, porque o cabeçalho da coluna já diz qual campo é.
+   * `bloco`: celular — "Carteirinha:" / "CRM:" por escrito antes do número.
+   * O botão é o mesmo nas duas: só o ícone.
    */
   forma: "tabela" | "bloco";
 }) {
@@ -51,13 +50,12 @@ export function ValorCopiavel({
   // O banco já grava normalizado; o `trim` é só para nunca colar espaço.
   const texto = valor?.trim() ?? "";
   const faltaPreencher = texto === "";
+  const rotuloAcessivel = `Copiar ${nome.rotulo} de ${pacienteNome}`;
 
   return (
     <div
-      className={cn(
-        "flex flex-wrap items-center gap-x-2 gap-y-1",
-        forma === "bloco" && "justify-between",
-      )}
+      // Número e ícone colados (`gap-x-1`): o botão é do número ao lado dele.
+      className="flex flex-wrap items-center gap-x-1 gap-y-0.5"
     >
       <span className="min-w-0 text-sm">
         {forma === "bloco" ? (
@@ -73,15 +71,18 @@ export function ValorCopiavel({
         )}
       </span>
 
+      {/*
+        Só o ícone, como no painel. Quem não enxerga ouve o `aria-label`; quem
+        usa mouse vê o mesmo texto no `title`. 36×36px (`icon-lg`) na tabela e
+        nos blocos: menor que isso o dedo erra no celular.
+      */}
       <BotaoDeCopiar
         texto={texto}
-        rotulo={forma === "bloco" ? `Copiar ${nome.rotulo}` : "Copiar"}
-        rotuloAcessivel={`Copiar ${nome.rotulo} de ${pacienteNome}`}
+        rotuloAcessivel={rotuloAcessivel}
+        title={rotuloAcessivel}
         aviso={`${nome.titulo} de ${pacienteNome} ${nome.copiado}.`}
         disabled={faltaPreencher}
-        size={forma === "bloco" ? "lg" : "sm"}
-        // 40px de altura no celular: o dedo acerta sem mirar.
-        className={forma === "bloco" ? "h-10 min-w-[10.5rem]" : undefined}
+        size="icon-lg"
       />
     </div>
   );

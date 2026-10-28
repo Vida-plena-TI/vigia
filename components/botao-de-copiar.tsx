@@ -20,9 +20,11 @@ import { useCopiaParaAreaDeTransferencia } from "./usar-copia";
  * rótulo, sem espaço sobrando.
  *
  * Duas formas:
- * - sem `rotulo`, só o ícone (o cabeçalho do paciente no painel);
+ * - sem `rotulo`, só o ícone (o cabeçalho do paciente no painel, a
+ *   carteirinha e o CRM em Encaminhamentos);
  * - com `rotulo`, ícone e texto, e o texto vira "Copiado" durante a
- *   confirmação.
+ *   confirmação. Nenhuma tela usa hoje; fica para quando o ícone sozinho não
+ *   bastar.
  *
  * O aviso de sucesso é a troca de silhueta do ícone (e da palavra), não uma
  * cor: teal, âmbar e carmim são reservados para status (CONTEXT.md, "Sistema
@@ -34,6 +36,7 @@ export function BotaoDeCopiar({
   rotuloAcessivel,
   aviso,
   rotulo,
+  title,
   disabled = false,
   size,
   className,
@@ -49,6 +52,11 @@ export function BotaoDeCopiar({
   aviso?: string;
   /** Texto visível ao lado do ícone. Sem ele, o botão é só ícone. */
   rotulo?: string;
+  /**
+   * Dica ao passar o mouse. Útil no botão só com ícone, em que quem enxerga
+   * não tem texto nenhum dizendo o que ele copia.
+   */
+  title?: string;
   disabled?: boolean;
   size?: "sm" | "default" | "lg" | "icon-sm" | "icon" | "icon-lg";
   className?: string;
@@ -65,6 +73,7 @@ export function BotaoDeCopiar({
         size={size ?? (rotulo ? "sm" : "icon-sm")}
         className={cn(rotulo && "min-w-[6.5rem]", className)}
         aria-label={rotuloAcessivel}
+        title={title}
         disabled={disabled}
         onClick={() => copiar(texto)}
       >

@@ -85,9 +85,17 @@ describe("lista de encaminhamentos — carteirinha e CRM", () => {
       expect(tag).not.toContain('disabled=""');
     }
 
-    // No bloco do celular o rótulo visível é o completo.
-    expect(saida).toContain("Copiar carteirinha</button>");
-    expect(saida).toContain("Copiar CRM</button>");
+    // Só o ícone: o nome do botão vem do aria-label, repetido no title, e a
+    // área de toque é a de `icon-lg` (36×36px), na tabela e nos blocos.
+    for (const tag of [...carteirinha, ...crm]) {
+      expect(tag).toContain('data-size="icon-lg"');
+    }
+    expect(carteirinha[0]).toContain('title="Copiar carteirinha de Fulano"');
+    expect(crm[0]).toContain('title="Copiar CRM de Fulano"');
+    expect(saida).not.toMatch(/>Copiar[^<]*<\/button>/);
+    expect(
+      saida.match(/<button[^>]*><svg[^]*?<\/svg><\/button>/g),
+    ).toHaveLength(4);
     expect(saida).not.toContain("falta preencher");
     expect(saida).not.toContain('id="dica-falta-preencher"');
   });

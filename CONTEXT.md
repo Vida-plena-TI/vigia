@@ -390,11 +390,15 @@ teste passar hoje e mentir no mês que vem.
     "Não foi possível copiar. Selecione o texto e copie manualmente." — **sem** repetir o
     valor. Vale também para o painel, que antes só mostrava o toast sem tentar o plano B.
   - **Lista**: colunas "Carteirinha" e "CRM" (`valor-copiavel.tsx`) entre "Situação" e
-    "Ações". Na tabela, número + botão "Copiar"; nos blocos do celular, "Carteirinha:" /
-    "CRM:" + botão "Copiar carteirinha" / "Copiar CRM" com 40px de altura. `aria-label`
-    sempre "Copiar carteirinha de <nome>" / "Copiar CRM de <nome>"; ao copiar, rótulo vira
-    "Copiado" e ícone vira `Check` por 2s, e a região `aria-live="polite"` anuncia
-    "Carteirinha de <nome> copiada." (não o número). Copia `valor.trim()`, nada mais.
+    "Ações". Número e, colado nele (`gap-x-1`), botão **só com ícone** (mesma variante do
+    painel, sem `rotulo`), 36×36px (`icon-lg`) na tabela e nos blocos; nos blocos do
+    celular o número vem precedido de "Carteirinha:" / "CRM:". `aria-label` e `title`
+    (prop opcional nova do botão, que o painel não usa) sempre "Copiar carteirinha de
+    <nome>" / "Copiar CRM de <nome>"; ao copiar, o ícone vira `Check` por 2s e a região
+    `aria-live="polite"` anuncia "Carteirinha de <nome> copiada." (não o número). Copia
+    `valor.trim()`, nada mais. (A primeira versão tinha texto "Copiar" visível ao lado do
+    ícone; tirado a pedido no mesmo dia. A variante com `rotulo` continua no componente,
+    sem uso.)
   - **Falta preencher**: "—" (`aria-hidden`) + "falta preencher" em texto, botão
     desabilitado; cada campo decide sozinho. Uma dica única acima da lista (só quando
     alguém está incompleto, contada sobre a lista inteira e não sobre o filtro) explica
@@ -2179,16 +2183,17 @@ sessões seguintes precisam do plano completo para não implementar a fase errad
   4. **Paciente antigo sem carteirinha** (algum de antes de 28/10/2026): nome dele com a
      carteirinha em branco → "Este paciente ainda não tem carteirinha cadastrada.
      Informe o número."
-  5. **Copiar**: em cada linha, clicar "Copiar" da carteirinha, colar num campo de texto
-     qualquer (a busca da própria tela serve) e conferir que veio **só** o número, sem
-     rótulo nem espaço; repetir com o CRM. Conferir que o botão vira "Copiado" com o
-     ícone de check por ~2s e volta, e (com leitor de tela, se possível) o anúncio
+  5. **Copiar**: em cada linha, clicar o ícone de copiar ao lado da carteirinha (passar
+     o mouse mostra "Copiar carteirinha de <nome>"), colar num campo de texto qualquer (a
+     busca da própria tela serve) e conferir que veio **só** o número, sem rótulo nem
+     espaço; repetir com o CRM. Conferir que o ícone vira check por ~2s e volta, e (com leitor de tela, se possível) o anúncio
      "Carteirinha de <nome> copiada.".
   6. **Paciente antigo na lista**: "— falta preencher" nas duas colunas, botões
      desabilitados, dica acima da lista. Registrar de novo com mesmo nome, mesma data,
      carteirinha e CRM: a linha fica completa e a dica some se era o último.
-  7. **Celular (390px)**: a lista vira blocos com "Carteirinha:" / "CRM:" e botões
-     "Copiar carteirinha" / "Copiar CRM" fáceis de tocar; nada rola de lado. Conferir
+  7. **Celular (390px)**: a lista vira blocos com "Carteirinha:" / "CRM:", número e
+     ícone de copiar fácil de tocar (36×36px), com carteirinha longa quebrando sem
+     empurrar o ícone para fora; nada rola de lado. Conferir
      também ~700px (formulário em duas linhas, lista em blocos) e ≥1024px (tabela).
   8. **Plano B**: abrir o sistema por `http://<ip-da-máquina>:3000` (fora de contexto
      seguro) e copiar — deve funcionar pelo `execCommand`; se não, aparece o toast de

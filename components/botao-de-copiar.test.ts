@@ -39,6 +39,25 @@ describe("BotaoDeCopiar", () => {
     expect(saida).toMatch(/<button[^>]*><svg[^]*?<\/svg><\/button>/);
   });
 
+  it("title opcional, com o mesmo texto do aria-label", () => {
+    const comTitle = html({
+      texto: "ABC12345",
+      rotuloAcessivel: "Copiar carteirinha de Fulano",
+      title: "Copiar carteirinha de Fulano",
+      size: "icon-lg",
+    });
+    const semTitle = html({
+      texto: "Ana - 2026-0001",
+      rotuloAcessivel: "Copiar nome e número da requisição de Ana",
+    });
+
+    expect(comTitle).toContain('title="Copiar carteirinha de Fulano"');
+    expect(comTitle).toContain('data-size="icon-lg"');
+    // O do painel continua como era: sem title, `icon-sm`.
+    expect(semTitle).not.toContain("title=");
+    expect(semTitle).toContain('data-size="icon-sm"');
+  });
+
   it("a região aria-live existe antes do clique, vazia", () => {
     const saida = html({
       texto: "ABC12345",
