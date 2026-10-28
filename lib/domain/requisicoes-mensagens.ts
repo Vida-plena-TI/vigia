@@ -120,6 +120,16 @@ export function mensagemDeCriacao(
 export const ERRO_SEM_ENCAMINHAMENTO =
   "Paciente sem encaminhamento cadastrado. Cadastre o encaminhamento antes de criar uma requisição.";
 
+/**
+ * Recusa do nome que não é de paciente nenhum (desde 28/10/2026).
+ *
+ * "Nova requisição" não cria paciente: ele só nasce pelo cadastro de
+ * encaminhamento. O texto não repete o nome digitado nem sugere parecidos —
+ * não confirma nada sobre outros pacientes.
+ */
+export const ERRO_PACIENTE_NAO_CADASTRADO =
+  "Paciente não cadastrado. Cadastre primeiro o encaminhamento em Encaminhamentos.";
+
 export const ERRO_REQUISICAO_ID_INVALIDO = "Identificador de requisição inválido.";
 export const ERRO_SITUACAO_INVALIDA =
   "Situação inválida. Use \"solicitada\" ou \"aprovada\".";

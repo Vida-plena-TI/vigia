@@ -46,7 +46,13 @@ function emDias(n: number): Date {
 
 /**
  * Get-or-create de paciente por nome, case-insensitive e com trim — a mesma
- * regra do banco (`UNIQUE (lower(nome))`) e do fluxo de criar requisicao.
+ * regra do banco (`UNIQUE (lower(nome))`).
+ *
+ * So para o seed de desenvolvimento, com nomes ficticios. Na aplicacao,
+ * paciente so nasce pelo cadastro de encaminhamento; "Nova requisicao" nao
+ * cria paciente. Estes pacientes nao ganham encaminhamento aqui, entao nao
+ * aparecem na sugestao de "Nova requisicao" e nao recebem requisicao nova pela
+ * tela ate alguem cadastrar o encaminhamento deles.
  */
 async function getOrCreatePaciente(nomeBruto: string) {
   const nome = nomeBruto.trim();

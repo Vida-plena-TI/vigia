@@ -1,16 +1,16 @@
 /**
  * Cadastro de requisição com o banco dublado.
  *
- * O que está sob teste é a decisão do nosso código: quando reaproveitar um
- * paciente, qual dos dois desfechos tomar diante de um número que aquele
- * paciente já tem (criar a requisição ou acrescentar terapias à que existe),
- * quando uma terapia repetida atualiza a guia em vez de criar outra, e
- * — o ponto principal — que a falha de uma linha de terapia **lança** de dentro
- * da transação, em vez de devolver `{ ok: false }` educadamente. Devolver seria
- * pior do que parece: o paciente recém-criado ficaria no banco, órfão, porque
- * nada teria mandado o Postgres desfazer.
+ * O que está sob teste é a decisão do nosso código: que o paciente é só
+ * **procurado** (nunca criado — desde 28/10/2026 ele nasce pelo
+ * encaminhamento), qual dos dois desfechos tomar diante de um número que
+ * aquele paciente já tem (criar a requisição ou acrescentar terapias à que
+ * existe), quando uma terapia repetida atualiza a guia em vez de criar outra,
+ * e que a falha de uma linha de terapia **lança** de dentro da transação, em
+ * vez de devolver `{ ok: false }` educadamente — devolver faria o Prisma
+ * commitar o que já tivesse sido escrito.
  *
- * O SQL propriamente dito (o `ON CONFLICT (lower(nome))`, a unique do número)
+ * O SQL propriamente dito (a busca por `lower(nome)`, a unique do número)
  * é problema de `requisicoes.integration.test.ts`.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -18,8 +18,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => {
   /** O "banco". Cada teste ajusta antes de chamar a action. */
   const banco = {
-    /** Paciente devolvido pelo get-or-create. */
-    paciente: { id: 10, nome: "José Silva", criado: true },
+    /** Paciente devolvido pela busca por nome; `null` = nome de ninguém. */
+    paciente: { id: 10, nome: "José Silva" } as { id: number; nome: string } | null,
     /**
      * `true` quando o paciente já tem requisição com o número pedido.
      *
@@ -88,7 +88,9 @@ const mocks = vi.hoisted(() => {
   );
 
   /**
-   * O get-or-create do paciente é a única consulta crua da função.
+   * A busca do paciente é a única consulta crua da função — e ela **não
+   * escreve**: um INSERT em `paciente` aqui é exatamente o que não pode mais
+   * acontecer.
    *
    * `valores` são os parâmetros interpolados no template — é por eles que os
    * testes conferem que o nome chegou trimado.
@@ -99,9 +101,13 @@ const mocks = vi.hoisted(() => {
 
       const sql = partes.join(" ");
 
-      if (sql.includes("ON CONFLICT")) {
+      if (/INSERT/i.test(sql)) {
         escritas.push("paciente");
-        return [banco.paciente];
+        throw new Error(`a requisicao nao pode criar paciente: ${sql}`);
+      }
+
+      if (sql.includes("FOR KEY SHARE")) {
+        return banco.paciente ? [banco.paciente] : [];
       }
 
       throw new Error(`consulta nao prevista pelo teste: ${sql}`);
@@ -174,6 +180,7 @@ vi.mock("next/cache", () => ({ refresh: mocks.refresh }));
 import {
   criarRequisicao,
   ERRO_NUMERO_OBRIGATORIO,
+  ERRO_PACIENTE_NAO_CADASTRADO,
   ERRO_PACIENTE_OBRIGATORIO,
   ERRO_QTD_INVALIDA,
   ERRO_SEM_ENCAMINHAMENTO,
@@ -203,7 +210,7 @@ function entrada(
 
 beforeEach(() => {
   vi.clearAllMocks();
-  mocks.banco.paciente = { id: 10, nome: "José Silva", criado: true };
+  mocks.banco.paciente = { id: 10, nome: "José Silva" };
   mocks.banco.numeroJaExiste = false;
   mocks.banco.temEncaminhamento = true;
   mocks.banco.terapiasExistentes = [1, 2];
@@ -211,10 +218,8 @@ beforeEach(() => {
   mocks.escritas.length = 0;
 });
 
-describe("criarRequisicao — paciente novo vs. existente", () => {
-  it("cria a requisição em um paciente novo", async () => {
-    mocks.banco.paciente = { id: 10, nome: "José Silva", criado: true };
-
+describe("criarRequisicao — paciente só é procurado, nunca criado", () => {
+  it("cria a requisição no paciente encontrado", async () => {
     const resultado = await criarRequisicao(entrada());
 
     expect(resultado).toEqual({
@@ -222,23 +227,58 @@ describe("criarRequisicao — paciente novo vs. existente", () => {
       requisicaoId: 99,
       numeroRequisicao: "2026-001",
       pacienteNome: "José Silva",
-      pacienteCriado: true,
       requisicaoCriada: true,
       terapiasAdicionadas: 1,
       terapiasAtualizadas: 0,
     });
+    // Só a requisição foi escrita; nada em `paciente`.
+    expect(mocks.escritas).toEqual(["requisicao"]);
+  });
+
+  it("recusa o nome que não é de paciente nenhum, sem escrever nada", async () => {
+    mocks.banco.paciente = null;
+
+    const resultado = await criarRequisicao(
+      entrada({ pacienteNome: "Nome Nunca Visto" }),
+    );
+
+    expect(resultado).toEqual({ ok: false, erro: ERRO_PACIENTE_NAO_CADASTRADO });
+    expect(mocks.escritas).toEqual([]);
+    // Nem chega a perguntar por encaminhamento, número ou terapias.
+    expect(mocks.buscarEncaminhamento).not.toHaveBeenCalled();
+    expect(mocks.buscarRequisicao).not.toHaveBeenCalled();
+    expect(mocks.criarRequisicao).not.toHaveBeenCalled();
+  });
+
+  it("a mensagem de não cadastrado não repete o nome digitado", async () => {
+    mocks.banco.paciente = null;
+
+    const resultado = await criarRequisicao(
+      entrada({ pacienteNome: "Fulano Inexistente" }),
+    );
+
+    expect(resultado.ok).toBe(false);
+    expect(JSON.stringify(resultado)).not.toContain("Fulano");
+  });
+
+  it("procura o paciente com lock, sem INSERT", async () => {
+    await criarRequisicao(entrada());
+
+    const [partes] = mocks.consultar.mock.calls[0];
+    const sql = (partes as TemplateStringsArray).join(" ");
+    expect(sql).toContain("FOR KEY SHARE");
+    expect(sql).not.toMatch(/INSERT/i);
   });
 
   it("reaproveita o paciente existente em vez de criar outro", async () => {
-    // O `ON CONFLICT ... DO NOTHING` não inseriu: o nome já estava lá, com
-    // outra caixa.
-    mocks.banco.paciente = { id: 7, nome: "José Silva", criado: false };
+    // A busca achou o nome com outra caixa.
+    mocks.banco.paciente = { id: 7, nome: "José Silva" };
 
     const resultado = await criarRequisicao(
       entrada({ pacienteNome: "JOSÉ SILVA" }),
     );
 
-    expect(resultado).toMatchObject({ ok: true, pacienteCriado: false });
+    expect(resultado).toMatchObject({ ok: true });
     // O nome devolvido é o que já estava no banco, não o que foi digitado —
     // é ele que o dashboard mostra.
     expect(resultado).toMatchObject({ pacienteNome: "José Silva" });
@@ -257,9 +297,9 @@ describe("criarRequisicao — paciente novo vs. existente", () => {
       }),
     );
 
-    // O nome trimado é o que vai para o get-or-create; sem isso "José Silva "
-    // e "José Silva" virariam dois pacientes, e o índice `lower(nome)` não
-    // pegaria a diferença (o espaço não é caixa).
+    // O nome trimado é o que vai para a busca; sem isso "José Silva " não
+    // acharia "José Silva" — o espaço não é caixa, e `lower(nome)` não o
+    // ignora.
     const [, nome] = mocks.consultar.mock.calls[0];
     expect(nome).toBe("José Silva");
 
@@ -291,7 +331,6 @@ describe("criarRequisicao — número que o paciente já tem", () => {
       requisicaoId: 42,
       numeroRequisicao: "2026-001",
       pacienteNome: "José Silva",
-      pacienteCriado: true,
       requisicaoCriada: false,
       terapiasAdicionadas: 2,
       terapiasAtualizadas: 0,
@@ -307,7 +346,7 @@ describe("criarRequisicao — número que o paciente já tem", () => {
     // `(paciente_id, numero_requisicao)`. O ramo que acrescenta nem chega a
     // tentá-lo — não há duplicata a evitar, há um INSERT que não acontece.
     expect(mocks.criarRequisicao).not.toHaveBeenCalled();
-    expect(mocks.escritas).toEqual(["paciente", "requisicao_terapia"]);
+    expect(mocks.escritas).toEqual(["requisicao_terapia"]);
   });
 
   it("grava as linhas novas sob o requisicao_id que já existia", async () => {
@@ -544,8 +583,8 @@ describe("criarRequisicao — rollback quando uma linha falha", () => {
       entrada({
         linhas: [
           { terapiaId: 1, qtdAutorizada: 10, validade: null },
-          // Só descoberta contra o banco, depois de o paciente já ter sido
-          // criado: é o caso que exige rollback de verdade.
+          // Só descoberta contra o banco, depois das checagens do paciente:
+          // é o caso que exige rollback de verdade.
           { terapiaId: 404, qtdAutorizada: 4, validade: null },
         ],
       }),
@@ -557,7 +596,6 @@ describe("criarRequisicao — rollback quando uma linha falha", () => {
       linha: 1,
     });
     expect(mocks.criarRequisicao).not.toHaveBeenCalled();
-    // Nenhum paciente órfão: a escrita do paciente foi descartada junto.
     expect(mocks.escritas).toEqual([]);
   });
 
@@ -596,20 +634,17 @@ describe("criarRequisicao — encaminhamento obrigatório (regra 15)", () => {
     expect(resultado).toEqual({ ok: false, erro: ERRO_SEM_ENCAMINHAMENTO });
   });
 
-  it("não deixa paciente órfão quando o nome era novo", async () => {
+  it("paciente existente sem encaminhamento não escreve nada", async () => {
     mocks.banco.temEncaminhamento = false;
-    mocks.banco.paciente = { id: 77, nome: "Nome Nunca Visto", criado: true };
 
-    await criarRequisicao(entrada({ pacienteNome: "Nome Nunca Visto" }));
+    await criarRequisicao(entrada());
 
-    // O get-or-create chegou a escrever o paciente; o `throw` o desfez junto
-    // com a transação. É a diferença entre lançar e devolver `{ ok: false }`.
     expect(mocks.escritas).toEqual([]);
     expect(mocks.criarRequisicao).not.toHaveBeenCalled();
   });
 
   it("pergunta pelo paciente resolvido, não pelo nome digitado", async () => {
-    mocks.banco.paciente = { id: 33, nome: "José Silva", criado: false };
+    mocks.banco.paciente = { id: 33, nome: "José Silva" };
 
     await criarRequisicao(entrada());
 

@@ -38,8 +38,9 @@ Sistema de controle de autorizações de terapia de uma clínica.
 
 ## Entidades
 
-- **paciente**: id, nome (texto, indexado). Get-or-create por nome, comparação
-  case-insensitive, nome sempre trimado antes de salvar/buscar. **Único case-insensitive**
+- **paciente**: id, nome (texto, indexado). **Só nasce pelo cadastro de encaminhamento**
+  (regra 21): get-or-create por nome ali, busca sem criação em "Nova requisição";
+  comparação case-insensitive, nome sempre trimado antes de salvar/buscar. **Único case-insensitive**
   no banco via índice `UNIQUE (lower(nome))`. Desde 28/10/2026 também
   **numero_carteirinha** (texto, **NULL permitido**, `CHECK ~ '^[A-Za-z0-9]{5,25}$'`,
   único sem caixa via `UNIQUE (lower(numero_carteirinha)) WHERE numero_carteirinha IS NOT
@@ -64,8 +65,8 @@ Sistema de controle de autorizações de terapia de uma clínica.
 - **encaminhamento**: id, paciente_id (FK, `RESTRICT` como as demais, **`UNIQUE`**),
   data_encaminhamento (date, NOT NULL), data_vencimento (date, **coluna gerada pelo
   Postgres** — ver "Vencimento de encaminhamento" abaixo). Um encaminhamento sempre
-  pertence a um paciente já existente ou recém-criado pelo mesmo get-or-create por nome
-  das requisições. **Um paciente tem no máximo um encaminhamento**: cadastrar outro
+  pertence a um paciente já existente ou recém-criado pelo get-or-create por nome do
+  próprio cadastro de encaminhamento — o único lugar do Klini que cria paciente. **Um paciente tem no máximo um encaminhamento**: cadastrar outro
   substitui o anterior (regra 13). O status de vencimento não é coluna — vem da view
   `encaminhamento_status`.
 
@@ -186,7 +187,8 @@ teste passar hoje e mentir no mês que vem.
    cookie de sessão. O `proxy.ts` as dispensa da triagem; a proteção continua sendo a
    checagem do segredo dentro do route handler. Ver "Cron interceptado pelo proxy" nas
    decisões de implementação.
-5. Criar requisição: get-or-create do paciente + criar `requisicao` + criar N linhas de
+5. Criar requisição: **busca** do paciente (sem criar — regra 21) + checagem do
+   encaminhamento (regra 15) + criar `requisicao` + criar N linhas de
    `requisicao_terapia`, tudo em **uma transação atômica**.
    **Uma requisição é uma pasta numerada, não um evento.** Terapias entram nela ao longo
    do tempo, e não só no minuto em que ela nasce. Por isso o cadastro tem dois desfechos,
@@ -257,18 +259,30 @@ teste passar hoje e mentir no mês que vem.
     linha existia **antes** de gravar).
 14. Status de encaminhamento é comparação de **mês**, não de dias — ver "Status de
     encaminhamento" acima para os quatro limiares exatos.
-15. **Encaminhamento é pré-requisito de requisição.** Não se cria requisição para um
-    paciente que não tenha uma linha em `encaminhamento`. A checagem mora dentro da mesma
-    transação que faz o get-or-create do paciente (`lib/domain/requisicoes.ts`), depois de
-    resolver o `paciente_id` e antes de qualquer escrita de requisição; a recusa é lançada,
-    não devolvida, para o rollback levar junto um paciente que o get-or-create acabou de
-    criar. Vale igual para paciente já existente e para nome digitado pela primeira vez.
+15. **Encaminhamento é pré-requisito de requisição** (reforçada em 28/10/2026 pela regra
+    21). Não se cria requisição para um paciente que não tenha uma linha em
+    `encaminhamento`. Dentro da transação de `criarRequisicao`
+    (`lib/domain/requisicoes.ts`), nesta ordem e antes de qualquer escrita:
+    - `buscarPacientePorNome` procura o nome (`lower(nome) = lower($1)`, trimado) e
+      **trava a linha com `FOR KEY SHARE`**; nome de ninguém → "Paciente não
+      cadastrado. Cadastre primeiro o encaminhamento em Encaminhamentos." e **nada é
+      criado** (a requisição não cria mais paciente);
+    - paciente achado sem encaminhamento (legado de antes desta regra, ou criado pela
+      SulAmérica) → a recusa de sempre, "Paciente sem encaminhamento cadastrado.
+      Cadastre o encaminhamento antes de criar uma requisição.".
+    O lock é o mesmo `FOR KEY SHARE` que o INSERT da requisição já pediria na linha do
+    paciente, só que tomado antes das checagens: ele conflita com o `FOR UPDATE` da
+    exclusão de paciente, que é o único caminho que apaga um encaminhamento — então
+    paciente e encaminhamento não somem entre a checagem e o INSERT. Não conflita com o
+    `FOR NO KEY UPDATE` do cadastro de encaminhamento. A recusa continua **lançada**
+    (`ErroDeNegocio`), para desfazer qualquer escrita anterior da transação.
     A exigência é de **existência, não de validade**: qualquer encaminhamento serve,
     inclusive um já vencido — a consulta é à tabela `encaminhamento`, não à view
-    `encaminhamento_status`. Consequência silenciosa desta regra: `pacienteCriado` no
-    resultado de `criarRequisicao` **nunca é `true` num sucesso**, porque um paciente
-    recém-criado ali não teria como já ter encaminhamento. O campo continua existindo e
-    sendo relatado com honestidade; se um dia a regra mudar, ele volta a variar.
+    `encaminhamento_status`. **Não exige carteirinha nem CRM**: paciente antigo com
+    encaminhamento e sem esses dados continua recebendo requisição (decisão deliberada,
+    regra 21). O campo `pacienteCriado` do resultado de `criarRequisicao`, que sob esta
+    regra nunca era `true` num sucesso, **saiu** em 28/10/2026: a requisição não cria
+    paciente, então ele não teria mais o que dizer.
 16. **Exclusão de paciente é permanente, completa e sem desfazer.** A partir da listagem
     de encaminhamentos, excluir apaga o paciente inteiro — encaminhamento, requisições,
     guias e atendimentos — em `DELETE` real, numa única transação. Não há soft-delete,
@@ -357,6 +371,30 @@ teste passar hoje e mentir no mês que vem.
       copia no navegador o valor que a página já recebeu — não existe rota que devolva
       esses números. Paciente sem o dado mostra "falta preencher" e o botão desabilitado.
 
+21. **Paciente só nasce pelo cadastro de encaminhamento (28/10/2026).** No Klini, a
+    **única** forma de criar paciente é o cadastro de encaminhamento
+    (`/klini/encaminhamentos`: nome + data + carteirinha + CRM, regra 20), que chama
+    `obterOuCriarPaciente`. "Nova requisição" só procura (regra 15) e recusa nome
+    inexistente sem gravar nada. Nenhuma rota, action ou script cria paciente fora disso
+    — afirmado por `lib/domain/pacientes-origem.test.ts`, que varre `app/`, `lib/`,
+    `components/` e `scripts/`.
+    - **Exceção temporária: SulAmérica.** O cadastro de autorização
+      (`lib/domain/autorizacoes-sulamerica.ts`) ainda chama `obterOuCriarPaciente` e
+      portanto cria paciente. É temporário, até a SulAmérica ganhar a própria aba de
+      Encaminhamentos (próximo passo planejado); o teste de varredura o lista
+      explicitamente e precisa ser ajustado quando isso mudar. Um paciente criado só pela
+      SulAmérica não tem encaminhamento Klini e cai na recusa da regra 15.
+    - **Legado sem carteirinha/CRM não é bloqueado** (decisão deliberada): quem já tem
+      encaminhamento recebe requisição mesmo com `numero_carteirinha`/`crm_medico` nulos.
+      Bloquear pararia a operação da clínica até o preenchimento. Pendência: preencher
+      carteirinha/CRM do legado.
+    - **Sugestões**: o `datalist` de "Nova requisição" lista só quem tem encaminhamento
+      (`listarNomesParaRequisicao`, em `pacientes.ts`). `listarNomesDePacientes` segue
+      igual, para atendimento e SulAmérica. É sugestão; quem decide é a transação.
+    - O seed de desenvolvimento (`prisma/seed.ts`) cria pacientes **fictícios** pelo
+      Prisma, sem encaminhamento — fica, por ser só de desenvolvimento.
+      `scripts/seed-terapias.ts` não toca em paciente.
+
 ## Decisões assumidas (perguntas em aberto no relatório de auditoria original)
 
 - `paciente.nome`: único case-insensitive no banco.
@@ -372,6 +410,49 @@ teste passar hoje e mentir no mês que vem.
 - Edição de atendimento para 0 créditos continua permitida.
 
 ## Decisões tomadas durante a implementação (não estavam no relatório original)
+
+- **Paciente só pelo encaminhamento (28/10/2026, branch
+  `feat/paciente-so-por-encaminhamento`, a partir de `feat/carteirinha-crm-klini-ui` em
+  `b922691`; sem commit, sem merge, sem push).** Regras 15 (reforçada) e 21.
+  - **Chamadores de `obterOuCriarPaciente` antes:** `encaminhamentos.ts` (Klini),
+    `autorizacoes-sulamerica.ts` (SulAmérica), `requisicoes.ts` (Nova requisição) e
+    `requisicoes.integration.test.ts` (preparo de um teste). **Depois:** só os dois
+    primeiros. `requisicoes.ts` passou a `buscarPacientePorNome`; o teste insere o
+    paciente direto com `tx.paciente.create` (fixture sintética, não caminho de produto).
+    `prisma/seed.ts` tem um get-or-create próprio para os pacientes fictícios do seed.
+  - **`buscarPacientePorNome(tx, nome)`** em `pacientes.ts`, ao lado do get-or-create e
+    com a mesma expressão de comparação. Devolve `{ id, nome }` ou `null`, com
+    `FOR KEY SHARE`. Por que travar: sem lock, uma exclusão de paciente commitando entre a
+    checagem e o INSERT faria o INSERT estourar na FK (erro cru). O lock é o que o INSERT
+    já pediria, adiantado; ordem paciente → filhos, a mesma da exclusão, então não há
+    ciclo novo. No ramo "acrescenta à requisição existente" isto é lock **novo** na linha
+    do paciente (antes esse ramo só travava guias/requisição) — compatível com tudo,
+    exceto o `FOR UPDATE` da exclusão, que é o objetivo.
+  - **Mensagem nova** `ERRO_PACIENTE_NAO_CADASTRADO` em `requisicoes-mensagens.ts`. Não
+    repete o nome digitado nem sugere parecidos. As duas recusas (não cadastrado / sem
+    encaminhamento) dizem, a quem é admin, se aquele nome existe como paciente — é o que
+    foi pedido, e a tela é só de admin.
+  - **`pacienteCriado` saiu de `ResultadoCriacao`** (só de requisição; encaminhamento e
+    SulAmérica mantêm o deles). Nenhum consumidor lia.
+  - **Formulário**: o erro de paciente (obrigatório, não cadastrado, sem encaminhamento)
+    aparece logo abaixo do campo, com `aria-invalid` e `aria-describedby`, em vez de no
+    fim do formulário; os demais erros continuam no fim. O texto de apoio da seção 1
+    trocou "Se o paciente ainda não existe, ele é criado junto" por "Só pacientes com
+    encaminhamento cadastrado", com link sublinhado "Cadastrar encaminhamento" para
+    `/klini/encaminhamentos` (cor do texto de apoio; sem cor nova). O cliente **não**
+    pré-valida o nome contra a lista: ela pode estar velha e não distingue os dois casos
+    de recusa; quem decide é o servidor.
+  - **Testes** (476 em 33 arquivos; eram 467): unitários de `requisicoes.test.ts` — o
+    dublê do banco agora responde à busca (`FOR KEY SHARE`) e **falha** se receber
+    `INSERT`; novos: nome inexistente sem escrita e sem consultar
+    encaminhamento/número, mensagem sem o nome digitado, SQL da busca com lock e sem
+    INSERT. Integração em rollback: nome inexistente com contagem da tabela `paciente`
+    inteira antes/depois numa transação `RepeatableRead` (para não enxergar o que outros
+    arquivos commitam em paralelo); caixa e espaços diferentes sem duplicar; legado sem
+    carteirinha/CRM com encaminhamento aceito; lista só com quem tem encaminhamento; fluxo
+    encaminhamento → requisição com contagem 0 → 1 → 1. `pacientes-origem.test.ts`
+    varre o código. Mutação conferida: com o `requisicoes.ts` antigo (get-or-create), os
+    dois testes de nome inexistente caem.
 
 - **Carteirinha e CRM na tela de Encaminhamentos (28/10/2026, branch
   `feat/carteirinha-crm-klini-ui`, a partir de `feat/carteirinha-crm-dominio` em
@@ -965,7 +1046,9 @@ teste passar hoje e mentir no mês que vem.
 - **Cadastro de requisição (`/klini/requisicoes/nova`)**: leitura das listas (pacientes,
   terapias) em Server Component; o formulário é Client Component porque a lista de
   terapias cresce e encolhe por estado do React. Decisões do caminho:
-  - **Get-or-create do paciente em uma consulta só**: `INSERT ... ON CONFLICT
+  - **Get-or-create do paciente em uma consulta só** (desde 28/10/2026 usado só pelo
+    cadastro de encaminhamento e, temporariamente, pela SulAmérica — a requisição só
+    busca; ver regra 21): `INSERT ... ON CONFLICT
 (lower("nome")) DO NOTHING RETURNING ...` dentro de uma CTE, com `UNION ALL` para o
     `SELECT` do já existente. Um `SELECT` seguido de `INSERT` deixaria aberta a corrida
     entre dois cadastros simultâneos do mesmo nome. A comparação é
@@ -1603,9 +1686,16 @@ parecer íntegro na tela.
 - Não usar `StatusBadge` (nem os rótulos Regular/Renovar/Esgotada) fora do vocabulário de
   `status_alerta`. Para uma tela com outro vocabulário, montar um mapa de apresentação em
   cima de `components/selo-de-status.tsx` — e sem introduzir cor saturada nova.
-- Não reimplementar busca/criação de paciente por nome: use `obterOuCriarPaciente` de
+- Não reimplementar busca/criação de paciente por nome: use `obterOuCriarPaciente`
+  (criação, só no encaminhamento) ou `buscarPacientePorNome` (busca, com lock) de
   `lib/domain/pacientes.ts`. Uma segunda implementação com outra regra de comparação
   discordaria do índice `UNIQUE (lower(nome))`.
+- Não criar paciente fora do cadastro de encaminhamento (regra 21) — nem em requisição,
+  nem em atendimento, nem em script ou rota nova. A SulAmérica é a exceção temporária
+  registrada; não acrescentar outra. Não "afrouxar" `pacientes-origem.test.ts` para um
+  caminho novo passar: um caminho novo que crie paciente é conversa, não ajuste.
+- Não bloquear requisição de paciente antigo por falta de carteirinha/CRM: o legado é
+  aceito de propósito (regra 21); a pendência é preencher, não barrar.
 - Não declarar `encaminhamento.data_vencimento` no `schema.prisma` sem o
   `@default(dbgenerated(...))` exato da introspecção — sem ele o próximo `migrate dev`
   gera uma migration que o Postgres recusa.
@@ -1623,10 +1713,12 @@ parecer íntegro na tela.
   um encaminhamento vencido conta. Se um dia a clínica quiser exigir vigência, isso é uma
   conversa a ter, não uma dedução a fazer — e há teste de integração que cai de propósito
   se alguém apertar a regra em silêncio.
-- Não checar o encaminhamento **antes** da transação de `criarRequisicao` (nem em
-  `validarEntrada`). Antes dela não existe `paciente_id`: um nome novo ainda não é
-  paciente nenhum. E não trocar o `throw` da recusa por um `return { ok: false }` — é o
-  `throw` que desfaz o paciente que o get-or-create acabou de criar.
+- Não checar paciente nem encaminhamento **antes** da transação de `criarRequisicao`
+  (nem em `validarEntrada`, nem só no cliente). A checagem mora na transação, depois do
+  `FOR KEY SHARE` de `buscarPacientePorNome`: fora dela, uma exclusão de paciente poderia
+  passar entre a checagem e o INSERT. E não trocar o `throw` da recusa por um
+  `return { ok: false }` — o `throw` é o que desfaz qualquer escrita anterior da
+  transação. Não tirar o `FOR KEY SHARE` da busca.
 - Não acrescentar `DELETE FROM atendimento` à exclusão de paciente. Os atendimentos vão
   pelo `ON DELETE CASCADE` que já existe no schema; o DELETE explícito seria uma segunda
   descrição da mesma regra.
@@ -2137,6 +2229,14 @@ parecer íntegro na tela.
     arquivos**, `next build` concluído.
   - **Interação manual no navegador pendente** — roteiro em pendências.
 
+- [x] Paciente só pelo encaminhamento (28/10/2026, branch
+      `feat/paciente-so-por-encaminhamento`, **sem commit, sem merge e sem push**).
+      Ver regras 15 e 21 e "Paciente só pelo encaminhamento" nas decisões de
+      implementação. Nenhuma migration.
+  - `tsc --noEmit` limpo, eslint limpo nos arquivos tocados, **476 testes em 33
+    arquivos**, `next build` concluído.
+  - **Interação manual no navegador pendente** — roteiro em pendências.
+
 ### Plano de papéis e convênios — 4 fases
 
 Registrado aqui inteiro de propósito: a Fase A sozinha não explica por que existe, e as
@@ -2160,6 +2260,40 @@ sessões seguintes precisam do plano completo para não implementar a fase errad
       interativa do usuário antes de merge e publicação.
 
 ## Pendências conhecidas (não bloqueiam o próximo passo, mas não esquecer)
+
+- **SulAmérica ainda cria paciente** (`autorizacoes-sulamerica.ts` →
+  `obterOuCriarPaciente`). Caminho temporário (regra 21), a resolver no próximo passo com
+  a aba de Encaminhamentos da SulAmérica. Ao resolver, tirar o arquivo da lista
+  permitida em `lib/domain/pacientes-origem.test.ts`.
+- **Preencher carteirinha/CRM do legado.** Pacientes de antes de 28/10/2026 continuam
+  recebendo requisição sem esses dados (decisão deliberada, regra 21). O preenchimento é
+  pelo próprio cadastro de encaminhamento (mesmo nome **e mesma data**, ver a dica da
+  lista). Conferir quantos faltam:
+  `SELECT count(*) FROM paciente WHERE numero_carteirinha IS NULL OR crm_medico IS NULL;`.
+- **Paciente só pelo encaminhamento: roteiro manual de navegador** (nada disto foi feito;
+  nenhuma sessão teve navegador). Como admin:
+  1. **Nome inexistente recusado**: em `/klini/requisicoes/nova`, digitar um nome que não
+     é de ninguém, escolher terapia e enviar. A mensagem "Paciente não cadastrado.
+     Cadastre primeiro o encaminhamento em Encaminhamentos." aparece **logo abaixo do
+     campo de paciente** (campo marcado como inválido), não no fim do formulário; o que
+     foi digitado continua lá. Recarregar e conferir em Encaminhamentos/SulAmérica que o
+     nome **não** virou paciente.
+  2. **Nome existente com encaminhamento aceito**: escolher um nome da sugestão, digitando
+     com outra caixa e espaços nas pontas. Toast "Requisição criada para <nome gravado>";
+     no painel, a requisição está no paciente certo, sem paciente duplicado.
+  3. **Sugestões só de quem tem encaminhamento**: digitar as primeiras letras e conferir
+     que um paciente que só existe pela SulAmérica (ou um do seed sem encaminhamento)
+     **não** aparece; em "Lançar atendimento" e na SulAmérica as sugestões continuam as
+     de antes.
+  4. **Paciente existente sem encaminhamento**: digitar o nome de um paciente criado só
+     pela SulAmérica → "Paciente sem encaminhamento cadastrado. …", junto ao campo.
+  5. **Fluxo encaminhamento → requisição**: clicar o link "Cadastrar encaminhamento" (vai a
+     `/klini/encaminhamentos`), cadastrar nome novo + data + carteirinha + CRM, voltar a
+     "Nova requisição": o nome aparece na sugestão e a requisição passa.
+  6. **Legado**: um paciente antigo com encaminhamento e "falta preencher" na lista
+     recebe requisição normalmente.
+  7. Conferir o link discreto (sublinhado, cor do texto de apoio) e o erro junto ao campo
+     a 390px.
 
 - **Migration `20261028120000_carteirinha_e_crm_do_paciente` a aplicar no Supabase.** Ela
   é aditiva, então a ordem segura é **migration antes do código**: o código antigo não lê
@@ -2296,9 +2430,10 @@ sessões seguintes precisam do plano completo para não implementar a fase errad
   permanente) ainda não foi feito — de novo, nenhum browser controlável nesta sessão. O
   que já foi verificado sem ele está no progresso. Roteiro, na ordem:
   1. Em "Nova requisição", digitar um nome de paciente **que não esteja na lista de
-     encaminhamentos**, escolher uma terapia e enviar. Confirmar a mensagem "Paciente sem
-     encaminhamento cadastrado. Cadastre o encaminhamento antes de criar uma requisição."
-     e que o formulário continua na tela com o que foi digitado.
+     encaminhamentos**, escolher uma terapia e enviar. Confirmar a mensagem "Paciente não
+     cadastrado. Cadastre primeiro o encaminhamento em Encaminhamentos." (desde
+     28/10/2026; antes era a de "sem encaminhamento") e que o formulário continua na tela
+     com o que foi digitado.
   2. Conferir no banco (ou no `datalist` de pacientes, recarregando a página) que **esse
      nome não virou paciente**. É o ponto do rollback.
   3. Cadastrar o encaminhamento desse paciente e repetir a requisição: agora passa.

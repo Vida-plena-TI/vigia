@@ -2,8 +2,9 @@
  * Contraparte de `requisicoes.test.ts` contra o Postgres real.
  *
  * O teste unitário prova que o nosso código decide certo; este prova que o
- * banco concorda — que o `ON CONFLICT (lower("nome"))` reaproveita mesmo o
- * paciente escrito com outra caixa, que a unique
+ * banco concorda — que a busca por `lower("nome")` acha mesmo o paciente
+ * escrito com outra caixa, que um nome de ninguém é recusado **sem criar
+ * paciente** (paciente só nasce pelo encaminhamento), que a unique
  * `(paciente_id, numero_requisicao)` é por paciente e não global, que repetir
  * o número de um paciente acrescenta terapias à requisição que já existe (em
  * vez de esbarrar na unique), que repetir uma terapia que a requisição já
@@ -22,10 +23,11 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { getPrismaClient } from "@/lib/db";
 
 import { registrarEncaminhamentoNaTransacao } from "./encaminhamentos";
-import { obterOuCriarPaciente } from "./pacientes";
+import { listarNomesParaRequisicaoComCliente } from "./pacientes";
 import {
   criarRequisicao,
   criarRequisicaoNaTransacao,
+  ERRO_PACIENTE_NAO_CADASTRADO,
   ERRO_QTD_INVALIDA,
   ERRO_SEM_ENCAMINHAMENTO,
   ERRO_TERAPIA_INEXISTENTE,
@@ -60,9 +62,16 @@ type ClienteDaTransacao = Parameters<
   Parameters<ReturnType<typeof getPrismaClient>["$transaction"]>[0]
 >[0];
 
-/** Roda `executar` numa transação e desfaz tudo, devolvendo o que ela produziu. */
+/**
+ * Roda `executar` numa transação e desfaz tudo, devolvendo o que ela produziu.
+ *
+ * `isolamento: "RepeatableRead"` serve a quem conta linhas da tabela inteira:
+ * com um snapshot só, a contagem não enxerga o que outros arquivos de teste
+ * commitam em paralelo — só o que esta transação escreveu.
+ */
 async function comRollback<T>(
   executar: (tx: ClienteDaTransacao) => Promise<T>,
+  isolamento?: "RepeatableRead",
 ): Promise<T> {
   try {
     await getPrismaClient().$transaction(
@@ -71,7 +80,7 @@ async function comRollback<T>(
       },
       // `maxWait` é o tempo para *conseguir* a transação, e o padrão (2s) não
       // cobre a primeira, que ainda paga o custo de abrir a conexão.
-      { maxWait: 30_000, timeout: 30_000 },
+      { maxWait: 30_000, timeout: 30_000, isolationLevel: isolamento },
     );
   } catch (erro) {
     if (erro instanceof Rollback) {
@@ -143,8 +152,8 @@ async function dataEmDias(
  * Quase todo teste deste arquivo precisa disto no preparo, e nenhum deles é
  * sobre isto: o que eles testam é a unicidade do número, o reaproveitamento do
  * paciente e o rollback. Reaproveita `registrarEncaminhamentoNaTransacao` em
- * vez de inserir na mão para o preparo passar pelo mesmo get-or-create do
- * código de produção.
+ * vez de inserir na mão: desde 28/10/2026 é o **único** caminho do Klini que
+ * cria paciente, e o preparo passa por ele como a tela passaria.
  */
 async function comEncaminhamento(
   tx: ClienteDaTransacao,
@@ -162,6 +171,15 @@ async function comEncaminhamento(
   if (!resultado.ok) {
     throw new Error(`preparo falhou: ${resultado.erro}`);
   }
+}
+
+/** Quantas linhas há em `paciente`, ao todo. */
+async function contarTodosOsPacientes(tx: ClienteDaTransacao): Promise<number> {
+  const [linha] = await tx.$queryRaw<{ n: number }[]>`
+    SELECT count(*)::int AS "n" FROM "paciente"
+  `;
+
+  return linha.n;
 }
 
 /** Quantos pacientes têm este nome, comparando como o índice compara. */
@@ -186,16 +204,17 @@ describe.skipIf(!temBanco)("cadastro de requisicao contra o banco real", () => {
     await getPrismaClient().$disconnect();
   });
 
-  it("pendura a requisição no paciente que o encaminhamento criou", async () => {
+  it("fluxo completo: o encaminhamento cria o paciente e a requisição passa", async () => {
     const nome = `Paciente Novo ${SUFIXO}`;
 
     const resultado = await comRollback(async (tx) => {
       const terapiaId = await criarTerapia(tx, "novo");
+      const antes = await contarPacientes(tx, nome);
 
-      // Desde a regra 15 este é o único caminho para um paciente novo receber
-      // requisição: o cadastro do encaminhamento é que o cria. Antes dela o
-      // teste começava com o banco vazio e esperava `pacienteCriado: true`.
+      // O único caminho para um paciente novo receber requisição: o cadastro
+      // do encaminhamento é que o cria.
       await comEncaminhamento(tx, nome);
+      const depoisDoEncaminhamento = await contarPacientes(tx, nome);
 
       const criacao = await criarRequisicaoNaTransacao(tx, {
         pacienteNome: nome,
@@ -212,14 +231,13 @@ describe.skipIf(!temBanco)("cadastro de requisicao contra o banco real", () => {
           })
         : [];
 
-      return { criacao, pacientes, guias };
+      return { criacao, antes, depoisDoEncaminhamento, pacientes, guias };
     });
 
-    // `pacienteCriado: false` não é detalhe: sob a regra 15 ele **nunca** é
-    // `true` no sucesso. Um paciente recém-criado pelo get-or-create da
-    // requisição não teria como já ter encaminhamento, e seria recusado antes
-    // de chegar aqui.
-    expect(resultado.criacao).toMatchObject({ ok: true, pacienteCriado: false });
+    expect(resultado.antes).toBe(0);
+    expect(resultado.depoisDoEncaminhamento).toBe(1);
+    expect(resultado.criacao).toMatchObject({ ok: true, requisicaoCriada: true });
+    // A requisição não acrescentou paciente: continua um só.
     expect(resultado.pacientes).toBe(1);
     expect(resultado.guias).toEqual([
       {
@@ -267,16 +285,11 @@ describe.skipIf(!temBanco)("cadastro de requisicao contra o banco real", () => {
       return { primeira, segunda, pacientes, requisicoes };
     });
 
-    expect(resultado.primeira).toMatchObject({
-      ok: true,
-      pacienteCriado: false,
-    });
-    expect(resultado.segunda).toMatchObject({
-      ok: true,
-      pacienteCriado: false,
-    });
-    // Uma linha só: o índice `UNIQUE (lower(nome))` e o get-or-create
-    // concordaram.
+    expect(resultado.primeira).toMatchObject({ ok: true });
+    // O nome devolvido é o gravado, não o digitado em caixa alta.
+    expect(resultado.segunda).toMatchObject({ ok: true, pacienteNome: nome });
+    // Uma linha só: a busca usa a mesma expressão do índice
+    // `UNIQUE (lower(nome))` e achou o paciente em vez de duplicá-lo.
     expect(resultado.pacientes).toBe(1);
     // E as duas requisições penduraram no mesmo paciente.
     expect(resultado.requisicoes).toHaveLength(2);
@@ -745,9 +758,14 @@ describe.skipIf(!temBanco)("cadastro de requisicao contra o banco real", () => {
       const resultado = await comRollback(async (tx) => {
         const terapiaId = await criarTerapia(tx, "r15sem");
 
-        // O paciente existe de verdade — só não tem encaminhamento. É o caso
-        // que separa "não achei o paciente" de "achei e ele não pode".
-        const paciente = await obterOuCriarPaciente(tx, nome);
+        // O paciente existe de verdade — só não tem encaminhamento (legado de
+        // antes da regra 15, ou criado pela SulAmérica). É o caso que separa
+        // "não achei o paciente" de "achei e ele não pode". Inserido direto:
+        // nenhum caminho do Klini cria paciente sem encaminhamento.
+        const paciente = await tx.paciente.create({
+          data: { nome },
+          select: { id: true },
+        });
 
         const criacao = await criarRequisicaoNaTransacao(tx, {
           pacienteNome: nome,
@@ -774,11 +792,10 @@ describe.skipIf(!temBanco)("cadastro de requisicao contra o banco real", () => {
       const nome = `Regra15 Nome Nunca Visto ${SUFIXO}`;
       const numero = `REQ-R15-NOVO-${SUFIXO}`;
 
-      // Pelo caminho real, com transação própria: o que está sob teste é o
-      // rollback. O get-or-create **chega a inserir** este paciente lá dentro,
-      // e é o `throw` do erro de negócio que o desfaz. Se a checagem devolvesse
-      // `{ ok: false }` educadamente, sobraria um paciente órfão — sem
-      // requisição, sem encaminhamento, e impedido de receber os dois.
+      // Pelo caminho real, com transação própria. Desde 28/10/2026 a
+      // requisição não cria paciente: o nome é procurado, não achado, e a
+      // recusa é a de "não cadastrado" — não a da regra 15, que é para quem
+      // existe sem encaminhamento.
       const terapiaValida = await getPrismaClient().terapia.findFirst({
         orderBy: { id: "asc" },
         select: { id: true },
@@ -798,7 +815,7 @@ describe.skipIf(!temBanco)("cadastro de requisicao contra o banco real", () => {
 
       expect(resultado).toEqual({
         ok: false,
-        erro: ERRO_SEM_ENCAMINHAMENTO,
+        erro: ERRO_PACIENTE_NAO_CADASTRADO,
         linha: undefined,
       });
       expect(await contarPacientes(getPrismaClient(), nome)).toBe(0);
@@ -807,6 +824,119 @@ describe.skipIf(!temBanco)("cadastro de requisicao contra o banco real", () => {
           where: { numeroRequisicao: numero },
         }),
       ).toBe(0);
+    });
+  });
+
+  describe("paciente só nasce pelo encaminhamento", () => {
+    it("nome inexistente não cria linha em paciente e devolve a mensagem nova", async () => {
+      const nome = `Origem Inexistente ${SUFIXO}`;
+
+      // RepeatableRead: a contagem da tabela inteira só enxerga o que esta
+      // transação escreveu, não o que outros arquivos commitam em paralelo.
+      const resultado = await comRollback(async (tx) => {
+        const terapiaId = await criarTerapia(tx, "origem-inex");
+        const antes = await contarTodosOsPacientes(tx);
+
+        const criacao = await criarRequisicaoNaTransacao(tx, {
+          pacienteNome: nome,
+          numeroRequisicao: `REQ-ORIG-INEX-${SUFIXO}`,
+          linhas: [{ terapiaId, qtdAutorizada: 4, validade: null }],
+        });
+
+        const depois = await contarTodosOsPacientes(tx);
+        const requisicoes = await tx.requisicao.count({
+          where: { numeroRequisicao: `REQ-ORIG-INEX-${SUFIXO}` },
+        });
+
+        return { criacao, antes, depois, requisicoes };
+      }, "RepeatableRead");
+
+      expect(resultado.criacao).toEqual({
+        ok: false,
+        erro: ERRO_PACIENTE_NAO_CADASTRADO,
+        linha: undefined,
+      });
+      expect(resultado.depois).toBe(resultado.antes);
+      expect(resultado.requisicoes).toBe(0);
+      // Privacidade: a recusa não ecoa o nome nem nada de outro paciente.
+      expect(JSON.stringify(resultado.criacao)).not.toContain(SUFIXO);
+    });
+
+    it("caixa e espaços diferentes acham o paciente com encaminhamento sem duplicar", async () => {
+      const nome = `Origem Caixa ${SUFIXO}`;
+
+      const resultado = await comRollback(async (tx) => {
+        const terapiaId = await criarTerapia(tx, "origem-caixa");
+        await comEncaminhamento(tx, nome);
+        const antes = await contarTodosOsPacientes(tx);
+
+        const criacao = await criarRequisicaoNaTransacao(tx, {
+          pacienteNome: `   ${nome.toLowerCase()}   `,
+          numeroRequisicao: `REQ-ORIG-CAIXA-${SUFIXO}`,
+          linhas: [{ terapiaId, qtdAutorizada: 4, validade: null }],
+        });
+
+        const depois = await contarTodosOsPacientes(tx);
+
+        return { criacao, antes, depois, pacientes: await contarPacientes(tx, nome) };
+      }, "RepeatableRead");
+
+      expect(resultado.criacao).toMatchObject({ ok: true, pacienteNome: nome });
+      expect(resultado.depois).toBe(resultado.antes);
+      expect(resultado.pacientes).toBe(1);
+    });
+
+    it("paciente antigo sem carteirinha nem CRM, mas com encaminhamento, ainda recebe requisição", async () => {
+      const nome = `Origem Legado ${SUFIXO}`;
+
+      const resultado = await comRollback(async (tx) => {
+        const terapiaId = await criarTerapia(tx, "origem-legado");
+
+        // Como estavam os cadastros de antes de 28/10/2026: paciente sem os
+        // dois campos, encaminhamento inserido direto (o cadastro de hoje
+        // exigiria a carteirinha).
+        const paciente = await tx.paciente.create({
+          data: { nome },
+          select: { id: true },
+        });
+        await tx.$executeRaw`
+          INSERT INTO "encaminhamento" ("paciente_id", "data_encaminhamento")
+          VALUES (${paciente.id}, CURRENT_DATE)
+        `;
+
+        const criacao = await criarRequisicaoNaTransacao(tx, {
+          pacienteNome: nome,
+          numeroRequisicao: `REQ-ORIG-LEG-${SUFIXO}`,
+          linhas: [{ terapiaId, qtdAutorizada: 4, validade: null }],
+        });
+
+        const gravado = await tx.paciente.findUniqueOrThrow({
+          where: { id: paciente.id },
+          select: { numeroCarteirinha: true, crmMedico: true },
+        });
+
+        return { criacao, gravado };
+      });
+
+      // Decisão deliberada: o legado não é bloqueado. A requisição não
+      // preenche nem exige carteirinha/CRM.
+      expect(resultado.criacao).toMatchObject({ ok: true });
+      expect(resultado.gravado).toEqual({ numeroCarteirinha: null, crmMedico: null });
+    });
+
+    it("a lista de Nova requisição só traz quem tem encaminhamento", async () => {
+      const comEnc = `Origem Lista Com ${SUFIXO}`;
+      const semEnc = `Origem Lista Sem ${SUFIXO}`;
+
+      const nomes = await comRollback(async (tx) => {
+        await comEncaminhamento(tx, comEnc);
+        await tx.paciente.create({ data: { nome: semEnc } });
+
+        return listarNomesParaRequisicaoComCliente(tx);
+      });
+
+      expect(nomes).toContain(comEnc);
+      expect(nomes).not.toContain(semEnc);
     });
   });
 

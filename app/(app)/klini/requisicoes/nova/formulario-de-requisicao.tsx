@@ -13,7 +13,10 @@ import {
   type EstadoNovaRequisicao,
 } from "@/lib/domain/requisicoes-actions";
 import {
+  ERRO_PACIENTE_NAO_CADASTRADO,
+  ERRO_PACIENTE_OBRIGATORIO,
   ERRO_QTD_INVALIDA,
+  ERRO_SEM_ENCAMINHAMENTO,
   ERRO_SEM_TERAPIA,
   ERRO_TERAPIA_OBRIGATORIA,
   ERRO_TERAPIA_REPETIDA_NO_ENVIO,
@@ -22,6 +25,16 @@ import {
 import type { TerapiaParaEscolha } from "@/lib/domain/requisicoes";
 
 const ESTADO_INICIAL: EstadoNovaRequisicao = {};
+
+/**
+ * Recusas que são do campo de paciente, não do envio inteiro: aparecem junto
+ * dele (com `aria-invalid`) em vez de soltas no fim do formulário.
+ */
+const ERROS_DO_PACIENTE = new Set([
+  ERRO_PACIENTE_OBRIGATORIO,
+  ERRO_PACIENTE_NAO_CADASTRADO,
+  ERRO_SEM_ENCAMINHAMENTO,
+]);
 
 /**
  * Quantidade que uma linha de terapia já nasce preenchida, até o usuário mudar.
@@ -121,6 +134,10 @@ export function FormularioDeRequisicao({
   // O erro do cliente só vale até a próxima submissão; depois disso quem manda
   // é a resposta do servidor.
   const erroExibido = erroLocal ?? estado;
+  const erroDoPaciente =
+    erroExibido.erro && ERROS_DO_PACIENTE.has(erroExibido.erro)
+      ? erroExibido.erro
+      : null;
 
   // Limpeza pós-sucesso: sem navegar para o dashboard, o formulário volta ao
   // início ali mesmo para cadastrar a próxima requisição. O token evita limpar
@@ -244,9 +261,15 @@ export function FormularioDeRequisicao({
         <div className="flex flex-col gap-1">
           <h2 className="regua-de-secao">1. Paciente e requisição</h2>
           <p className="max-w-prose text-xs text-muted-foreground">
-            Se o paciente ainda não existe, ele é criado junto. A comparação
-            ignora maiúsculas e minúsculas: &quot;José Silva&quot; e
-            &quot;JOSÉ SILVA&quot; são a mesma pessoa.
+            Só pacientes com encaminhamento cadastrado. A comparação ignora
+            maiúsculas e minúsculas: &quot;José Silva&quot; e &quot;JOSÉ
+            SILVA&quot; são a mesma pessoa.{" "}
+            <Link
+              href="/klini/encaminhamentos"
+              className="underline underline-offset-2 hover:text-foreground"
+            >
+              Cadastrar encaminhamento
+            </Link>
           </p>
         </div>
 
@@ -264,16 +287,27 @@ export function FormularioDeRequisicao({
               autoFocus
               className="h-9"
               value={pacienteNome}
+              aria-invalid={erroDoPaciente ? true : undefined}
+              aria-describedby={erroDoPaciente ? "pacienteNome-erro" : undefined}
               onChange={(evento) => {
                 setMensagemDeSucesso(null);
                 setPacienteNome(evento.target.value);
               }}
               placeholder="Digite ou escolha um paciente"
             />
+            {erroDoPaciente ? (
+              <p
+                id="pacienteNome-erro"
+                role="alert"
+                className="aviso-de-erro"
+              >
+                {erroDoPaciente}
+              </p>
+            ) : null}
             {/*
-              `datalist` sugere, não restringe: digitar um nome fora da lista
-              continua válido e cria o paciente. É o comportamento que o
-              get-or-create do servidor espera.
+              `datalist` sugere, não restringe: só traz quem já tem
+              encaminhamento, mas digitar outro nome ainda envia — e o servidor
+              recusa sem criar nada. Quem decide é a transação, não a lista.
             */}
             <datalist id="pacientes-existentes">
               {nomesDePacientes.map((nome) => (
@@ -347,7 +381,7 @@ export function FormularioDeRequisicao({
         </div>
       </section>
 
-      {erroExibido.erro ? (
+      {erroExibido.erro && !erroDoPaciente ? (
         <p role="alert" className="aviso-de-erro">
           {erroExibido.erro}
         </p>

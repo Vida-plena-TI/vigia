@@ -4,7 +4,7 @@ import { headers } from "next/headers";
 import { ROTA_NOVA_REQUISICAO } from "@/lib/auth/acesso";
 import { requireAcessoARota } from "@/lib/auth/current-user";
 import { PATHNAME_HEADER } from "@/lib/auth/pathname-header";
-import { listarNomesDePacientes } from "@/lib/domain/pacientes";
+import { listarNomesParaRequisicao } from "@/lib/domain/pacientes";
 import { listarTerapias, validadePadraoDeGuia } from "@/lib/domain/requisicoes";
 
 import { FormularioDeRequisicao } from "./formulario-de-requisicao";
@@ -16,8 +16,8 @@ export const metadata: Metadata = {
 /**
  * Cadastro de nova requisição (Prompt 5 / regra 5 do CONTEXT.md).
  *
- * Server Component: as duas listas que o formulário precisa (pacientes para o
- * `datalist`, terapias para o `select`) são lidas aqui e vão prontas para o
+ * Server Component: as duas listas que o formulário precisa (pacientes **com
+ * encaminhamento** para o `datalist`, terapias para o `select`) são lidas aqui e vão prontas para o
  * cliente, junto da validade que cada linha de terapia já nasce preenchida —
  * hoje + 1 mês, calculado pelo banco. O formulário em si é client-side porque
  * a lista de terapias cresce e encolhe por estado do React.
@@ -40,7 +40,7 @@ export default async function NovaRequisicaoPage() {
   // Independentes entre si: buscar em paralelo evita somar as três idas ao
   // banco no tempo de resposta da página.
   const [nomesDePacientes, terapias, validadePadrao] = await Promise.all([
-    listarNomesDePacientes(),
+    listarNomesParaRequisicao(),
     listarTerapias(),
     validadePadraoDeGuia(),
   ]);
@@ -50,8 +50,8 @@ export default async function NovaRequisicaoPage() {
       <div className="flex flex-col gap-1 border-b border-regua-forte pb-4">
         <h1 className="text-xl font-semibold">Nova requisição</h1>
         <p className="max-w-prose text-sm text-muted-foreground">
-          O paciente, a requisição e as guias são gravados em uma única
-          transação: se qualquer linha falhar, nada é criado.
+          A requisição e as guias são gravadas em uma única transação: se
+          qualquer linha falhar, nada é criado.
         </p>
       </div>
 

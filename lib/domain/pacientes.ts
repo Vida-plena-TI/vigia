@@ -1,6 +1,7 @@
 /**
- * Paciente: o get-or-create por nome, a lista de nomes para autocomplete e a
- * **exclusão permanente e completa** do cadastro.
+ * Paciente: o get-or-create por nome (só para o cadastro de encaminhamento),
+ * a busca sem criação (para a requisição), as listas de nomes para
+ * autocomplete e a **exclusão permanente e completa** do cadastro.
  *
  * Este módulo nasceu de `lib/domain/requisicoes.ts`, onde as duas funções
  * moravam quando só o cadastro de requisição precisava delas. Com o cadastro
@@ -38,6 +39,13 @@ export type PacienteResolvido = { id: number; nome: string; criado: boolean };
 
 /**
  * Get-or-create do paciente, case-insensitive, em uma única ida ao banco.
+ *
+ * **Quem pode chamar (desde 28/10/2026):** só o cadastro de encaminhamento do
+ * Klini (`encaminhamentos.ts`) — a única origem de paciente — e,
+ * **temporariamente**, o cadastro de autorização da SulAmérica
+ * (`autorizacoes-sulamerica.ts`), até ela ganhar a própria aba de
+ * encaminhamentos. "Nova requisição" usa {@link buscarPacientePorNome}, que não
+ * cria.
  *
  * O `INSERT ... ON CONFLICT (lower("nome")) DO NOTHING` dentro de uma CTE
  * resolve a corrida que um `SELECT` seguido de `INSERT` deixaria aberta: dois
@@ -90,6 +98,41 @@ export async function obterOuCriarPaciente(
   );
 }
 
+/** Um paciente encontrado por nome, sem criação. */
+export type PacienteEncontrado = { id: number; nome: string };
+
+/**
+ * Busca o paciente pelo nome **sem criar**, travando a linha com
+ * `FOR KEY SHARE`. Devolve `null` quando o nome não é de ninguém.
+ *
+ * É o caminho de "Nova requisição" desde 28/10/2026: paciente só nasce pelo
+ * cadastro de encaminhamento, e a requisição só procura. A comparação é a do
+ * get-or-create acima — `lower(nome) = lower($1)`, a expressão do índice —
+ * e o nome deve chegar já trimado, como lá.
+ *
+ * O lock é o mesmo que o INSERT da requisição já pediria na linha do paciente
+ * (a FK toma `FOR KEY SHARE` na linha referenciada), só que tomado antes de
+ * qualquer leitura que dependa dele. Ele conflita com o `FOR UPDATE` da
+ * exclusão de paciente: uma exclusão em curso faz esta busca esperar e, ao
+ * commitar, a busca não acha mais o paciente; uma busca que travou primeiro
+ * segura a exclusão até o fim da requisição — e com ela o encaminhamento, que
+ * só é apagado por essa exclusão. Não conflita com o `FOR NO KEY UPDATE` do
+ * cadastro de encaminhamento (carteirinha/CRM), então os dois não se esperam.
+ */
+export async function buscarPacientePorNome(
+  tx: Prisma.TransactionClient,
+  nome: string,
+): Promise<PacienteEncontrado | null> {
+  const linhas = await tx.$queryRaw<PacienteEncontrado[]>`
+    SELECT "id", "nome"
+    FROM "paciente"
+    WHERE lower("nome") = lower(${nome})
+    FOR KEY SHARE
+  `;
+
+  return linhas[0] ?? null;
+}
+
 /**
  * Nomes de pacientes para o `datalist` dos formulários.
  *
@@ -100,6 +143,35 @@ export async function obterOuCriarPaciente(
 export async function listarNomesDePacientes(): Promise<string[]> {
   const pacientes = await getPrismaClient().$queryRaw<{ nome: string }[]>`
     SELECT "nome" FROM "paciente" ORDER BY lower("nome"), "id"
+  `;
+
+  return pacientes.map((paciente) => paciente.nome);
+}
+
+/**
+ * Nomes para o `datalist` de "Nova requisição": só quem **já tem
+ * encaminhamento** (regra 15) — os demais seriam recusados de qualquer jeito.
+ *
+ * Separada de {@link listarNomesDePacientes} para não mudar o que atendimento
+ * e SulAmérica sugerem. Só o nome: nada de carteirinha nem CRM vai para o
+ * cliente por aqui. É sugestão de tela; quem decide é a transação da
+ * requisição.
+ */
+export async function listarNomesParaRequisicao(): Promise<string[]> {
+  return listarNomesParaRequisicaoComCliente(getPrismaClient());
+}
+
+/** {@link listarNomesParaRequisicao} num cliente dado — o teste passa a transação. */
+export async function listarNomesParaRequisicaoComCliente(
+  cliente: Prisma.TransactionClient,
+): Promise<string[]> {
+  const pacientes = await cliente.$queryRaw<{ nome: string }[]>`
+    SELECT p."nome"
+    FROM "paciente" p
+    WHERE EXISTS (
+      SELECT 1 FROM "encaminhamento" e WHERE e."paciente_id" = p."id"
+    )
+    ORDER BY lower(p."nome"), p."id"
   `;
 
   return pacientes.map((paciente) => paciente.nome);

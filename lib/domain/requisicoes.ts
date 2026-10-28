@@ -1,10 +1,13 @@
 /**
  * Cadastro de nova requisição (regra 5 do CONTEXT.md).
  *
- * Tudo — get-or-create do paciente, resolução do número e as N linhas de
+ * Tudo — busca do paciente, resolução do número e as N linhas de
  * `requisicao_terapia` — acontece em **uma** transação. Se qualquer linha da
- * lista falhar, a transação inteira volta atrás e nenhum paciente órfão sobra
- * no banco.
+ * lista falhar, a transação inteira volta atrás.
+ *
+ * **Esta tela não cria paciente** (desde 28/10/2026). Paciente só nasce pelo
+ * cadastro de encaminhamento; aqui o nome é procurado e, se não for de
+ * ninguém, a requisição é recusada sem gravar nada.
  *
  * Uma requisição é uma **pasta numerada**, não um evento: terapias entram nela
  * ao longo do tempo, e não só no minuto em que ela nasce. Por isso submeter um
@@ -20,10 +23,9 @@
  * e `validade` da guia existente, com UPDATE — nunca DELETE + INSERT, que
  * levaria os atendimentos da guia junto pelo cascade.
  *
- * O get-or-create do paciente mora em `lib/domain/pacientes.ts` desde que o
- * cadastro de encaminhamento passou a precisar dele também — inclusive a
- * explicação de por que a comparação de nome é `lower(nome) = lower($1)`, a
- * mesma expressão do índice `UNIQUE (lower(nome))`.
+ * A busca do paciente mora em `lib/domain/pacientes.ts`, ao lado do
+ * get-or-create do encaminhamento e com a mesma comparação de nome
+ * (`lower(nome) = lower($1)`, a expressão do índice `UNIQUE (lower(nome))`).
  *
  * Desde 09/09/2026 a transação também é o lugar onde a regra 15 é aplicada:
  * **não se cria requisição para paciente sem encaminhamento cadastrado**. Ver
@@ -34,7 +36,7 @@ import { getPrismaClient } from "@/lib/db";
 import { OPCOES_DE_TRANSACAO } from "@/lib/db/transacao";
 import type { Prisma } from "@/lib/generated/prisma/client";
 
-import { obterOuCriarPaciente } from "./pacientes";
+import { buscarPacientePorNome } from "./pacientes";
 import {
   SITUACAO_INICIAL,
   comoSituacao,
@@ -43,6 +45,7 @@ import {
 } from "./situacao-requisicao";
 import {
   ERRO_NUMERO_OBRIGATORIO,
+  ERRO_PACIENTE_NAO_CADASTRADO,
   ERRO_PACIENTE_OBRIGATORIO,
   ERRO_QTD_INVALIDA,
   ERRO_REQUISICAO_ID_INVALIDO,
@@ -93,8 +96,6 @@ export type ResultadoCriacao =
       requisicaoId: number;
       numeroRequisicao: string;
       pacienteNome: string;
-      /** `false` quando a requisição foi pendurada num paciente já existente. */
-      pacienteCriado: boolean;
       /**
        * `true` quando nasceu uma linha de `requisicao`; `false` quando as
        * terapias foram acrescentadas a uma requisição que já existia.
@@ -131,8 +132,8 @@ export type ResultadoCriacao =
  * Erro de negócio lançado de dentro da transação.
  *
  * Precisa ser lançado (e não devolvido) porque é o `throw` que faz o Postgres
- * desfazer o que já foi escrito — incluindo um paciente recém-criado. Quem
- * chama converte de volta para `{ ok: false }`.
+ * desfazer o que já foi escrito — as guias atualizadas antes de uma linha
+ * ruim, por exemplo. Quem chama converte de volta para `{ ok: false }`.
  */
 class ErroDeNegocio extends Error {
   constructor(
@@ -227,8 +228,8 @@ export function validarEntrada(
  * de `excluirGuiaNaTransacao`: é o que deixa o teste de integração rodar tudo
  * dentro de uma transação que sofre rollback.
  *
- * Lança {@link ErroDeNegocio} em vez de devolver `{ ok: false }` — devolver não
- * desfaria o paciente que acabou de ser criado.
+ * Lança {@link ErroDeNegocio} em vez de devolver `{ ok: false }` — devolver
+ * faria o Prisma commitar o que já tivesse sido escrito.
  */
 async function criarNaTransacao(
   tx: Prisma.TransactionClient,
@@ -237,18 +238,22 @@ async function criarNaTransacao(
   const pacienteNome = entrada.pacienteNome.trim();
   const numeroRequisicao = entrada.numeroRequisicao.trim();
 
-  const paciente = await obterOuCriarPaciente(tx, pacienteNome);
+  // Só procura, nunca cria: paciente nasce pelo cadastro de encaminhamento.
+  // A busca trava a linha com `FOR KEY SHARE` (ver `buscarPacientePorNome`),
+  // o que impede uma exclusão de paciente de apagá-lo — e ao encaminhamento
+  // junto — entre as checagens abaixo e o INSERT da requisição.
+  const paciente = await buscarPacientePorNome(tx, pacienteNome);
+
+  if (!paciente) {
+    throw new ErroDeNegocio(ERRO_PACIENTE_NAO_CADASTRADO);
+  }
 
   // Regra 15: sem encaminhamento cadastrado não há requisição.
   //
-  // A checagem só pode acontecer **aqui dentro**, depois do get-or-create, por
-  // dois motivos que se somam. O primeiro é que antes da transação não existe
-  // `paciente_id` a consultar: um nome digitado pela primeira vez ainda não é
-  // paciente nenhum. O segundo é o que o `throw` faz — um nome novo chega até
-  // esta linha já **criado** pelo get-or-create, e devolver `{ ok: false }`
-  // educadamente deixaria esse paciente órfão no banco, sem requisição e sem
-  // encaminhamento. É o mesmo raciocínio de `ERRO_TERAPIA_INEXISTENTE`, e por
-  // isso a mesma forma: lançar, para o Postgres desfazer.
+  // Mora aqui dentro porque é a mesma transação que travou o paciente: o
+  // encaminhamento só some pela exclusão do paciente, que o lock acima segura.
+  // Este caso — paciente existe, encaminhamento não — sobra para cadastros
+  // anteriores à regra e para pacientes criados pela SulAmérica.
   //
   // A pergunta é de **existência**, não de validade: qualquer linha serve,
   // inclusive uma cujo `data_vencimento` já passou. É por isso que a consulta é
@@ -295,8 +300,6 @@ async function criarNaTransacao(
   const indiceRuim = idsPedidos.findIndex((id) => !idsExistentes.has(id));
 
   if (indiceRuim !== -1) {
-    // Chegar aqui com o paciente já criado é exatamente o caso que o rollback
-    // precisa cobrir: o `throw` desfaz o paciente junto.
     throw new ErroDeNegocio(ERRO_TERAPIA_INEXISTENTE, indiceRuim);
   }
 
@@ -371,7 +374,6 @@ async function criarNaTransacao(
       requisicaoId: requisicaoExistente.id,
       numeroRequisicao,
       pacienteNome: paciente.nome,
-      pacienteCriado: paciente.criado,
       requisicaoCriada: false,
       terapiasAdicionadas: novas.length,
       terapiasAtualizadas: repetidas.length,
@@ -401,7 +403,6 @@ async function criarNaTransacao(
     requisicaoId: requisicao.id,
     numeroRequisicao,
     pacienteNome: paciente.nome,
-    pacienteCriado: paciente.criado,
     requisicaoCriada: true,
     terapiasAdicionadas: guias.length,
     terapiasAtualizadas: 0,
