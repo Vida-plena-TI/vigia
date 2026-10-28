@@ -200,9 +200,13 @@ export function FormularioDeEncaminhamento({
       {/*
         `items-start`, não `items-end`: o texto de apoio da carteirinha deixa a
         coluna dela mais alta, e alinhar pelo pé desceria os outros campos.
+
+        Entre `sm` e `lg` os quatro campos e o botão não cabem numa linha: o
+        nome ocupa a linha inteira e o resto quebra embaixo (`flex-wrap`), em
+        vez de empurrar a página para o lado.
       */}
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-start">
-        <div className="flex min-w-0 flex-1 flex-col gap-1.5">
+      <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-start lg:flex-nowrap">
+        <div className="flex min-w-0 flex-1 flex-col gap-1.5 sm:basis-full lg:basis-0">
           <Label htmlFor="pacienteNome" className="text-xs">
             Nome do paciente
           </Label>
@@ -235,6 +239,23 @@ export function FormularioDeEncaminhamento({
           </datalist>
         </div>
 
+        <div className="flex flex-col gap-1.5 sm:w-44">
+          <Label htmlFor="dataEncaminhamento" className="text-xs">
+            Data do encaminhamento
+          </Label>
+          <Input
+            id="dataEncaminhamento"
+            name="dataEncaminhamento"
+            type="date"
+            className="h-9"
+            value={dataEncaminhamento}
+            onChange={(evento) => {
+              setMensagemDeSucesso(null);
+              setDataEncaminhamento(evento.target.value);
+            }}
+          />
+        </div>
+
         <div className="flex flex-col gap-1.5 sm:w-48">
           <Label htmlFor="numeroCarteirinha" className="text-xs">
             Nº da carteirinha
@@ -252,7 +273,9 @@ export function FormularioDeEncaminhamento({
             maxLength={40}
             className="h-9"
             value={numeroCarteirinha}
-            placeholder={carteirinhaOpcional ? "Manter a cadastrada" : undefined}
+            placeholder={
+              carteirinhaOpcional ? "Manter a cadastrada" : undefined
+            }
             aria-describedby="numeroCarteirinha-apoio"
             aria-invalid={ehErroDaCarteirinha(erroExibido) ? true : undefined}
             onChange={(evento) => {
@@ -284,23 +307,6 @@ export function FormularioDeEncaminhamento({
             onChange={(evento) => {
               setMensagemDeSucesso(null);
               setCrmMedico(evento.target.value);
-            }}
-          />
-        </div>
-
-        <div className="flex flex-col gap-1.5 sm:w-44">
-          <Label htmlFor="dataEncaminhamento" className="text-xs">
-            Data do encaminhamento
-          </Label>
-          <Input
-            id="dataEncaminhamento"
-            name="dataEncaminhamento"
-            type="date"
-            className="h-9"
-            value={dataEncaminhamento}
-            onChange={(evento) => {
-              setMensagemDeSucesso(null);
-              setDataEncaminhamento(evento.target.value);
             }}
           />
         </div>

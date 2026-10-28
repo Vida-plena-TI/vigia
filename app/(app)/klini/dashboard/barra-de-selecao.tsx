@@ -3,10 +3,9 @@
 import { Check, Copy, X } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import { useCopiaParaAreaDeTransferencia } from "@/components/usar-copia";
 import { textoDeCopiaEmLote } from "@/lib/domain/guias-apresentacao";
 import type { PacienteComGuias } from "@/lib/domain/guias";
-
-import { useCopiaParaAreaDeTransferencia } from "./usar-copia";
 
 /**
  * A barra que aparece quando há pelo menos um paciente marcado.

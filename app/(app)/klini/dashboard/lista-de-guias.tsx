@@ -3,18 +3,19 @@
 import { useId, useMemo, useState } from "react";
 import { ChevronRight, Search } from "lucide-react";
 
+import { BotaoDeCopiar } from "@/components/botao-de-copiar";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { cn } from "@/lib/utils";
 import {
   piorStatus,
   temRequisicaoSolicitada,
+  textoDeCopia,
 } from "@/lib/domain/guias-apresentacao";
 import type { GuiaDoDashboard, PacienteComGuias } from "@/lib/domain/guias";
 
 import { AcoesDaGuia } from "./acoes-da-guia";
 import { BarraDeSelecao } from "./barra-de-selecao";
-import { BotaoDeCopiar } from "./botao-de-copiar";
 import {
   MARCADOR_POR_STATUS,
   formatarData,
@@ -340,7 +341,15 @@ function PacienteRecolhivel({
         </h2>
 
         <div className="shrink-0 pr-2 pl-1">
-          <BotaoDeCopiar paciente={paciente} />
+          {/*
+            Irmão do botão que abre e fecha o paciente, não filho: aninhar um
+            botão dentro do outro é HTML inválido, e o clique em copiar
+            acabaria abrindo o paciente sem querer.
+          */}
+          <BotaoDeCopiar
+            texto={textoDeCopia(paciente.nome, paciente.guias)}
+            rotuloAcessivel={`Copiar nome e número da requisição de ${paciente.nome}`}
+          />
         </div>
       </div>
 

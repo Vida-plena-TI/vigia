@@ -21,10 +21,16 @@ export default defineConfig({
   },
   test: {
     environment: "node",
-    // `app/` entra pelos modulos puros que moram junto da UI (a lista de itens
-    // do menu, por exemplo). Componente React nao e testado aqui: o ambiente e
-    // `node`, sem DOM.
-    include: ["lib/**/*.test.ts", "prisma/**/*.test.ts", "app/**/*.test.ts"],
+    // `app/` e `components/` entram pelos modulos puros que moram junto da UI
+    // (a lista de itens do menu, a copia para a area de transferencia) e por
+    // componentes renderizados em HTML estatico. O ambiente e `node`, sem DOM:
+    // clique e estado de componente ficam para o navegador.
+    include: [
+      "lib/**/*.test.ts",
+      "prisma/**/*.test.ts",
+      "app/**/*.test.ts",
+      "components/**/*.test.ts",
+    ],
     // O teste de integracao precisa de DATABASE_URL, que vive no .env (nao
     // versionado). Sem .env o setup e inofensivo e o teste se auto-pula.
     setupFiles: ["dotenv/config"],

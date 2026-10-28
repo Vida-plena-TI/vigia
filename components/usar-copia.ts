@@ -3,21 +3,26 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 
-/** Quanto tempo o ícone fica em "check" depois de copiar. */
+import { escreverNaAreaDeTransferencia } from "./area-de-transferencia";
+
+/** Quanto tempo o botão fica em "Copiado" depois de copiar. */
 const MS_DE_CONFIRMACAO = 2000;
 
 /**
- * Copiar para a área de transferência com o aviso de "copiou" do painel.
+ * Copiar para a área de transferência com o aviso de "copiou".
  *
- * Os dois botões de copiar do painel (o de um paciente e o do lote de
- * selecionados) precisam do mesmo comportamento: mesma checagem de contexto
- * seguro, mesmo toast de falha e mesmos 2s de confirmação. Duas cópias disso
- * acabariam divergindo — o hook é o único lugar onde a regra mora.
+ * Todo botão de copiar do sistema (o de um paciente e o do lote de
+ * selecionados no painel, os de carteirinha e CRM em Encaminhamentos) precisa
+ * do mesmo comportamento: mesmo plano B fora de contexto seguro, mesmo toast
+ * de falha e mesmos 2s de confirmação. Duas cópias disso acabariam divergindo
+ * — o hook é o único lugar onde a regra mora. Morava em
+ * `app/(app)/klini/dashboard/` enquanto só o painel copiava; subiu para cá
+ * quando Encaminhamentos virou o segundo consumidor.
  *
  * O sucesso não vira toast de propósito: copiar é gesto repetido no
  * atendimento, e um toast a cada vez viraria ruído. Quem chama transforma
- * `copiado` em sinal visual (troca de silhueta do ícone) e numa região
- * `role="status"` para quem não vê o ícone.
+ * `copiado` em sinal visual (troca de silhueta do ícone, "Copiado" por
+ * escrito) e numa região `role="status"` para quem não vê o botão.
  */
 export function useCopiaParaAreaDeTransferencia() {
   const [copiado, setCopiado] = useState(false);
@@ -34,20 +39,12 @@ export function useCopiaParaAreaDeTransferencia() {
   }, []);
 
   const copiar = useCallback(async (texto: string) => {
-    // `navigator.clipboard` não existe fora de contexto seguro (http servido
-    // por IP na rede da clínica, por exemplo). Avisar é melhor do que estourar
-    // um TypeError sem explicação.
-    if (!navigator.clipboard?.writeText) {
+    if (!(await escreverNaAreaDeTransferencia(texto))) {
+      // A mensagem não repete o texto: pode ser carteirinha ou CRM, que não
+      // vão para mensagem nenhuma. O valor continua na tela para cópia manual.
       toast.error(
-        "A área de transferência não está disponível neste navegador.",
+        "Não foi possível copiar. Selecione o texto e copie manualmente.",
       );
-      return;
-    }
-
-    try {
-      await navigator.clipboard.writeText(texto);
-    } catch {
-      toast.error("Não foi possível copiar.");
       return;
     }
 

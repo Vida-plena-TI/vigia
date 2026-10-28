@@ -352,6 +352,10 @@ teste passar hoje e mentir no mês que vem.
       carteirinha (até em outra caixa) não é conflito.
     - **Carteirinha e CRM nunca vão para log, mensagem de erro, exceção não tratada,
       URL ou query string.**
+    - **Onde aparecem (desde 28/10/2026):** só na lista de `/klini/encaminhamentos`
+      (tela de admin), em colunas próprias, cada uma com o seu botão de copiar. O botão
+      copia no navegador o valor que a página já recebeu — não existe rota que devolva
+      esses números. Paciente sem o dado mostra "falta preencher" e o botão desabilitado.
 
 ## Decisões assumidas (perguntas em aberto no relatório de auditoria original)
 
@@ -368,6 +372,65 @@ teste passar hoje e mentir no mês que vem.
 - Edição de atendimento para 0 créditos continua permitida.
 
 ## Decisões tomadas durante a implementação (não estavam no relatório original)
+
+- **Carteirinha e CRM na tela de Encaminhamentos (28/10/2026, branch
+  `feat/carteirinha-crm-klini-ui`, a partir de `feat/carteirinha-crm-dominio` em
+  `bc6f168`; sem commit, sem merge, sem push).** Só apresentação: nenhuma regra, consulta,
+  action ou migration mudou.
+  - **Botão de copiar subiu para `components/`** — movido com `git mv`, não copiado:
+    `components/botao-de-copiar.tsx` e `components/usar-copia.ts` (antes em
+    `app/(app)/klini/dashboard/`). O botão ficou genérico (`texto`, `rotuloAcessivel`,
+    `aviso`, `rotulo` opcional, `disabled`, `size`); o painel passa
+    `textoDeCopia(...)` e o mesmo `aria-label` de antes e continua só-ícone, com o mesmo
+    anúncio "Copiado: <texto>". `barra-de-selecao.tsx` importa o hook do lugar novo.
+  - **Plano B da cópia** em `components/area-de-transferencia.ts`
+    (`escreverNaAreaDeTransferencia`, sem React, ambiente por parâmetro para testar em
+    `node`): `navigator.clipboard.writeText`; se não existir (http por IP na rede) ou for
+    recusado, `execCommand("copy")` num `textarea` temporário; se os dois falharem, toast
+    "Não foi possível copiar. Selecione o texto e copie manualmente." — **sem** repetir o
+    valor. Vale também para o painel, que antes só mostrava o toast sem tentar o plano B.
+  - **Lista**: colunas "Carteirinha" e "CRM" (`valor-copiavel.tsx`) entre "Situação" e
+    "Ações". Na tabela, número + botão "Copiar"; nos blocos do celular, "Carteirinha:" /
+    "CRM:" + botão "Copiar carteirinha" / "Copiar CRM" com 40px de altura. `aria-label`
+    sempre "Copiar carteirinha de <nome>" / "Copiar CRM de <nome>"; ao copiar, rótulo vira
+    "Copiado" e ícone vira `Check` por 2s, e a região `aria-live="polite"` anuncia
+    "Carteirinha de <nome> copiada." (não o número). Copia `valor.trim()`, nada mais.
+  - **Falta preencher**: "—" (`aria-hidden`) + "falta preencher" em texto, botão
+    desabilitado; cada campo decide sozinho. Uma dica única acima da lista (só quando
+    alguém está incompleto, contada sobre a lista inteira e não sobre o filtro) explica
+    que basta registrar de novo com o mesmo nome **e a mesma data** — o reenvio é upsert e
+    trocaria a data e o vencimento se a data mudasse —, e que para esses pacientes a
+    carteirinha é obrigatória. Sem selo e sem cor nova: é ausência de dado, não status.
+  - **Responsivo**: com sete colunas a tabela só aparece a partir de `lg` (antes `sm`);
+    abaixo disso, blocos. A tabela fica dentro de um `overflow-x-auto` próprio, por
+    garantia — a página não rola de lado. Larguras fixas das colunas de data e situação
+    saíram (cabeçalho `whitespace-nowrap`).
+  - **Formulário**: ordem passou a nome → data → carteirinha → CRM. Corrigido um estouro
+    herdado da branch anterior: entre `sm` e `lg` quatro campos de largura fixa e o botão
+    não cabiam numa linha (~714px em ~590px). Agora a linha é `sm:flex-wrap` com o nome em
+    `sm:basis-full` (linha própria) e volta a uma linha só em `lg` (`lg:flex-nowrap`,
+    `lg:basis-0`); `sm:items-start` e o espaçador do botão continuam. Rótulos, `(opcional)`,
+    `inputMode="numeric"`, limpeza/foco depois do sucesso e mensagens de erro já existiam e
+    não mudaram.
+  - **Pendência resolvida**: carteirinha e CRM já viajavam no payload RSC da lista sem
+    serem exibidos; agora são exibidos, e a página continua só de admin.
+  - **Testes** (o `include` do Vitest passou a cobrir `components/**/*.test.ts`):
+    `components/area-de-transferencia.test.ts` (caminho novo copia o valor exato; plano B
+    quando o clipboard recusa ou não existe; falha devolve `false` e remove o campo
+    temporário); `components/botao-de-copiar.test.ts` (HTML estático: nome acessível,
+    rótulo, só-ícone, `aria-live` montado vazio, desabilitado);
+    `app/(app)/klini/encaminhamentos/lista-de-encaminhamentos.test.ts` (sete colunas,
+    números e botões habilitados, paciente antigo nulo com "falta preencher", botões
+    desabilitados e dica, um campo só faltando);
+    `app/(app)/klini/encaminhamentos/acesso-da-recepcao.test.ts` (página com papel
+    `recepcao` no banco e cookie dizendo admin: redirect para `/klini/dashboard` **antes**
+    de `listarEncaminhamentos`, com controle do admin; as três actions da tela recusadas
+    sem chamar o domínio; a action do admin não devolve carteirinha/CRM nem se o domínio
+    devolver; varredura do código mostrando que só a página chama
+    `listarEncaminhamentos`). Mutação conferida: sem o `requireAcessoARota` na página, o
+    teste da recepção cai.
+  - **Não testado**: clique real, troca para "Copiado", colar o conteúdo, plano B no
+    navegador, foco e layout — sem navegador nesta sessão. Ver o roteiro em pendências.
 
 - **Carteirinha opcional para quem já tem (28/10/2026, mesma branch
   `feat/carteirinha-crm-dominio`, sobre `0bb6767`; sem commit).** Ajuste da regra 20.
@@ -2061,6 +2124,15 @@ parecer íntegro na tela.
     `registrarEncaminhamento` (a variante que abre a própria transação) commitando de
     verdade — os testes de integração usam a variante "na transação", com rollback.
 
+- [x] Carteirinha e CRM na tela de Encaminhamentos (28/10/2026, branch
+      `feat/carteirinha-crm-klini-ui`, **sem commit, sem merge e sem push**). Colunas com
+      botão de copiar separado, "falta preencher" para paciente antigo, formulário na
+      ordem nome → data → carteirinha → CRM, botão de copiar movido para `components/`.
+      Ver "Carteirinha e CRM na tela de Encaminhamentos" nas decisões de implementação.
+  - `tsc --noEmit` limpo, eslint limpo nos arquivos tocados, **466 testes em 32
+    arquivos**, `next build` concluído.
+  - **Interação manual no navegador pendente** — roteiro em pendências.
+
 ### Plano de papéis e convênios — 4 fases
 
 Registrado aqui inteiro de propósito: a Fase A sozinha não explica por que existe, e as
@@ -2092,17 +2164,40 @@ sessões seguintes precisam do plano completo para não implementar a fase errad
   conferir que o `vigia_app` tem grant **de tabela** (não por coluna) em `paciente` —
   grant por coluna não cobriria colunas novas. Depois:
   `SELECT count(*) FILTER (WHERE numero_carteirinha IS NOT NULL) FROM paciente;` deve dar 0.
-- **Carteirinha/CRM: validação manual no navegador.** Em Encaminhamentos: cadastrar um
-  paciente novo com os quatro campos; reenviar o mesmo com CRM diferente (toast
-  "atualizado", uma linha só); tentar a carteirinha dele em outro paciente (erro citando o
-  nome, campo da carteirinha marcado, nada gravado); campos vazios ou fora do formato
-  barrados no cliente; os dois campos voltam vazios depois do sucesso; layout em 390px
-  (agora são quatro campos numa faixa).
-- **Carteirinha/CRM ainda não aparecem na tela**, e isso é decisão a tomar, não esquecimento:
-  `listarEncaminhamentos` já os devolve, e por isso eles **já viajam no payload RSC** da
-  lista (`ListaDeEncaminhamentos` recebe a linha inteira), embora não sejam exibidos. Ou a
-  tela passa a mostrá-los, ou a página remove os dois campos antes de passar a lista ao
-  componente cliente.
+- **Carteirinha/CRM: roteiro de teste manual no navegador** (nenhuma sessão teve
+  navegador; nada disto foi feito ainda). Em `/klini/encaminhamentos`, como admin:
+  1. **Paciente novo**: nome inédito, data, carteirinha com espaços colados
+     (`ABC 123 45`) e CRM (`123.456`). Toast "cadastrado"; a linha mostra `ABC12345` e
+     `123456`; nome, carteirinha e CRM voltam vazios, a data volta para hoje e o foco
+     volta ao nome.
+  2. **Reenvio com CRM diferente e carteirinha em branco**: mesmo nome (o rótulo da
+     carteirinha mostra "(opcional)" e o placeholder "Manter a cadastrada"), CRM novo.
+     Toast "atualizado", uma linha só, carteirinha intacta, CRM novo.
+  3. **Carteirinha repetida de outro paciente**: outro nome com a carteirinha do passo 1
+     (inclusive em minúsculas). Erro "Esta carteirinha já está cadastrada para <nome>."
+     junto ao formulário, campo da carteirinha marcado, nada gravado, digitação mantida.
+  4. **Paciente antigo sem carteirinha** (algum de antes de 28/10/2026): nome dele com a
+     carteirinha em branco → "Este paciente ainda não tem carteirinha cadastrada.
+     Informe o número."
+  5. **Copiar**: em cada linha, clicar "Copiar" da carteirinha, colar num campo de texto
+     qualquer (a busca da própria tela serve) e conferir que veio **só** o número, sem
+     rótulo nem espaço; repetir com o CRM. Conferir que o botão vira "Copiado" com o
+     ícone de check por ~2s e volta, e (com leitor de tela, se possível) o anúncio
+     "Carteirinha de <nome> copiada.".
+  6. **Paciente antigo na lista**: "— falta preencher" nas duas colunas, botões
+     desabilitados, dica acima da lista. Registrar de novo com mesmo nome, mesma data,
+     carteirinha e CRM: a linha fica completa e a dica some se era o último.
+  7. **Celular (390px)**: a lista vira blocos com "Carteirinha:" / "CRM:" e botões
+     "Copiar carteirinha" / "Copiar CRM" fáceis de tocar; nada rola de lado. Conferir
+     também ~700px (formulário em duas linhas, lista em blocos) e ≥1024px (tabela).
+  8. **Plano B**: abrir o sistema por `http://<ip-da-máquina>:3000` (fora de contexto
+     seguro) e copiar — deve funcionar pelo `execCommand`; se não, aparece o toast de
+     falha e o número continua selecionável na tela.
+  9. **Recepção**: logar com a conta de recepção e abrir `/klini/encaminhamentos` pela
+     URL — deve cair em `/klini/dashboard` sem a tela abrir; o menu não mostra
+     "Encaminhamentos".
+  10. **Painel** (regressão do botão movido): o copiar do cabeçalho do paciente e o
+      "Copiar selecionados" continuam funcionando como antes.
 - **Formulário não pré-preenche carteirinha/CRM** de paciente que já existe: quem
   reenvia precisa redigitar os dois. Não foi pedido.
 
