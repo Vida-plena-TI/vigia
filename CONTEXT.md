@@ -320,11 +320,25 @@ teste passar hoje e mentir no mês que vem.
 20. **Carteirinha e CRM no paciente (28/10/2026).** O número da carteirinha do convênio e
     o CRM do médico que encaminhou são dados **do paciente** (colunas
     `paciente.numero_carteirinha` e `paciente.crm_medico`), não do encaminhamento.
-    - **Obrigatórios no cadastro de encaminhamento** (Klini), junto de nome e data. A
-      gravação mora na mesma transação de sempre: get-or-create do paciente →
-      carteirinha/CRM no paciente → upsert do encaminhamento. **Reenviar atualiza** os
-      dois (inclusive para o mesmo paciente com CRM diferente), sem duplicar paciente nem
-      encaminhamento.
+    - **CRM obrigatório em todo cadastro de encaminhamento** (Klini), junto de nome e
+      data — cada encaminhamento pode vir de um médico diferente.
+    - **Carteirinha obrigatória só enquanto o paciente não tem uma** (ajuste de
+      28/10/2026). Paciente novo ou paciente existente sem carteirinha (legado): campo
+      vazio é recusado — o legado com "Este paciente ainda não tem carteirinha
+      cadastrada. Informe o número.". Paciente que já tem carteirinha: campo vazio (ou só
+      espaço) **mantém** a gravada, sem tocar na coluna — vazio não é erro e não apaga;
+      campo preenchido é validado e substitui, com a mesma recusa de carteirinha de outro
+      paciente. Reenviar a própria carteirinha (até em outra caixa) não é conflito.
+    - A decisão é tomada **dentro da transação**, lendo o paciente com `FOR NO KEY
+      UPDATE` (o mesmo lock que o UPDATE da carteirinha já tomava). A gravação mora na
+      mesma transação de sempre: get-or-create do paciente → leitura travada → decisão
+      da carteirinha → carteirinha/CRM no paciente → upsert do encaminhamento.
+      **Reenviar atualiza** o CRM (e a carteirinha, se informada), sem duplicar paciente
+      nem encaminhamento.
+    - O formulário recebe por nome **só o booleano** "tem carteirinha" (nunca o número)
+      e com ele marca o campo como "(opcional)"; o texto de apoio "Opcional se o
+      paciente já tem carteirinha cadastrada." aparece sempre. É dica: quem decide é o
+      servidor.
     - **NULL permitido na tabela**, de propósito: pacientes cadastrados antes de 28/10/2026
       não têm esses dados, e NULL é "não informado". Paciente antigo continua listando,
       com os dois campos nulos. Não há backfill nem `NOT NULL`.
@@ -354,6 +368,44 @@ teste passar hoje e mentir no mês que vem.
 - Edição de atendimento para 0 créditos continua permitida.
 
 ## Decisões tomadas durante a implementação (não estavam no relatório original)
+
+- **Carteirinha opcional para quem já tem (28/10/2026, mesma branch
+  `feat/carteirinha-crm-dominio`, sobre `0bb6767`; sem commit).** Ajuste da regra 20.
+  - **Função pura `decidirCarteirinha(texto, situacao)`** em `carteirinha-crm.ts`, com
+    `situacao` em `paciente-novo | sem-carteirinha | com-carteirinha`. Devolve
+    `gravar: string` (normalizada), `gravar: null` ("manter") ou o erro. Servidor e
+    formulário chamam a mesma; o formulário deduz a situação do nome digitado.
+  - **`validarEntrada` só confere o formato** quando a carteirinha vem preenchida; a
+    obrigatoriedade saiu dela (depende do banco). A recusa da transação é `throw` de
+    `ErroDeNegocio`, para desfazer o paciente recém-criado.
+  - **Leitura travada `situacaoDaCarteirinha`**: `SELECT numero_carteirinha IS NOT
+    NULL ... FOR NO KEY UPDATE` logo depois do get-or-create. Mesmo lock que o UPDATE
+    pedia, só que antes — a ordem paciente → encaminhamento não muda. Devolve só o
+    booleano. `paciente-novo` vem do `criado` do get-or-create (um paciente criado por
+    cadastro concorrente que commitou primeiro sai como `sem-carteirinha`, com a frase
+    do legado — aceitável).
+  - **`gravarCarteirinhaECrm` com carteirinha `null`**: pula a checagem de dono e o
+    UPDATE leva só `crmMedico`. O `SAVEPOINT` e o saneamento continuam valendo (um
+    CHECK do CRM ainda seria saneado); o ramo do índice único só é considerado com
+    carteirinha.
+  - **Formulário**: não havia atributo `required` (o form é `noValidate`); a mudança
+    foi trocar a validação local por `decidirCarteirinha`, pôr o texto de apoio com
+    `aria-describedby`, "(opcional)" no rótulo e placeholder "Manter a cadastrada"
+    quando o nome bate (`toLowerCase()`, aproximação do `lower()` do Postgres). A
+    linha passou de `sm:items-end` para `sm:items-start` (o texto de apoio deixa a
+    coluna mais alta), com um espaçador da altura do rótulo sobre o botão. A página
+    usa `listarPacientesParaEncaminhamento()` (nome + booleano) em vez de
+    `listarNomesDePacientes()`, que segue igual para as outras telas.
+  - **Testes**: unitários de `decidirCarteirinha` (vazio/espaço/NBSP nos três casos,
+    preenchido normalizado e inválido nos três); integração em rollback para novo e
+    legado recusados (legado também com só espaços, sem gravar CRM nem substituir o
+    encaminhamento), reenvio vazio e só com espaços mantendo a carteirinha e
+    atualizando CRM e data com uma linha de paciente e uma de encaminhamento, reenvio
+    com a mesma carteirinha, com carteirinha nova e com a de outro paciente (recusa
+    com o nome do dono, a própria intacta). **446 testes em 28 arquivos.** Os testes
+    de corrida já existentes (`situacao-requisicao`, `requisicoes`, `atendimentos`)
+    falham de forma intermitente sob a suíte inteira **também sem esta mudança**
+    (conferido com `git stash`); passam isolados.
 
 - **Carteirinha e CRM do paciente (28/10/2026, branch `feat/carteirinha-crm-dominio`,
   a partir da `main` em `d7a5ef4`; sem commit, sem merge, sem push).** Regra 20. As

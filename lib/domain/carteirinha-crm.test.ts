@@ -13,8 +13,10 @@ import { describe, expect, it } from "vitest";
 import {
   ERRO_CARTEIRINHA_INVALIDA,
   ERRO_CARTEIRINHA_OBRIGATORIA,
+  ERRO_CARTEIRINHA_OBRIGATORIA_SEM_CADASTRO,
   ERRO_CRM_INVALIDO,
   ERRO_CRM_OBRIGATORIO,
+  decidirCarteirinha,
   ehErroDaCarteirinha,
   ehErroDoCrm,
   erroCarteirinhaDeOutroPaciente,
@@ -81,6 +83,55 @@ describe("validarCarteirinha", () => {
       erro: ERRO_CARTEIRINHA_INVALIDA,
     });
   });
+});
+
+describe("decidirCarteirinha", () => {
+  it.each(["", "   ", " \u00a0\t "])(
+    "campo vazio (%j) mantém a carteirinha de quem já tem uma",
+    (texto) => {
+      expect(decidirCarteirinha(texto, "com-carteirinha")).toEqual({
+        ok: true,
+        gravar: null,
+      });
+    },
+  );
+
+  it("campo vazio é recusado para paciente novo", () => {
+    expect(decidirCarteirinha("  ", "paciente-novo")).toEqual({
+      ok: false,
+      erro: ERRO_CARTEIRINHA_OBRIGATORIA,
+    });
+  });
+
+  it("campo vazio é recusado para paciente legado, com a frase própria", () => {
+    expect(decidirCarteirinha("  ", "sem-carteirinha")).toEqual({
+      ok: false,
+      erro: ERRO_CARTEIRINHA_OBRIGATORIA_SEM_CADASTRO,
+    });
+    expect(ERRO_CARTEIRINHA_OBRIGATORIA_SEM_CADASTRO).toBe(
+      "Este paciente ainda não tem carteirinha cadastrada. Informe o número.",
+    );
+  });
+
+  it.each(["paciente-novo", "sem-carteirinha", "com-carteirinha"] as const)(
+    "campo preenchido é normalizado e gravado (%s)",
+    (situacao) => {
+      expect(decidirCarteirinha(" Ab12 3456 ", situacao)).toEqual({
+        ok: true,
+        gravar: "Ab123456",
+      });
+    },
+  );
+
+  it.each(["paciente-novo", "sem-carteirinha", "com-carteirinha"] as const)(
+    "campo preenchido fora do formato é recusado mesmo para quem tem (%s)",
+    (situacao) => {
+      expect(decidirCarteirinha("AB-12345", situacao)).toEqual({
+        ok: false,
+        erro: ERRO_CARTEIRINHA_INVALIDA,
+      });
+    },
+  );
 });
 
 describe("validarCrm", () => {
@@ -168,6 +219,7 @@ describe("mensagens", () => {
   it("separa os erros por campo, para o formulário marcar o certo", () => {
     for (const mensagem of [
       ERRO_CARTEIRINHA_OBRIGATORIA,
+      ERRO_CARTEIRINHA_OBRIGATORIA_SEM_CADASTRO,
       ERRO_CARTEIRINHA_INVALIDA,
       ERRO_CARTEIRINHA_JA_CADASTRADA,
       erroCarteirinhaDeOutroPaciente("Fulana de Teste"),

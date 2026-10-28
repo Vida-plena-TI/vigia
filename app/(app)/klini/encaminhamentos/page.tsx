@@ -9,7 +9,7 @@ import {
   contarPorStatusDeEncaminhamento,
   listarEncaminhamentos,
 } from "@/lib/domain/encaminhamentos";
-import { listarNomesDePacientes } from "@/lib/domain/pacientes";
+import { listarPacientesParaEncaminhamento } from "@/lib/domain/pacientes";
 
 import { FormularioDeEncaminhamento } from "./formulario-de-encaminhamento";
 import { ListaDeEncaminhamentos } from "./lista-de-encaminhamentos";
@@ -54,9 +54,9 @@ export default async function EncaminhamentosPage() {
 
   // Independentes entre si: buscar em paralelo evita somar as três idas ao
   // banco no tempo de resposta da página.
-  const [encaminhamentos, nomesDePacientes, hoje] = await Promise.all([
+  const [encaminhamentos, pacientes, hoje] = await Promise.all([
     listarEncaminhamentos(),
-    listarNomesDePacientes(),
+    listarPacientesParaEncaminhamento(),
     dataDeHoje(),
   ]);
 
@@ -76,7 +76,7 @@ export default async function EncaminhamentosPage() {
         <h2 className="regua-de-secao">Novo encaminhamento</h2>
 
         <FormularioDeEncaminhamento
-          nomesDePacientes={nomesDePacientes}
+          pacientes={pacientes}
           hoje={hoje}
         />
       </section>

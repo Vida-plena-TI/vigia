@@ -13,7 +13,6 @@ import { describe, expect, it } from "vitest";
 
 import {
   ERRO_CARTEIRINHA_INVALIDA,
-  ERRO_CARTEIRINHA_OBRIGATORIA,
   ERRO_CRM_INVALIDO,
   ERRO_CRM_OBRIGATORIO,
 } from "./carteirinha-crm";
@@ -135,10 +134,11 @@ describe("validarEntrada — carteirinha e CRM", () => {
     ...CARTEIRINHA_E_CRM,
   };
 
-  it("exige a carteirinha", () => {
+  it("deixa a carteirinha vazia para a transação decidir", () => {
+    // Vazio só é aceito para paciente que já tem carteirinha, e isso depende
+    // do banco — ver `decidirCarteirinha` e o teste de integração.
     expect(validarEntrada({ ...BASE, numeroCarteirinha: "   " })).toEqual({
-      ok: false,
-      erro: ERRO_CARTEIRINHA_OBRIGATORIA,
+      ok: true,
     });
   });
 

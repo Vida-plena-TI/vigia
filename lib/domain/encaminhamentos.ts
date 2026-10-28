@@ -34,8 +34,10 @@
  *
  * Desde 28/10/2026 o cadastro também grava a **carteirinha do convênio** e o
  * **CRM do médico** — no paciente, não no encaminhamento: são dados de quem é
- * atendido, e reenviar o cadastro atualiza os dois. Obrigatórios aqui,
- * opcionais na tabela (pacientes antigos não os têm). Formatos e unicidade
+ * atendido, e reenviar o cadastro atualiza os dois. O CRM é obrigatório em
+ * todo cadastro; a carteirinha, só enquanto o paciente não tem uma — depois,
+ * campo vazio mantém a gravada (ver `decidirCarteirinha`). Na tabela os dois
+ * são opcionais (pacientes antigos não os têm). Formatos e unicidade
  * moram no banco (migration `20261028120000_carteirinha_e_crm_do_paciente`);
  * ver `lib/domain/carteirinha-crm.ts`. **Nenhum dos dois vai para log, para
  * mensagem de erro nem para URL** — inclusive em erro inesperado do banco, que
@@ -47,11 +49,13 @@ import type { Prisma } from "@/lib/generated/prisma/client";
 
 import {
   ERRO_CARTEIRINHA_JA_CADASTRADA,
+  decidirCarteirinha,
   erroCarteirinhaDeOutroPaciente,
   normalizarCarteirinha,
   normalizarCrm,
   validarCarteirinha,
   validarCrm,
+  type SituacaoDaCarteirinha,
 } from "./carteirinha-crm";
 import {
   ERRO_DATA_INVALIDA,
@@ -130,7 +134,10 @@ export type EntradaNovoEncaminhamento = {
   pacienteNome: string;
   /** "AAAA-MM-DD". */
   dataEncaminhamento: string;
-  /** Como foi digitado; a normalização é de `lib/domain/carteirinha-crm.ts`. */
+  /**
+   * Como foi digitado; a normalização é de `lib/domain/carteirinha-crm.ts`.
+   * Vazio é aceito quando o paciente já tem carteirinha (mantém a gravada).
+   */
   numeroCarteirinha: string;
   /** Como foi digitado; a normalização é de `lib/domain/carteirinha-crm.ts`. */
   crmMedico: string;
@@ -195,10 +202,14 @@ export function validarEntrada(
     return { ok: false, erro: ERRO_DATA_INVALIDA };
   }
 
-  const carteirinha = validarCarteirinha(entrada.numeroCarteirinha);
+  // Só o formato. Se a carteirinha vazia é aceitável depende de o paciente já
+  // ter uma, e isso só se sabe dentro da transação (ver `gravarNaTransacao`).
+  if (normalizarCarteirinha(entrada.numeroCarteirinha)) {
+    const carteirinha = validarCarteirinha(entrada.numeroCarteirinha);
 
-  if (!carteirinha.ok) {
-    return carteirinha;
+    if (!carteirinha.ok) {
+      return carteirinha;
+    }
   }
 
   const crm = validarCrm(entrada.crmMedico);
@@ -274,6 +285,9 @@ async function donoDaCarteirinha(
 /**
  * Grava carteirinha e CRM no paciente, recusando carteirinha de outra pessoa.
  *
+ * `numeroCarteirinha: null` é "manter a gravada": o UPDATE só leva o CRM, e
+ * nem a checagem de dono nem o índice entram em jogo.
+ *
  * Duas camadas, cada uma com um papel:
  *
  * 1. **A checagem prévia é a mensagem boa.** Ela acha o dono e devolve "Esta
@@ -297,8 +311,9 @@ async function donoDaCarteirinha(
  * inalcançável (o domínio valida antes), mas é a única rota pela qual esses
  * dados chegariam a um log.
  *
- * Roda **antes** de travar o encaminhamento, e isso é ordem de lock: o UPDATE
- * trava a linha do paciente, e a exclusão de paciente também vai `paciente` →
+ * Roda **antes** de travar o encaminhamento, e isso é ordem de lock: a linha
+ * do paciente é travada primeiro (pela leitura de `situacaoDaCarteirinha`,
+ * com o mesmo lock que este UPDATE pediria), e a exclusão de paciente também vai `paciente` →
  * `encaminhamento` (`excluirPacienteNaTransacao`). Na ordem inversa, as duas
  * poderiam se travar em cruz. O lock do UPDATE é `FOR NO KEY UPDATE` — o
  * índice é de expressão e parcial, então não conta como chave para FK — e por
@@ -309,13 +324,15 @@ async function donoDaCarteirinha(
 async function gravarCarteirinhaECrm(
   tx: Prisma.TransactionClient,
   pacienteId: number,
-  numeroCarteirinha: string,
+  numeroCarteirinha: string | null,
   crmMedico: string,
 ): Promise<void> {
-  const dono = await donoDaCarteirinha(tx, numeroCarteirinha, pacienteId);
+  if (numeroCarteirinha !== null) {
+    const dono = await donoDaCarteirinha(tx, numeroCarteirinha, pacienteId);
 
-  if (dono !== null) {
-    throw new ErroDeNegocio(erroCarteirinhaDeOutroPaciente(dono));
+    if (dono !== null) {
+      throw new ErroDeNegocio(erroCarteirinhaDeOutroPaciente(dono));
+    }
   }
 
   await tx.$executeRaw`SAVEPOINT "carteirinha_do_paciente"`;
@@ -323,10 +340,13 @@ async function gravarCarteirinhaECrm(
   try {
     await tx.paciente.update({
       where: { id: pacienteId },
-      data: { numeroCarteirinha, crmMedico },
+      data:
+        numeroCarteirinha === null
+          ? { crmMedico }
+          : { numeroCarteirinha, crmMedico },
     });
   } catch (erro) {
-    if (!violouUniqueDaCarteirinha(erro)) {
+    if (numeroCarteirinha === null || !violouUniqueDaCarteirinha(erro)) {
       const codigo = (erro as { code?: unknown } | null)?.code;
 
       throw new Error(
@@ -350,6 +370,36 @@ async function gravarCarteirinhaECrm(
   }
 
   await tx.$executeRaw`RELEASE SAVEPOINT "carteirinha_do_paciente"`;
+}
+
+/**
+ * Se o paciente tem carteirinha, lido sob o lock da linha dele.
+ *
+ * O `FOR NO KEY UPDATE` é o mesmo lock que o UPDATE de `gravarCarteirinhaECrm`
+ * já tomava — só que agora tomado antes, na leitura que decide se a
+ * carteirinha é obrigatória. Por isso a ordem de lock não muda (paciente →
+ * encaminhamento) e a decisão não tem corrida: um cadastro simultâneo do mesmo
+ * paciente espera aqui, e quando passa já enxerga a carteirinha que o outro
+ * gravou (READ COMMITTED relê a linha travada).
+ *
+ * Devolve só o booleano: o número não sai do banco à toa.
+ */
+async function situacaoDaCarteirinha(
+  tx: Prisma.TransactionClient,
+  paciente: { id: number; criado: boolean },
+): Promise<SituacaoDaCarteirinha> {
+  const [linha] = await tx.$queryRaw<{ temCarteirinha: boolean }[]>`
+    SELECT "numero_carteirinha" IS NOT NULL AS "temCarteirinha"
+    FROM "paciente"
+    WHERE "id" = ${paciente.id}
+    FOR NO KEY UPDATE
+  `;
+
+  if (paciente.criado) {
+    return "paciente-novo";
+  }
+
+  return linha?.temCarteirinha ? "com-carteirinha" : "sem-carteirinha";
 }
 
 /** O que o `RETURNING` do upsert devolve, já com as datas como texto. */
@@ -381,10 +431,22 @@ async function gravarNaTransacao(
   const paciente = await obterOuCriarPaciente(tx, pacienteNome);
 
   // Antes do encaminhamento, por ordem de lock — ver `gravarCarteirinhaECrm`.
+  // A obrigatoriedade da carteirinha é decidida aqui, e não em
+  // `validarEntrada`, porque depende do que o paciente já tem. O `throw` desfaz
+  // o paciente recém-criado, como na recusa por dono.
+  const carteirinha = decidirCarteirinha(
+    entrada.numeroCarteirinha,
+    await situacaoDaCarteirinha(tx, paciente),
+  );
+
+  if (!carteirinha.ok) {
+    throw new ErroDeNegocio(carteirinha.erro);
+  }
+
   await gravarCarteirinhaECrm(
     tx,
     paciente.id,
-    normalizarCarteirinha(entrada.numeroCarteirinha),
+    carteirinha.gravar,
     normalizarCrm(entrada.crmMedico),
   );
 
@@ -396,7 +458,7 @@ async function gravarNaTransacao(
   // O `FOR UPDATE` trava a linha existente: dois cadastros simultâneos para o
   // mesmo paciente passam a ser sequenciais, e o segundo enxerga o resultado do
   // primeiro em vez de os dois se acharem o primeiro. Quando ainda não existe
-  // linha não há o que travar — mas desde 28/10/2026 o UPDATE da carteirinha,
+  // linha não há o que travar — mas desde 28/10/2026 a leitura da carteirinha,
   // logo acima, já trava a linha do *paciente*, e serializa também essa
   // corrida (dois cadastros do primeiro encaminhamento do mesmo paciente). O
   // `ON CONFLICT` continua sendo o que garante uma linha só.

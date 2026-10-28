@@ -22,6 +22,8 @@ import { getPrismaClient } from "@/lib/db";
 
 import {
   ERRO_CARTEIRINHA_INVALIDA,
+  ERRO_CARTEIRINHA_OBRIGATORIA,
+  ERRO_CARTEIRINHA_OBRIGATORIA_SEM_CADASTRO,
   ERRO_CRM_INVALIDO,
   erroCarteirinhaDeOutroPaciente,
 } from "./carteirinha-crm";
@@ -607,5 +609,230 @@ describe.skipIf(!temBanco)("carteirinha e CRM contra o banco real", () => {
     });
     expect(resultado.crm).toEqual({ ok: false, erro: ERRO_CRM_INVALIDO });
     expect(resultado.pacientes).toHaveLength(0);
+  });
+
+  describe("carteirinha obrigatória só enquanto o paciente não tem uma", () => {
+    /** A data do encaminhamento do paciente `nome`, ou `null` se não tem. */
+    async function dataDoEncaminhamento(
+      tx: ClienteDaTransacao,
+      nome: string,
+    ): Promise<string | null> {
+      const [linha] = await tx.$queryRaw<{ data: string }[]>`
+        SELECT e."data_encaminhamento"::text AS "data"
+        FROM "encaminhamento" e
+        JOIN "paciente" p ON p."id" = e."paciente_id"
+        WHERE lower(p."nome") = lower(${nome})
+      `;
+
+      return linha?.data ?? null;
+    }
+
+    /** Paciente de antes de 28/10/2026: sem carteirinha nem CRM, com encaminhamento. */
+    async function inserirLegado(
+      tx: ClienteDaTransacao,
+      nome: string,
+    ): Promise<void> {
+      const id = await inserirPacienteCru(tx, nome);
+      await tx.$executeRaw`
+        INSERT INTO "encaminhamento" ("paciente_id", "data_encaminhamento")
+        VALUES (${id}, '2026-09-01'::date)
+      `;
+    }
+
+    it("paciente novo sem carteirinha é recusado", async () => {
+      const nome = `Obrigatoria Novo ${SUFIXO}`;
+
+      const resultado = await comRollback(async (tx) => ({
+        recusa: await registrarEncaminhamentoNaTransacao(
+          tx,
+          entrada(nome, { numeroCarteirinha: "" }),
+        ),
+        pacientes: await pacientesComNome(tx, nome),
+        encaminhamentos: await contarEncaminhamentos(tx, nome),
+      }));
+
+      expect(resultado.recusa).toEqual({
+        ok: false,
+        erro: ERRO_CARTEIRINHA_OBRIGATORIA,
+      });
+      expect(resultado.encaminhamentos).toBe(0);
+      // Nesta variante o paciente do get-or-create fica na transação (o
+      // rollback é do chamador); ele não ganhou nem carteirinha nem CRM.
+      expect(
+        resultado.pacientes.every(
+          (p) => p.numeroCarteirinha === null && p.crmMedico === null,
+        ),
+      ).toBe(true);
+    });
+
+    it("paciente legado sem carteirinha é recusado com a frase própria", async () => {
+      const nome = `Obrigatoria Legado ${SUFIXO}`;
+
+      const resultado = await comRollback(async (tx) => {
+        await inserirLegado(tx, nome);
+
+        return {
+          vazio: await registrarEncaminhamentoNaTransacao(
+            tx,
+            entrada(nome, {
+              numeroCarteirinha: "",
+              dataEncaminhamento: "2026-10-20",
+            }),
+          ),
+          soEspacos: await registrarEncaminhamentoNaTransacao(
+            tx,
+            entrada(nome, { numeroCarteirinha: "  \t  " }),
+          ),
+          pacientes: await pacientesComNome(tx, nome),
+          data: await dataDoEncaminhamento(tx, nome),
+        };
+      });
+
+      for (const recusa of [resultado.vazio, resultado.soEspacos]) {
+        expect(recusa).toEqual({
+          ok: false,
+          erro: ERRO_CARTEIRINHA_OBRIGATORIA_SEM_CADASTRO,
+        });
+      }
+      // Nada mudou: nem o CRM foi gravado, nem o encaminhamento substituído.
+      expect(resultado.pacientes).toHaveLength(1);
+      expect(resultado.pacientes[0]).toMatchObject({
+        numeroCarteirinha: null,
+        crmMedico: null,
+      });
+      expect(resultado.data).toBe("2026-09-01");
+    });
+
+    it.each([
+      ["vazio", ""],
+      ["só com espaços", "  \u00a0 \t "],
+    ])(
+      "reenvio com campo %s mantém a carteirinha e atualiza CRM e encaminhamento",
+      async (rotulo, campo) => {
+        const nome = `Opcional Reenvio ${SUFIXO} ${rotulo}`;
+        const carteirinha = carteirinhaDeTeste();
+
+        const resultado = await comRollback(async (tx) => {
+          await registrarEncaminhamentoNaTransacao(
+            tx,
+            entrada(nome, { numeroCarteirinha: carteirinha, crmMedico: "111" }),
+          );
+
+          return {
+            reenvio: await registrarEncaminhamentoNaTransacao(
+              tx,
+              entrada(nome, {
+                numeroCarteirinha: campo,
+                crmMedico: "222.333",
+                dataEncaminhamento: "2026-10-20",
+              }),
+            ),
+            pacientes: await pacientesComNome(tx, nome),
+            encaminhamentos: await contarEncaminhamentos(tx, nome),
+            data: await dataDoEncaminhamento(tx, nome),
+          };
+        });
+
+        expect(resultado.reenvio).toMatchObject({
+          ok: true,
+          pacienteCriado: false,
+          substituiuAnterior: true,
+        });
+        expect(resultado.pacientes).toHaveLength(1);
+        expect(resultado.pacientes[0]).toMatchObject({
+          numeroCarteirinha: carteirinha,
+          crmMedico: "222333",
+        });
+        expect(resultado.encaminhamentos).toBe(1);
+        expect(resultado.data).toBe("2026-10-20");
+      },
+    );
+
+    it("reenvio com a mesma carteirinha não é conflito consigo mesmo", async () => {
+      const nome = `Opcional Igual ${SUFIXO}`;
+      const carteirinha = carteirinhaDeTeste();
+
+      const resultado = await comRollback(async (tx) => {
+        await registrarEncaminhamentoNaTransacao(
+          tx,
+          entrada(nome, { numeroCarteirinha: carteirinha }),
+        );
+
+        return {
+          reenvio: await registrarEncaminhamentoNaTransacao(
+            tx,
+            entrada(nome, { numeroCarteirinha: ` ${carteirinha} ` }),
+          ),
+          pacientes: await pacientesComNome(tx, nome),
+        };
+      });
+
+      expect(resultado.reenvio).toMatchObject({ ok: true });
+      expect(resultado.pacientes).toHaveLength(1);
+      expect(resultado.pacientes[0].numeroCarteirinha).toBe(carteirinha);
+    });
+
+    it("reenvio com carteirinha nova válida atualiza", async () => {
+      const nome = `Opcional Nova ${SUFIXO}`;
+      const antiga = carteirinhaDeTeste();
+      const nova = carteirinhaDeTeste();
+
+      const resultado = await comRollback(async (tx) => {
+        await registrarEncaminhamentoNaTransacao(
+          tx,
+          entrada(nome, { numeroCarteirinha: antiga }),
+        );
+
+        return {
+          reenvio: await registrarEncaminhamentoNaTransacao(
+            tx,
+            entrada(nome, { numeroCarteirinha: nova }),
+          ),
+          pacientes: await pacientesComNome(tx, nome),
+        };
+      });
+
+      expect(resultado.reenvio).toMatchObject({ ok: true });
+      expect(resultado.pacientes).toHaveLength(1);
+      expect(resultado.pacientes[0].numeroCarteirinha).toBe(nova);
+    });
+
+    it("reenvio com carteirinha de outro paciente é recusado com o nome do dono", async () => {
+      const dono = `Opcional Dono ${SUFIXO}`;
+      const nome = `Opcional Proprio ${SUFIXO}`;
+      const doDono = carteirinhaDeTeste();
+      const propria = carteirinhaDeTeste();
+
+      const resultado = await comRollback(async (tx) => {
+        await registrarEncaminhamentoNaTransacao(
+          tx,
+          entrada(dono, { numeroCarteirinha: doDono }),
+        );
+        await registrarEncaminhamentoNaTransacao(
+          tx,
+          entrada(nome, { numeroCarteirinha: propria, crmMedico: "111" }),
+        );
+
+        return {
+          recusa: await registrarEncaminhamentoNaTransacao(
+            tx,
+            entrada(nome, {
+              numeroCarteirinha: doDono.toLowerCase(),
+              crmMedico: "999",
+            }),
+          ),
+          pacientes: await pacientesComNome(tx, nome),
+        };
+      });
+
+      expect(resultado.recusa).toEqual({
+        ok: false,
+        erro: erroCarteirinhaDeOutroPaciente(dono),
+      });
+      expect(resultado.pacientes[0]).toMatchObject({
+        numeroCarteirinha: propria,
+        crmMedico: "111",
+      });
+    });
   });
 });

@@ -1,6 +1,6 @@
 "use client";
 
-import { useActionState, useEffect, useRef, useState } from "react";
+import { useActionState, useEffect, useMemo, useRef, useState } from "react";
 import { useFormStatus } from "react-dom";
 import { toast } from "sonner";
 
@@ -12,16 +12,18 @@ import {
   type EstadoNovoEncaminhamento,
 } from "@/lib/domain/encaminhamentos-actions";
 import {
+  decidirCarteirinha,
   ehErroDaCarteirinha,
   ehErroDoCrm,
-  validarCarteirinha,
   validarCrm,
+  type SituacaoDaCarteirinha,
 } from "@/lib/domain/carteirinha-crm";
 import {
   ERRO_DATA_OBRIGATORIA,
   ERRO_PACIENTE_OBRIGATORIO,
   mensagemDeCadastro,
 } from "@/lib/domain/encaminhamentos-mensagens";
+import type { PacienteParaEncaminhamento } from "@/lib/domain/pacientes";
 
 import { formatarData } from "../dashboard/formato";
 
@@ -46,12 +48,17 @@ const ESTADO_INICIAL: EstadoNovoEncaminhamento = {};
  * é alcançável por POST direto. As duas leem as mesmas mensagens de
  * `lib/domain/encaminhamentos-mensagens.ts` para não divergirem — e, para
  * carteirinha e CRM, as mesmas funções de `lib/domain/carteirinha-crm.ts`.
+ *
+ * A carteirinha só é obrigatória enquanto o paciente não tem uma (regra 20).
+ * O formulário recebe, por nome, apenas *se* existe carteirinha — nunca o
+ * número — e com isso marca o campo como opcional. Quem decide de verdade é a
+ * transação do servidor, que lê o paciente travado.
  */
 export function FormularioDeEncaminhamento({
-  nomesDePacientes,
+  pacientes,
   hoje,
 }: {
-  nomesDePacientes: string[];
+  pacientes: PacienteParaEncaminhamento[];
   /** "AAAA-MM-DD" vinda do `CURRENT_DATE` do banco. */
   hoje: string;
 }) {
@@ -78,6 +85,30 @@ export function FormularioDeEncaminhamento({
   // O erro do cliente só vale até a próxima submissão; depois disso quem manda
   // é a resposta do servidor.
   const erroExibido = erroLocal ?? estado.erro;
+
+  // Chave `toLowerCase()` para casar com o get-or-create, que compara por
+  // `lower(nome)`. Pode discordar do Postgres em letra exótica; aí o pior caso
+  // é a dica errada, e o servidor responde com a frase certa.
+  const temCarteirinhaPorNome = useMemo(
+    () =>
+      new Map(
+        pacientes.map((paciente) => [
+          paciente.nome.toLowerCase(),
+          paciente.temCarteirinha,
+        ]),
+      ),
+    [pacientes],
+  );
+  const temCarteirinha = temCarteirinhaPorNome.get(
+    pacienteNome.trim().toLowerCase(),
+  );
+  const situacaoDaCarteirinha: SituacaoDaCarteirinha =
+    temCarteirinha === undefined
+      ? "paciente-novo"
+      : temCarteirinha
+        ? "com-carteirinha"
+        : "sem-carteirinha";
+  const carteirinhaOpcional = situacaoDaCarteirinha === "com-carteirinha";
 
   useEffect(() => {
     const sucesso = estado.sucesso;
@@ -137,7 +168,10 @@ export function FormularioDeEncaminhamento({
       return;
     }
 
-    const carteirinha = validarCarteirinha(numeroCarteirinha);
+    const carteirinha = decidirCarteirinha(
+      numeroCarteirinha,
+      situacaoDaCarteirinha,
+    );
 
     if (!carteirinha.ok) {
       evento.preventDefault();
@@ -163,7 +197,11 @@ export function FormularioDeEncaminhamento({
       noValidate
       className="flex flex-col gap-4"
     >
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
+      {/*
+        `items-start`, não `items-end`: o texto de apoio da carteirinha deixa a
+        coluna dela mais alta, e alinhar pelo pé desceria os outros campos.
+      */}
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start">
         <div className="flex min-w-0 flex-1 flex-col gap-1.5">
           <Label htmlFor="pacienteNome" className="text-xs">
             Nome do paciente
@@ -191,7 +229,7 @@ export function FormularioDeEncaminhamento({
             é o comportamento que o get-or-create do servidor espera.
           */}
           <datalist id="pacientes-existentes">
-            {nomesDePacientes.map((nome) => (
+            {pacientes.map(({ nome }) => (
               <option key={nome} value={nome} />
             ))}
           </datalist>
@@ -200,6 +238,11 @@ export function FormularioDeEncaminhamento({
         <div className="flex flex-col gap-1.5 sm:w-48">
           <Label htmlFor="numeroCarteirinha" className="text-xs">
             Nº da carteirinha
+            {carteirinhaOpcional ? (
+              <span className="font-normal text-muted-foreground">
+                (opcional)
+              </span>
+            ) : null}
           </Label>
           <Input
             id="numeroCarteirinha"
@@ -209,12 +252,20 @@ export function FormularioDeEncaminhamento({
             maxLength={40}
             className="h-9"
             value={numeroCarteirinha}
+            placeholder={carteirinhaOpcional ? "Manter a cadastrada" : undefined}
+            aria-describedby="numeroCarteirinha-apoio"
             aria-invalid={ehErroDaCarteirinha(erroExibido) ? true : undefined}
             onChange={(evento) => {
               setMensagemDeSucesso(null);
               setNumeroCarteirinha(evento.target.value);
             }}
           />
+          <p
+            id="numeroCarteirinha-apoio"
+            className="text-xs text-muted-foreground"
+          >
+            Opcional se o paciente já tem carteirinha cadastrada.
+          </p>
         </div>
 
         <div className="flex flex-col gap-1.5 sm:w-32">
@@ -254,7 +305,13 @@ export function FormularioDeEncaminhamento({
           />
         </div>
 
-        <BotaoDeSubmit />
+        {/* Espaço da altura do rótulo, para o botão ficar na linha dos campos. */}
+        <div className="flex flex-col gap-1.5">
+          <span aria-hidden className="hidden text-xs leading-none sm:block">
+            &nbsp;
+          </span>
+          <BotaoDeSubmit />
+        </div>
       </div>
 
       {erroExibido ? (

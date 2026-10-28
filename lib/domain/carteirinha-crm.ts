@@ -26,6 +26,7 @@
 import {
   ERRO_CARTEIRINHA_INVALIDA,
   ERRO_CARTEIRINHA_OBRIGATORIA,
+  ERRO_CARTEIRINHA_OBRIGATORIA_SEM_CADASTRO,
   ERRO_CRM_INVALIDO,
   ERRO_CRM_OBRIGATORIO,
 } from "./carteirinha-crm-mensagens";
@@ -64,6 +65,59 @@ export function validarCarteirinha(texto: string): ResultadoDeNormalizacao {
   }
 
   return { ok: true, valor };
+}
+
+/**
+ * O que se sabe do paciente na hora de decidir se a carteirinha é obrigatória.
+ *
+ * - `paciente-novo`: o cadastro vai criar o paciente agora;
+ * - `sem-carteirinha`: o paciente existe, mas nunca teve carteirinha (legado);
+ * - `com-carteirinha`: o paciente já tem uma gravada.
+ *
+ * Nenhum dos três carrega o número: para decidir basta saber se ele existe, e
+ * é só isso que o formulário recebe do servidor.
+ */
+export type SituacaoDaCarteirinha =
+  | "paciente-novo"
+  | "sem-carteirinha"
+  | "com-carteirinha";
+
+/**
+ * `gravar: null` é "manter a carteirinha que está lá" — a coluna não é tocada.
+ * Não é "apagar": não existe caminho, por este formulário, que volte a
+ * carteirinha para NULL.
+ */
+export type DecisaoDaCarteirinha =
+  | { ok: true; gravar: string | null }
+  | { ok: false; erro: string };
+
+/**
+ * A carteirinha é obrigatória só enquanto o paciente não tem uma (regra 20).
+ *
+ * Campo preenchido é sempre validado e gravado, tenha o paciente carteirinha
+ * ou não. Campo vazio (ou só espaço) é aceito apenas para quem já tem uma, e
+ * aí significa "manter". O servidor chama esta função **dentro** da transação,
+ * com a situação lida sob o lock da linha do paciente; o formulário chama a
+ * mesma com a situação que deduz do nome digitado, só como conveniência.
+ */
+export function decidirCarteirinha(
+  texto: string,
+  situacao: SituacaoDaCarteirinha,
+): DecisaoDaCarteirinha {
+  if (normalizarCarteirinha(texto)) {
+    const validacao = validarCarteirinha(texto);
+
+    return validacao.ok ? { ok: true, gravar: validacao.valor } : validacao;
+  }
+
+  switch (situacao) {
+    case "com-carteirinha":
+      return { ok: true, gravar: null };
+    case "sem-carteirinha":
+      return { ok: false, erro: ERRO_CARTEIRINHA_OBRIGATORIA_SEM_CADASTRO };
+    case "paciente-novo":
+      return { ok: false, erro: ERRO_CARTEIRINHA_OBRIGATORIA };
+  }
 }
 
 /** Normaliza e valida o CRM; devolve o valor que deve ser gravado. */

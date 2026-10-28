@@ -105,6 +105,32 @@ export async function listarNomesDePacientes(): Promise<string[]> {
   return pacientes.map((paciente) => paciente.nome);
 }
 
+/** Um nome do `datalist` de encaminhamentos, com o que o formulário precisa. */
+export type PacienteParaEncaminhamento = {
+  nome: string;
+  /** Só se existe carteirinha — o número nunca vai para o cliente. */
+  temCarteirinha: boolean;
+};
+
+/**
+ * Nomes de pacientes para o formulário de encaminhamento.
+ *
+ * Igual a {@link listarNomesDePacientes}, mais um booleano: com ele o campo da
+ * carteirinha aparece como opcional quando o nome digitado é de quem já tem
+ * uma (regra 20). É dica de tela; quem decide é a transação do cadastro.
+ */
+export async function listarPacientesParaEncaminhamento(): Promise<
+  PacienteParaEncaminhamento[]
+> {
+  return getPrismaClient().$queryRaw<PacienteParaEncaminhamento[]>`
+    SELECT
+      "nome",
+      "numero_carteirinha" IS NOT NULL AS "temCarteirinha"
+    FROM "paciente"
+    ORDER BY lower("nome"), "id"
+  `;
+}
+
 /**
  * ---------------------------------------------------------------------------
  * Exclusão permanente e completa de um paciente

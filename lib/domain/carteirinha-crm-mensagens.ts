@@ -13,6 +13,15 @@
 
 export const ERRO_CARTEIRINHA_OBRIGATORIA = "Informe o número da carteirinha.";
 
+/**
+ * Carteirinha em branco para paciente que já existe mas nunca teve uma
+ * (cadastrado antes de 28/10/2026). Frase própria porque, para quem digitou o
+ * nome de um paciente conhecido, "Informe o número" sem contexto pareceria
+ * contradizer o "opcional" do campo.
+ */
+export const ERRO_CARTEIRINHA_OBRIGATORIA_SEM_CADASTRO =
+  "Este paciente ainda não tem carteirinha cadastrada. Informe o número.";
+
 export const ERRO_CARTEIRINHA_INVALIDA =
   "Número da carteirinha inválido. Use de 5 a 25 letras ou números, sem acentos nem símbolos.";
 
@@ -49,6 +58,7 @@ export const ERRO_CARTEIRINHA_JA_CADASTRADA =
 export function ehErroDaCarteirinha(mensagem: string | undefined): boolean {
   return (
     mensagem === ERRO_CARTEIRINHA_OBRIGATORIA ||
+    mensagem === ERRO_CARTEIRINHA_OBRIGATORIA_SEM_CADASTRO ||
     mensagem === ERRO_CARTEIRINHA_INVALIDA ||
     (mensagem?.startsWith(PREFIXO_CARTEIRINHA_DE_OUTRO_PACIENTE) ?? false)
   );
