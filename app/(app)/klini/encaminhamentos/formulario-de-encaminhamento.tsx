@@ -12,6 +12,12 @@ import {
   type EstadoNovoEncaminhamento,
 } from "@/lib/domain/encaminhamentos-actions";
 import {
+  ehErroDaCarteirinha,
+  ehErroDoCrm,
+  validarCarteirinha,
+  validarCrm,
+} from "@/lib/domain/carteirinha-crm";
+import {
   ERRO_DATA_OBRIGATORIA,
   ERRO_PACIENTE_OBRIGATORIO,
   mensagemDeCadastro,
@@ -38,7 +44,8 @@ const ESTADO_INICIAL: EstadoNovoEncaminhamento = {};
  *
  * A validação daqui é conveniência — quem de fato recusa é a Server Action, que
  * é alcançável por POST direto. As duas leem as mesmas mensagens de
- * `lib/domain/encaminhamentos-mensagens.ts` para não divergirem.
+ * `lib/domain/encaminhamentos-mensagens.ts` para não divergirem — e, para
+ * carteirinha e CRM, as mesmas funções de `lib/domain/carteirinha-crm.ts`.
  */
 export function FormularioDeEncaminhamento({
   nomesDePacientes,
@@ -61,6 +68,8 @@ export function FormularioDeEncaminhamento({
   // inteiro a cada paciente da fila. O "hoje" vem do `CURRENT_DATE` do banco,
   // não do relógio do navegador, pelo mesmo motivo de "Lançar atendimento".
   const [dataEncaminhamento, setDataEncaminhamento] = useState(hoje);
+  const [numeroCarteirinha, setNumeroCarteirinha] = useState("");
+  const [crmMedico, setCrmMedico] = useState("");
   const [erroLocal, setErroLocal] = useState<string | null>(null);
   const [mensagemDeSucesso, setMensagemDeSucesso] = useState<string | null>(
     null,
@@ -99,6 +108,11 @@ export function FormularioDeEncaminhamento({
     setMensagemDeSucesso(mensagem);
     setPacienteNome("");
     setDataEncaminhamento(hoje);
+    // Carteirinha e CRM voltam vazios como o nome: são do paciente (e do
+    // médico dele), e herdá-los no próximo da fila gravaria o dado de um no
+    // cadastro do outro sem ninguém perceber.
+    setNumeroCarteirinha("");
+    setCrmMedico("");
     setErroLocal(null);
 
     requestAnimationFrame(() => campoPacienteRef.current?.focus());
@@ -120,6 +134,22 @@ export function FormularioDeEncaminhamento({
     if (!dataEncaminhamento.trim()) {
       evento.preventDefault();
       setErroLocal(ERRO_DATA_OBRIGATORIA);
+      return;
+    }
+
+    const carteirinha = validarCarteirinha(numeroCarteirinha);
+
+    if (!carteirinha.ok) {
+      evento.preventDefault();
+      setErroLocal(carteirinha.erro);
+      return;
+    }
+
+    const crm = validarCrm(crmMedico);
+
+    if (!crm.ok) {
+      evento.preventDefault();
+      setErroLocal(crm.erro);
       return;
     }
 
@@ -165,6 +195,46 @@ export function FormularioDeEncaminhamento({
               <option key={nome} value={nome} />
             ))}
           </datalist>
+        </div>
+
+        <div className="flex flex-col gap-1.5 sm:w-48">
+          <Label htmlFor="numeroCarteirinha" className="text-xs">
+            Nº da carteirinha
+          </Label>
+          <Input
+            id="numeroCarteirinha"
+            name="numeroCarteirinha"
+            autoComplete="off"
+            spellCheck={false}
+            maxLength={40}
+            className="h-9"
+            value={numeroCarteirinha}
+            aria-invalid={ehErroDaCarteirinha(erroExibido) ? true : undefined}
+            onChange={(evento) => {
+              setMensagemDeSucesso(null);
+              setNumeroCarteirinha(evento.target.value);
+            }}
+          />
+        </div>
+
+        <div className="flex flex-col gap-1.5 sm:w-32">
+          <Label htmlFor="crmMedico" className="text-xs">
+            CRM do médico
+          </Label>
+          <Input
+            id="crmMedico"
+            name="crmMedico"
+            inputMode="numeric"
+            autoComplete="off"
+            maxLength={20}
+            className="h-9"
+            value={crmMedico}
+            aria-invalid={ehErroDoCrm(erroExibido) ? true : undefined}
+            onChange={(evento) => {
+              setMensagemDeSucesso(null);
+              setCrmMedico(evento.target.value);
+            }}
+          />
         </div>
 
         <div className="flex flex-col gap-1.5 sm:w-44">

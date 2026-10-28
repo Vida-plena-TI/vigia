@@ -71,6 +71,14 @@ const temBanco = Boolean(process.env.DATABASE_URL);
 /** Sufixo único para não colidir com dados já existentes no banco de dev. */
 const SUFIXO = Math.random().toString(36).slice(2, 10);
 
+/**
+ * Carteirinha sintética e única por chamada: o índice único da carteirinha é
+ * global, e cada encaminhamento de teste é de um paciente diferente.
+ */
+function carteirinhaDeTeste(): string {
+  return `T${crypto.randomUUID().replace(/-/g, "").slice(0, 20)}`;
+}
+
 const DATA = "2026-01-15";
 
 const CAMINHO_DA_MIGRATION = fileURLToPath(
@@ -404,6 +412,8 @@ describe.skipIf(!temBanco)("situação da requisição — schema e regras", () 
       const encaminhamento = await registrarEncaminhamentoNaTransacao(tx, {
         pacienteNome,
         dataEncaminhamento: "2026-10-01",
+        numeroCarteirinha: carteirinhaDeTeste(),
+        crmMedico: "123456",
       });
       if (!encaminhamento.ok) throw new Error(encaminhamento.erro);
 
@@ -470,6 +480,8 @@ describe.skipIf(!temBanco)("situação da requisição — schema e regras", () 
       const encaminhamento = await registrarEncaminhamentoNaTransacao(tx, {
         pacienteNome,
         dataEncaminhamento: "2026-10-01",
+        numeroCarteirinha: carteirinhaDeTeste(),
+        crmMedico: "123456",
       });
       if (!encaminhamento.ok) throw new Error(encaminhamento.erro);
 

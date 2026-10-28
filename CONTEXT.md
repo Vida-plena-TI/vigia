@@ -40,7 +40,10 @@ Sistema de controle de autorizações de terapia de uma clínica.
 
 - **paciente**: id, nome (texto, indexado). Get-or-create por nome, comparação
   case-insensitive, nome sempre trimado antes de salvar/buscar. **Único case-insensitive**
-  no banco via índice `UNIQUE (lower(nome))`.
+  no banco via índice `UNIQUE (lower(nome))`. Desde 28/10/2026 também
+  **numero_carteirinha** (texto, **NULL permitido**, `CHECK ~ '^[A-Za-z0-9]{5,25}$'`,
+  único sem caixa via `UNIQUE (lower(numero_carteirinha)) WHERE numero_carteirinha IS NOT
+  NULL`) e **crm_medico** (texto, **NULL permitido**, `CHECK ~ '^[0-9]{1,10}$'`) — regra 20.
 - **usuario**: id, username (único, comparação **case-sensitive** — diferente de
   paciente.nome), password_hash (bcrypt), ativo (bool, default true), **papel** (texto,
   `NOT NULL`, `CHECK (papel IN ('admin', 'recepcao'))`, **sem default**). O `papel` entrou
@@ -314,6 +317,28 @@ teste passar hoje e mentir no mês que vem.
       `requisicao_terapia_saldo` nem no `status_alerta`. Uma guia de requisição
       solicitada continua avaliada pelas mesmas regras de saldo e validade.
 
+20. **Carteirinha e CRM no paciente (28/10/2026).** O número da carteirinha do convênio e
+    o CRM do médico que encaminhou são dados **do paciente** (colunas
+    `paciente.numero_carteirinha` e `paciente.crm_medico`), não do encaminhamento.
+    - **Obrigatórios no cadastro de encaminhamento** (Klini), junto de nome e data. A
+      gravação mora na mesma transação de sempre: get-or-create do paciente →
+      carteirinha/CRM no paciente → upsert do encaminhamento. **Reenviar atualiza** os
+      dois (inclusive para o mesmo paciente com CRM diferente), sem duplicar paciente nem
+      encaminhamento.
+    - **NULL permitido na tabela**, de propósito: pacientes cadastrados antes de 28/10/2026
+      não têm esses dados, e NULL é "não informado". Paciente antigo continua listando,
+      com os dois campos nulos. Não há backfill nem `NOT NULL`.
+    - **Formatos** (normalização no domínio, garantia no banco): carteirinha tem espaços
+      removidos (pontas e meio) e depois precisa ter 5 a 25 letras ou dígitos ASCII —
+      sem acento, hífen, ponto ou barra; a caixa é gravada como veio. CRM tem pontos e
+      espaços removidos e depois precisa ter 1 a 10 dígitos — sem UF.
+    - **Uma carteirinha pertence a um paciente só**, comparando sem caixa (`ABC123` e
+      `abc123` são a mesma). Carteirinha de outro paciente é recusada com "Esta
+      carteirinha já está cadastrada para <nome>.". O mesmo paciente reenviando a própria
+      carteirinha (até em outra caixa) não é conflito.
+    - **Carteirinha e CRM nunca vão para log, mensagem de erro, exceção não tratada,
+      URL ou query string.**
+
 ## Decisões assumidas (perguntas em aberto no relatório de auditoria original)
 
 - `paciente.nome`: único case-insensitive no banco.
@@ -329,6 +354,77 @@ teste passar hoje e mentir no mês que vem.
 - Edição de atendimento para 0 créditos continua permitida.
 
 ## Decisões tomadas durante a implementação (não estavam no relatório original)
+
+- **Carteirinha e CRM do paciente (28/10/2026, branch `feat/carteirinha-crm-dominio`,
+  a partir da `main` em `d7a5ef4`; sem commit, sem merge, sem push).** Regra 20. As
+  decisões do caminho:
+  - **Migration `20261028120000_carteirinha_e_crm_do_paciente`, aditiva**: duas
+    `ADD COLUMN ... TEXT` sem default e sem `NOT NULL` (não reescreve linha nenhuma), dois
+    `CHECK` (`paciente_numero_carteirinha_formato`, `paciente_crm_medico_formato`) e o
+    índice `paciente_numero_carteirinha_lower_key` — `UNIQUE (lower(numero_carteirinha))
+    WHERE numero_carteirinha IS NOT NULL`. No schema, `numeroCarteirinha String?` e
+    `crmMedico String?` com `@map`; CHECK e índice de expressão/parcial **não** são
+    expressáveis no Prisma e a introspecção os ignora (como o de `paciente.nome`).
+    Conferido: `migrate dev --create-only` depois de aplicar gerou migration **vazia**
+    (apagada em seguida, nunca aplicada), `migrate diff --from-config-datasource
+    --to-schema` vazio, e `db pull --print` devolve o model com os dois campos e nada
+    mais. Não há coluna gerada aqui, então o problema do `@default(dbgenerated)` não se
+    aplica.
+  - **O regex do Postgres recusa letra acentuada** (`Ç`, `é`) em `[A-Za-z0-9]` também
+    na collation `Portuguese_Brazil.1252` do banco local — testado, não suposto.
+  - **Domínio**: funções puras em `lib/domain/carteirinha-crm.ts` (`validarCarteirinha`,
+    `validarCrm`, `normalizarCarteirinha`, `normalizarCrm`; espelho dos CHECK, como
+    `PAPEIS`) e mensagens em `lib/domain/carteirinha-crm-mensagens.ts`, sem import de
+    banco, lidas também pelo formulário. Normalizar é só tirar espaço (e ponto, no CRM);
+    hífen, barra e "CRM/SP" **não** são removidos em silêncio — caem na validação, para
+    não gravar um número diferente do documento.
+  - **Nomes mantidos**: o pedido falava em `criarEncaminhamento` com `nome`; a função que
+    existe é `registrarEncaminhamento` (é upsert) e o campo é `pacienteNome`. Foram
+    mantidos; entraram `numeroCarteirinha` e `crmMedico` em `EntradaNovoEncaminhamento`,
+    obrigatórios no tipo e em `validarEntrada` (a action só lê o `FormData`). O
+    formulário de encaminhamentos ganhou os dois campos — sem eles a action passaria a
+    recusar todo cadastro pela tela. Os dois voltam vazios depois do sucesso, como o nome.
+  - **Ordem dentro da transação**: get-or-create → `gravarCarteirinhaECrm` (checagem
+    prévia + UPDATE do paciente) → `FOR UPDATE` do encaminhamento → upsert. A
+    carteirinha vem **antes** do encaminhamento por ordem de lock: o UPDATE trava a linha
+    do paciente, e a exclusão de paciente vai `paciente` → `encaminhamento`; na ordem
+    inversa as duas poderiam se travar em cruz. O lock do UPDATE é `FOR NO KEY UPDATE`
+    (índice de expressão e parcial não conta como chave de FK), então não conflita com o
+    `FOR KEY SHARE` de um INSERT de requisição/encaminhamento. Efeito colateral: dois
+    cadastros simultâneos do *primeiro* encaminhamento do mesmo paciente agora se
+    serializam no paciente.
+  - **Checagem prévia é a mensagem; o índice é a garantia.** A checagem usa
+    `lower(numero_carteirinha) = lower($1)` (a expressão do índice) e acha o dono. Na
+    corrida (dois pacientes, mesma carteirinha, ninguém enxerga o outro), o segundo
+    UPDATE recebe `23505` do índice. O UPDATE roda dentro de um `SAVEPOINT`: sem ele a
+    transação ficaria abortada e não daria para consultar o nome; com ele, `ROLLBACK TO
+    SAVEPOINT`, consulta o dono (que já commitou) e lança a mesma frase. O erro de negócio
+    é **lançado** (não devolvido) para desfazer o paciente que o get-or-create acabou de
+    criar — mesmo desenho de `criarRequisicao`. Se o dono sumiu entre uma coisa e outra,
+    sai `ERRO_CARTEIRINHA_JA_CADASTRADA` ("... para outro paciente.").
+  - **Saneamento de erro inesperado.** Uma violação de CHECK traz em
+    `meta.driverAdapterError.cause.detail` o "Failing row contains (...)" do Postgres —
+    a linha inteira, carteirinha e CRM inclusive —, e uma exceção não tratada é logada
+    pelo Next com isso. Qualquer erro do UPDATE que não seja o do índice é relançado como
+    `Error` novo, só com id do paciente e código do Prisma, **sem `cause`**. Há teste que
+    adultera o `update` para provocar o CHECK e afirma que nenhum valor escapa; a mutação
+    "relançar o erro cru" faz esse teste cair com `'ZZ 99887766'` no texto. Conferido
+    também que o log `query` do Prisma em desenvolvimento só imprime `$1`, não o valor.
+  - **Listagem**: `listarEncaminhamentos` traz `p.numero_carteirinha` e `p.crm_medico`
+    (`numeroCarteirinha`/`crmMedico` em `EncaminhamentoNaLista`, `null` para legado). A
+    tela **ainda não os mostra**; ver pendências.
+  - **Validação**: `tsc --noEmit` limpo; eslint limpo nos arquivos tocados (`npm run
+    lint` só com o erro pré-existente de `acoes-da-guia.tsx:335`); **428 testes em 28
+    arquivos** (eram 376 em 26); `next build` concluído. Testes novos:
+    `lib/domain/carteirinha-crm.test.ts` (limites 4/5/25/26 e 0/1/10/11, normalização,
+    mensagens sem o valor) e `lib/domain/carteirinha-crm.integration.test.ts` (10 casos,
+    todos em rollback: paciente novo normalizado; reenvio com CRM diferente atualiza sem
+    duplicar; recusa de carteirinha de outro paciente e em outra caixa; corrida simulada
+    cegando a checagem prévia — recusa pelo índice, nome do dono na mensagem, transação
+    utilizável depois; saneamento; banco recusando CRM com letra, carteirinha com espaço
+    e os limites sem o domínio; índice recusando caixa diferente e aceitando vários NULL;
+    paciente antigo listando com nulos). Mutação conferida: sem o `SAVEPOINT`, o teste da
+    corrida cai.
 
 - **Situação da requisição (26/10/2026, branch `feat/situacao-requisicao`, sem merge e
   sem push).** Regra 19. As decisões do caminho:
@@ -1466,6 +1562,22 @@ parecer íntegro na tela.
   trocar a ordem guias → requisições, nem fazer `alterarSituacaoDaRequisicao` travar
   outra tabela. A ausência de deadlock depende dessa ordem.
 - Não decidir quem altera a situação fora de `podeAlterarSituacaoDeRequisicao`.
+- Não versionar dados reais de paciente — nome, carteirinha, CRM ou qualquer outro — em
+  seed, fixture, teste, migration, script ou documentação. Valores de teste são
+  sintéticos (`carteirinhaDeTeste()`, `"123456"`).
+- Não logar carteirinha nem CRM (`console.*`, mensagem de exceção, `cause` de erro), não
+  repeti-los em mensagem de erro para o usuário e não passá-los por URL ou query string
+  (nem em toast via `?param=`, como o cadastro de requisição faz com o nome). Erro de banco
+  no UPDATE desses campos é saneado antes de escapar — não "simplificar" relançando o erro
+  cru: o `meta` do Prisma carrega a linha inteira na violação de CHECK.
+- Não pôr `NOT NULL` (nem default inventado) em `paciente.numero_carteirinha` /
+  `paciente.crm_medico`: pacientes antigos não têm esses dados.
+- Não mudar formato de carteirinha/CRM só no `CHECK` da migration ou só em
+  `lib/domain/carteirinha-crm.ts`: mudam no mesmo commit.
+- Não comparar carteirinha com outra expressão que não `lower(numero_carteirinha)` — é a
+  do índice único; outra regra faria checagem e constraint discordarem.
+- Não tirar o `SAVEPOINT` de `gravarCarteirinhaECrm` nem mover o UPDATE do paciente para
+  depois do lock do encaminhamento (ordem de lock: paciente → encaminhamento).
 
 ## Progresso
 
@@ -1886,6 +1998,17 @@ parecer íntegro na tela.
     cabeçalho recolhido), `next build` concluído.
   - Verificação ponta a ponta por HTTP feita; **interação manual no navegador pendente**.
 
+- [x] Carteirinha e CRM do paciente (28/10/2026, branch `feat/carteirinha-crm-dominio`,
+      **sem commit, sem merge e sem push**). Ver regra 20 e "Carteirinha e CRM do
+      paciente" nas decisões de implementação.
+  - Migration `20261028120000_carteirinha_e_crm_do_paciente` aplicada **somente no
+    Postgres local** (`localhost:5432/klini`). `migrate diff` contra o schema: vazio.
+    **Pendente: aplicar no Supabase — ver pendências.**
+  - `tsc --noEmit` limpo, **428 testes passando em 28 arquivos**, `next build` concluído.
+  - **Não verificado**: cadastro pela tela no navegador, Server Action por HTTP e
+    `registrarEncaminhamento` (a variante que abre a própria transação) commitando de
+    verdade — os testes de integração usam a variante "na transação", com rollback.
+
 ### Plano de papéis e convênios — 4 fases
 
 Registrado aqui inteiro de propósito: a Fase A sozinha não explica por que existe, e as
@@ -1909,6 +2032,27 @@ sessões seguintes precisam do plano completo para não implementar a fase errad
       interativa do usuário antes de merge e publicação.
 
 ## Pendências conhecidas (não bloqueiam o próximo passo, mas não esquecer)
+
+- **Migration `20261028120000_carteirinha_e_crm_do_paciente` a aplicar no Supabase.** Ela
+  é aditiva, então a ordem segura é **migration antes do código**: o código antigo não lê
+  nem grava as colunas novas e continua funcionando com elas presentes. O inverso
+  (código novo antes) quebra cadastro **e** listagem de encaminhamentos. Antes de aplicar,
+  conferir que o `vigia_app` tem grant **de tabela** (não por coluna) em `paciente` —
+  grant por coluna não cobriria colunas novas. Depois:
+  `SELECT count(*) FILTER (WHERE numero_carteirinha IS NOT NULL) FROM paciente;` deve dar 0.
+- **Carteirinha/CRM: validação manual no navegador.** Em Encaminhamentos: cadastrar um
+  paciente novo com os quatro campos; reenviar o mesmo com CRM diferente (toast
+  "atualizado", uma linha só); tentar a carteirinha dele em outro paciente (erro citando o
+  nome, campo da carteirinha marcado, nada gravado); campos vazios ou fora do formato
+  barrados no cliente; os dois campos voltam vazios depois do sucesso; layout em 390px
+  (agora são quatro campos numa faixa).
+- **Carteirinha/CRM ainda não aparecem na tela**, e isso é decisão a tomar, não esquecimento:
+  `listarEncaminhamentos` já os devolve, e por isso eles **já viajam no payload RSC** da
+  lista (`ListaDeEncaminhamentos` recebe a linha inteira), embora não sejam exibidos. Ou a
+  tela passa a mostrá-los, ou a página remove os dois campos antes de passar a lista ao
+  componente cliente.
+- **Formulário não pré-preenche carteirinha/CRM** de paciente que já existe: quem
+  reenvia precisa redigitar os dois. Não foi pedido.
 
 - **Migration `20261026130000_situacao_da_requisicao` a aplicar no Supabase — e a ordem
   em relação ao deploy importa.** Nenhuma das duas ordens é sem janela:

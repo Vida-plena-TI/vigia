@@ -16,9 +16,20 @@ datasource db {
 /// case-insensitive no banco — o indice `UNIQUE (lower(nome))` nao e
 /// expressavel no schema Prisma, ele vive na migration
 /// `20260828120100_indices_e_constraints_manuais`.
+///
+/// `numeroCarteirinha` e `crmMedico` sao opcionais de proposito: pacientes
+/// cadastrados antes de 28/10/2026 nao tem esses dados, e NULL e "nao
+/// informado". Quem exige os dois e o cadastro de encaminhamento. Os formatos
+/// (CHECK) e a unicidade case-insensitive da carteirinha
+/// (`UNIQUE (lower(numero_carteirinha)) WHERE numero_carteirinha IS NOT NULL`)
+/// vivem so na migration `20261028120000_carteirinha_e_crm_do_paciente` — o
+/// Prisma nao expressa CHECK nem indice de expressao/parcial. O espelho em
+/// TypeScript dos formatos e `lib/domain/carteirinha-crm.ts`.
 model Paciente {
-  id   Int    @id @default(autoincrement())
-  nome String
+  id                Int     @id @default(autoincrement())
+  nome              String
+  numeroCarteirinha String? @map("numero_carteirinha")
+  crmMedico         String? @map("crm_medico")
 
   requisicoes    Requisicao[]
   /// Singular e opcional de proposito: `encaminhamento.paciente_id` e UNIQUE,

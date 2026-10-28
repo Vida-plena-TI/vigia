@@ -38,6 +38,14 @@ const temBanco = Boolean(process.env.DATABASE_URL);
 /** Sufixo único para não colidir com paciente/terapia já existentes. */
 const SUFIXO = Math.random().toString(36).slice(2, 10);
 
+/**
+ * Carteirinha sintética e única por chamada: o índice único da carteirinha é
+ * global, e cada encaminhamento de teste é de um paciente diferente.
+ */
+function carteirinhaDeTeste(): string {
+  return `T${crypto.randomUUID().replace(/-/g, "").slice(0, 20)}`;
+}
+
 /** Id de terapia que seguramente não existe (o `serial` está longe daqui). */
 const TERAPIA_INEXISTENTE = 2_000_000_000;
 
@@ -147,6 +155,8 @@ async function comEncaminhamento(
     pacienteNome,
     dataEncaminhamento:
       dataEncaminhamento ?? (await dataDeEncaminhamentoEmDia(tx)),
+    numeroCarteirinha: carteirinhaDeTeste(),
+    crmMedico: "123456",
   });
 
   if (!resultado.ok) {

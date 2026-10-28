@@ -12,6 +12,12 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  ERRO_CARTEIRINHA_INVALIDA,
+  ERRO_CARTEIRINHA_OBRIGATORIA,
+  ERRO_CRM_INVALIDO,
+  ERRO_CRM_OBRIGATORIO,
+} from "./carteirinha-crm";
+import {
   ERRO_DATA_INVALIDA,
   ERRO_DATA_OBRIGATORIA,
   ERRO_PACIENTE_OBRIGATORIO,
@@ -21,10 +27,17 @@ import {
   type EncaminhamentoNaLista,
 } from "./encaminhamentos";
 
+/** Os dois campos novos, válidos, para os casos que testam nome e data. */
+const CARTEIRINHA_E_CRM = {
+  numeroCarteirinha: "ABC12345",
+  crmMedico: "123456",
+};
+
 describe("validarEntrada", () => {
   it("aceita paciente e data preenchidos", () => {
     expect(
       validarEntrada({
+        ...CARTEIRINHA_E_CRM,
         pacienteNome: "Ana Beatriz Moraes",
         dataEncaminhamento: "2026-11-15",
       }),
@@ -34,6 +47,7 @@ describe("validarEntrada", () => {
   it("aceita nome e data com espaço sobrando (o trim é de quem grava)", () => {
     expect(
       validarEntrada({
+        ...CARTEIRINHA_E_CRM,
         pacienteNome: "  Ana Beatriz Moraes  ",
         dataEncaminhamento: "  2026-11-15  ",
       }),
@@ -42,19 +56,31 @@ describe("validarEntrada", () => {
 
   it("recusa paciente vazio", () => {
     expect(
-      validarEntrada({ pacienteNome: "   ", dataEncaminhamento: "2026-11-15" }),
+      validarEntrada({
+        ...CARTEIRINHA_E_CRM,
+        pacienteNome: "   ",
+        dataEncaminhamento: "2026-11-15",
+      }),
     ).toEqual({ ok: false, erro: ERRO_PACIENTE_OBRIGATORIO });
   });
 
   it("recusa data vazia", () => {
     expect(
-      validarEntrada({ pacienteNome: "Ana", dataEncaminhamento: "" }),
+      validarEntrada({
+        ...CARTEIRINHA_E_CRM,
+        pacienteNome: "Ana",
+        dataEncaminhamento: "",
+      }),
     ).toEqual({ ok: false, erro: ERRO_DATA_OBRIGATORIA });
   });
 
   it("recusa data fora do formato AAAA-MM-DD", () => {
     expect(
-      validarEntrada({ pacienteNome: "Ana", dataEncaminhamento: "15/11/2026" }),
+      validarEntrada({
+        ...CARTEIRINHA_E_CRM,
+        pacienteNome: "Ana",
+        dataEncaminhamento: "15/11/2026",
+      }),
     ).toEqual({ ok: false, erro: ERRO_DATA_INVALIDA });
   });
 
@@ -62,27 +88,95 @@ describe("validarEntrada", () => {
     // `new Date("2026-02-31")` normalizaria para 03/03 em silêncio; o formato
     // sozinho não basta.
     expect(
-      validarEntrada({ pacienteNome: "Ana", dataEncaminhamento: "2026-02-31" }),
+      validarEntrada({
+        ...CARTEIRINHA_E_CRM,
+        pacienteNome: "Ana",
+        dataEncaminhamento: "2026-02-31",
+      }),
     ).toEqual({ ok: false, erro: ERRO_DATA_INVALIDA });
 
     // 2026 não é bissexto.
     expect(
-      validarEntrada({ pacienteNome: "Ana", dataEncaminhamento: "2026-02-29" }),
+      validarEntrada({
+        ...CARTEIRINHA_E_CRM,
+        pacienteNome: "Ana",
+        dataEncaminhamento: "2026-02-29",
+      }),
     ).toEqual({ ok: false, erro: ERRO_DATA_INVALIDA });
   });
 
   it("aceita 29 de fevereiro em ano bissexto", () => {
     expect(
-      validarEntrada({ pacienteNome: "Ana", dataEncaminhamento: "2028-02-29" }),
+      validarEntrada({
+        ...CARTEIRINHA_E_CRM,
+        pacienteNome: "Ana",
+        dataEncaminhamento: "2028-02-29",
+      }),
     ).toEqual({ ok: true });
   });
 
   it("recusa mês e dia fora de faixa", () => {
     for (const dataEncaminhamento of ["2026-13-01", "2026-00-10", "2026-11-32"]) {
-      expect(validarEntrada({ pacienteNome: "Ana", dataEncaminhamento })).toEqual(
-        { ok: false, erro: ERRO_DATA_INVALIDA },
-      );
+      expect(
+        validarEntrada({
+          ...CARTEIRINHA_E_CRM,
+          pacienteNome: "Ana",
+          dataEncaminhamento,
+        }),
+      ).toEqual({ ok: false, erro: ERRO_DATA_INVALIDA });
     }
+  });
+});
+
+describe("validarEntrada — carteirinha e CRM", () => {
+  const BASE = {
+    pacienteNome: "Ana",
+    dataEncaminhamento: "2026-11-15",
+    ...CARTEIRINHA_E_CRM,
+  };
+
+  it("exige a carteirinha", () => {
+    expect(validarEntrada({ ...BASE, numeroCarteirinha: "   " })).toEqual({
+      ok: false,
+      erro: ERRO_CARTEIRINHA_OBRIGATORIA,
+    });
+  });
+
+  it("recusa carteirinha fora do formato", () => {
+    expect(validarEntrada({ ...BASE, numeroCarteirinha: "ABC-12345" })).toEqual(
+      { ok: false, erro: ERRO_CARTEIRINHA_INVALIDA },
+    );
+  });
+
+  it("exige o CRM", () => {
+    expect(validarEntrada({ ...BASE, crmMedico: "" })).toEqual({
+      ok: false,
+      erro: ERRO_CRM_OBRIGATORIO,
+    });
+  });
+
+  it("recusa CRM com letra", () => {
+    expect(validarEntrada({ ...BASE, crmMedico: "12345SP" })).toEqual({
+      ok: false,
+      erro: ERRO_CRM_INVALIDO,
+    });
+  });
+
+  it("aceita os dois com espaço e ponto que a normalização tira", () => {
+    expect(
+      validarEntrada({
+        ...BASE,
+        numeroCarteirinha: " 1234 5678 9012 ",
+        crmMedico: " 123.456 ",
+      }),
+    ).toEqual({ ok: true });
+  });
+
+  it("nome e data continuam sendo conferidos antes", () => {
+    // A ordem é a da tela: o primeiro campo errado é o que aparece.
+    expect(
+      validarEntrada({ ...BASE, pacienteNome: "", numeroCarteirinha: "" }),
+    ).toEqual({ ok: false, erro: ERRO_PACIENTE_OBRIGATORIO });
   });
 });
 
@@ -113,6 +207,8 @@ describe("contarPorStatusDeEncaminhamento", () => {
       id,
       pacienteId: id,
       pacienteNome: `Paciente ${id}`,
+      numeroCarteirinha: null,
+      crmMedico: null,
       dataEncaminhamento: "2026-01-01",
       dataVencimento: "2026-06-30",
       statusEncaminhamento,

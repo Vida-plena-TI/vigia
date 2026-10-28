@@ -41,6 +41,14 @@ const temBanco = Boolean(process.env.DATABASE_URL);
 /** Sufixo único para não colidir com paciente/terapia já existentes. */
 const SUFIXO = Math.random().toString(36).slice(2, 10);
 
+/**
+ * Carteirinha sintética e única por chamada: o índice único da carteirinha é
+ * global, e cada encaminhamento de teste é de um paciente diferente.
+ */
+function carteirinhaDeTeste(): string {
+  return `T${crypto.randomUUID().replace(/-/g, "").slice(0, 20)}`;
+}
+
 /** Erro sentinela: rola a transação de volta depois de coletar o resultado. */
 class Rollback<T> extends Error {
   constructor(readonly dados: T) {
@@ -158,6 +166,8 @@ async function montarCenario(
   const encaminhamento = await registrarEncaminhamentoNaTransacao(tx, {
     pacienteNome: nome,
     dataEncaminhamento: "2026-03-10",
+    numeroCarteirinha: carteirinhaDeTeste(),
+    crmMedico: "123456",
   });
 
   if (!encaminhamento.ok) {
@@ -320,6 +330,8 @@ describe.skipIf(!temBanco)("exclusao permanente de paciente", () => {
       const encaminhamento = await registrarEncaminhamentoNaTransacao(tx, {
         pacienteNome: nome,
         dataEncaminhamento: "2026-04-01",
+        numeroCarteirinha: carteirinhaDeTeste(),
+        crmMedico: "123456",
       });
 
       if (!encaminhamento.ok) {

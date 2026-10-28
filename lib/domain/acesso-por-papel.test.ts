@@ -89,6 +89,8 @@ function formularioDeEncaminhamento(): FormData {
   const dados = new FormData();
   dados.set("pacienteNome", "Fulano de Tal");
   dados.set("dataEncaminhamento", "2026-09-17");
+  dados.set("numeroCarteirinha", "TESTE12345");
+  dados.set("crmMedico", "123456");
 
   return dados;
 }

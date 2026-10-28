@@ -67,9 +67,14 @@ export async function criarEncaminhamentoAction(
     return { erro: MENSAGEM_SEM_PERMISSAO };
   }
 
+  // Os quatro campos são obrigatórios; quem recusa o que faltar é
+  // `validarEntrada`, no domínio. Carteirinha e CRM chegam só pelo corpo do
+  // POST — nunca por query string — e não voltam no estado de sucesso.
   const entrada: EntradaNovoEncaminhamento = {
     pacienteNome: String(formData.get("pacienteNome") ?? ""),
     dataEncaminhamento: String(formData.get("dataEncaminhamento") ?? ""),
+    numeroCarteirinha: String(formData.get("numeroCarteirinha") ?? ""),
+    crmMedico: String(formData.get("crmMedico") ?? ""),
   };
 
   const resultado = await registrarEncaminhamento(entrada);

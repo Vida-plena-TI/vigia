@@ -41,6 +41,14 @@ const temBanco = Boolean(process.env.DATABASE_URL);
 /** Sufixo único para não colidir com paciente já existente. */
 const SUFIXO = Math.random().toString(36).slice(2, 10);
 
+/**
+ * Carteirinha sintética e única por chamada: o índice único da carteirinha é
+ * global, e os testes deste arquivo cadastram pacientes diferentes.
+ */
+function carteirinhaDeTeste(): string {
+  return `T${crypto.randomUUID().replace(/-/g, "").slice(0, 20)}`;
+}
+
 /** Erro sentinela: rola a transação de volta depois de coletar o resultado. */
 class Rollback<T> extends Error {
   constructor(readonly dados: T) {
@@ -160,6 +168,8 @@ describe.skipIf(!temBanco)("encaminhamento contra o banco real", () => {
         registrarEncaminhamentoNaTransacao(tx, {
           pacienteNome: `Encaminhado ${rotulo} ${SUFIXO}`,
           dataEncaminhamento,
+          numeroCarteirinha: carteirinhaDeTeste(),
+          crmMedico: "123456",
         }),
       );
 
@@ -180,6 +190,8 @@ describe.skipIf(!temBanco)("encaminhamento contra o banco real", () => {
       const gravacao = await registrarEncaminhamentoNaTransacao(tx, {
         pacienteNome: `Encaminhado Seis Meses ${SUFIXO}`,
         dataEncaminhamento: "2026-01-01",
+        numeroCarteirinha: carteirinhaDeTeste(),
+        crmMedico: "123456",
       });
 
       if (!gravacao.ok) {
@@ -248,6 +260,8 @@ describe.skipIf(!temBanco)("encaminhamento contra o banco real", () => {
       const gravacao = await registrarEncaminhamentoNaTransacao(tx, {
         pacienteNome: nome,
         dataEncaminhamento: "2026-11-15",
+        numeroCarteirinha: carteirinhaDeTeste(),
+        crmMedico: "123456",
       });
 
       return { gravacao, pacientes: await contarPacientes(tx, nome) };
@@ -270,6 +284,8 @@ describe.skipIf(!temBanco)("encaminhamento contra o banco real", () => {
       const primeiro = await registrarEncaminhamentoNaTransacao(tx, {
         pacienteNome: nome,
         dataEncaminhamento: "2026-11-15",
+        numeroCarteirinha: carteirinhaDeTeste(),
+        crmMedico: "123456",
       });
 
       // Mesma pessoa, digitada em caixa alta e com espaço sobrando: é a
@@ -279,6 +295,8 @@ describe.skipIf(!temBanco)("encaminhamento contra o banco real", () => {
       const segundo = await registrarEncaminhamentoNaTransacao(tx, {
         pacienteNome: `  ${nome.toUpperCase()}  `,
         dataEncaminhamento: "2026-12-01",
+        numeroCarteirinha: carteirinhaDeTeste(),
+        crmMedico: "123456",
       });
 
       const donos = await tx.$queryRaw<{ pacienteId: number }[]>`
@@ -324,11 +342,15 @@ describe.skipIf(!temBanco)("encaminhamento contra o banco real", () => {
       const primeiro = await registrarEncaminhamentoNaTransacao(tx, {
         pacienteNome: nome,
         dataEncaminhamento: "2026-01-01",
+        numeroCarteirinha: carteirinhaDeTeste(),
+        crmMedico: "123456",
       });
 
       const segundo = await registrarEncaminhamentoNaTransacao(tx, {
         pacienteNome: nome,
         dataEncaminhamento: "2026-11-15",
+        numeroCarteirinha: carteirinhaDeTeste(),
+        crmMedico: "123456",
       });
 
       return { primeiro, segundo, linhas: await encaminhamentosDoPaciente(tx, nome) };
@@ -373,17 +395,23 @@ describe.skipIf(!temBanco)("encaminhamento contra o banco real", () => {
       const a = await registrarEncaminhamentoNaTransacao(tx, {
         pacienteNome: primeiroNome,
         dataEncaminhamento: "2026-01-01",
+        numeroCarteirinha: carteirinhaDeTeste(),
+        crmMedico: "123456",
       });
 
       const b = await registrarEncaminhamentoNaTransacao(tx, {
         pacienteNome: segundoNome,
         dataEncaminhamento: "2026-11-15",
+        numeroCarteirinha: carteirinhaDeTeste(),
+        crmMedico: "123456",
       });
 
       // E o de A ainda pode ser substituído sem afetar o de B.
       const aDeNovo = await registrarEncaminhamentoNaTransacao(tx, {
         pacienteNome: primeiroNome,
         dataEncaminhamento: "2028-02-29",
+        numeroCarteirinha: carteirinhaDeTeste(),
+        crmMedico: "123456",
       });
 
       return {
@@ -486,6 +514,8 @@ describe.skipIf(!temBanco)("encaminhamento contra o banco real", () => {
         const gravacao = await registrarEncaminhamentoNaTransacao(tx, {
           pacienteNome: `Encaminhado Fronteira ${rotulo} ${SUFIXO}`,
           dataEncaminhamento: datas.encaminhamento,
+          numeroCarteirinha: carteirinhaDeTeste(),
+          crmMedico: "123456",
         });
 
         if (!gravacao.ok) {
@@ -572,6 +602,8 @@ describe.skipIf(!temBanco)("encaminhamento contra o banco real", () => {
         const gravacao = await registrarEncaminhamentoNaTransacao(tx, {
           pacienteNome: `${nome} ${SUFIXO}`,
           dataEncaminhamento: datas.encaminhamento,
+          numeroCarteirinha: carteirinhaDeTeste(),
+          crmMedico: "123456",
         });
 
         if (!gravacao.ok) {
