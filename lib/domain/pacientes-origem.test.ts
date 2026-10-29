@@ -1,7 +1,8 @@
 /**
- * Paciente só nasce pelos dois cadastros de encaminhamento (desde 28/10/2026):
- * o da Klini (`encaminhamentos.ts`) e o da SulAmérica
- * (`autorizacoes-sulamerica.ts`, aba `/sulamerica/encaminhamentos`).
+ * Paciente só nasce pelo cadastro de paciente com plano de terapias
+ * (`plano-terapias.ts`, desde 29/10/2026) e, **até o P2**, pelos dois
+ * cadastros de encaminhamento: o da Klini (`encaminhamentos.ts`) e o da
+ * SulAmérica (`autorizacoes-sulamerica.ts`, aba `/sulamerica/encaminhamentos`).
  *
  * Varre o código de aplicação e os scripts atrás de quem chama o
  * get-or-create ou insere em `paciente` direto. A lista permitida é curta e
@@ -49,12 +50,20 @@ function quemContem(padrao: RegExp): string[] {
 }
 
 describe("origem do paciente", () => {
-  it("só os dois cadastros de encaminhamento (Klini e SulAmérica) chamam o get-or-create", () => {
+  it("só o cadastro de paciente e os dois de encaminhamento (até o P2) chamam o get-or-create", () => {
     // `pacientes.ts` é a definição, não um chamador.
     expect(quemContem(/\bobterOuCriarPaciente\(/)).toEqual([
       join("lib", "domain", "autorizacoes-sulamerica.ts"),
       join("lib", "domain", "encaminhamentos.ts"),
       join("lib", "domain", "pacientes.ts"),
+      join("lib", "domain", "plano-terapias.ts"),
+    ]);
+  });
+
+  it("o cadastro de paciente só é chamado pela própria action", () => {
+    expect(quemContem(/\bcadastrarPaciente\(/)).toEqual([
+      join("lib", "domain", "plano-terapias-actions.ts"),
+      join("lib", "domain", "plano-terapias.ts"), // a definição
     ]);
   });
 

@@ -25,11 +25,17 @@ datasource db {
 /// vivem so na migration `20261028120000_carteirinha_e_crm_do_paciente` — o
 /// Prisma nao expressa CHECK nem indice de expressao/parcial. O espelho em
 /// TypeScript dos formatos e `lib/domain/carteirinha-crm.ts`.
+///
+/// `convenio` ('klini' ou 'sulamerica') e opcional de proposito: NULL e
+/// "ainda nao decidido" (paciente sem cadastro de convenio, ou com os dois). O
+/// CHECK vive na migration `20261029120000_convenio_e_plano_de_terapias`; o
+/// espelho em TypeScript e `CONVENIOS` em `lib/domain/convenio.ts`.
 model Paciente {
   id                Int     @id @default(autoincrement())
   nome              String
   numeroCarteirinha String? @map("numero_carteirinha")
   crmMedico         String? @map("crm_medico")
+  convenio          String?
 
   requisicoes    Requisicao[]
   /// Singular e opcional de proposito: `encaminhamento.paciente_id` e UNIQUE,
@@ -37,6 +43,7 @@ model Paciente {
   /// substitui o anterior.
   encaminhamento Encaminhamento?
   autorizacaoSulamerica AutorizacaoSulamerica?
+  planoTerapias         PlanoTerapia[]
 
   @@index([nome])
   @@map("paciente")
@@ -129,7 +136,8 @@ model Terapia {
   nome       String @unique
   codigoTiss String @map("codigo_tiss")
 
-  guias RequisicaoTerapia[]
+  guias  RequisicaoTerapia[]
+  planos PlanoTerapia[]
 
   @@map("terapia")
 }
@@ -216,4 +224,26 @@ model AutorizacaoSulamerica {
   paciente Paciente @relation(fields: [pacienteId], references: [id], onDelete: Restrict)
 
   @@map("autorizacao_sulamerica")
+}
+
+/// Plano de terapias do paciente: minutos por semana de cada terapia. So
+/// informativo — nenhum campo calculado, nenhuma soma, e nada le o plano para
+/// decidir saldo, guia ou atendimento. Uma linha por (paciente, terapia);
+/// reenviar o cadastro substitui o plano inteiro.
+///
+/// O CHECK de `minutosSemanais` (> 0, <= 10080, multiplo de 15) vive na
+/// migration `20261029120000_convenio_e_plano_de_terapias`; o espelho em
+/// TypeScript e `lib/domain/tempo-semanal.ts`. Apagar o paciente apaga o plano
+/// (ON DELETE CASCADE).
+model PlanoTerapia {
+  id              Int @id @default(autoincrement())
+  pacienteId      Int @map("paciente_id")
+  terapiaId       Int @map("terapia_id")
+  minutosSemanais Int @map("minutos_semanais")
+
+  paciente Paciente @relation(fields: [pacienteId], references: [id], onDelete: Cascade)
+  terapia  Terapia  @relation(fields: [terapiaId], references: [id])
+
+  @@unique([pacienteId, terapiaId])
+  @@map("plano_terapia")
 }

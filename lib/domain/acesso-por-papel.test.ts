@@ -28,6 +28,7 @@ const mocks = vi.hoisted(() => ({
   registrarEncaminhamento: vi.fn(),
   contarParaExclusao: vi.fn(),
   excluirPacientePeloId: vi.fn(),
+  cadastrarPaciente: vi.fn(),
 }));
 
 vi.mock("@/lib/db", () => ({
@@ -54,6 +55,10 @@ vi.mock("./pacientes", () => ({
   excluirPacientePeloId: mocks.excluirPacientePeloId,
 }));
 
+vi.mock("./plano-terapias", () => ({
+  cadastrarPaciente: mocks.cadastrarPaciente,
+}));
+
 vi.mock("./autorizacoes-sulamerica", () => ({
   registrarAutorizacao: mocks.registrarAutorizacao,
   excluirAutorizacao: mocks.excluirAutorizacao,
@@ -65,6 +70,7 @@ import {
   contarParaExcluirPaciente,
   excluirPaciente,
 } from "./pacientes-actions";
+import { cadastrarPacienteAction } from "./plano-terapias-actions";
 import {
   criarRequisicaoAction,
   previsaoDeSubstituicaoAction,
@@ -112,6 +118,66 @@ function formularioSulamerica() {
   dados.set("nomeMedico", "Dra. Teste");
   return dados;
 }
+
+function formularioDeCadastroDePaciente(convenio: string): FormData {
+  const dados = new FormData();
+  dados.set("nome", "Fulano de Tal");
+  dados.set("convenio", convenio);
+  dados.append("terapiaId", "1");
+  dados.append("horas", "2,5");
+  dados.append("terapiaId", "2");
+  dados.append("horas", "1");
+  return dados;
+}
+
+describe("cadastro de paciente com plano — decide pelo papel do banco", () => {
+  it.each(["klini", "sulamerica", "outro"])(
+    "recepção (cookie dizendo admin) é recusada com convênio %s, e o domínio nem é chamado",
+    async (convenio) => {
+      logadoComoPapelNoBanco("recepcao");
+      mocks.getSession.mockResolvedValue({ usuarioId: 7, papel: "admin" });
+
+      const estado = await cadastrarPacienteAction({}, formularioDeCadastroDePaciente(convenio));
+
+      expect(estado).toEqual({ erro: MENSAGEM_SEM_PERMISSAO });
+      expect(mocks.cadastrarPaciente).not.toHaveBeenCalled();
+      expect(mocks.refresh).not.toHaveBeenCalled();
+      expect(mocks.findUnique).toHaveBeenCalled();
+    },
+  );
+
+  it("admin chega no domínio com as linhas costuradas por índice", async () => {
+    logadoComoPapelNoBanco("admin");
+    mocks.cadastrarPaciente.mockResolvedValue({
+      ok: true, pacienteId: 9, pacienteNome: "Fulano de Tal", pacienteCriado: true,
+      convenioAdotado: false, linhasSubstituidas: 0, terapias: 2,
+    });
+
+    const estado = await cadastrarPacienteAction({}, formularioDeCadastroDePaciente("sulamerica"));
+
+    expect(mocks.cadastrarPaciente).toHaveBeenCalledWith({
+      nome: "Fulano de Tal",
+      convenio: "sulamerica",
+      terapias: [
+        { terapiaId: 1, horas: "2,5" },
+        { terapiaId: 2, horas: "1" },
+      ],
+    });
+    expect(estado.sucesso).toMatchObject({ pacienteNome: "Fulano de Tal", pacienteCriado: true });
+    expect(mocks.refresh).toHaveBeenCalledTimes(1);
+  });
+
+  it("admin recebe o erro e a linha do domínio, sem refresh", async () => {
+    logadoComoPapelNoBanco("admin");
+    mocks.cadastrarPaciente.mockResolvedValue({ ok: false, erro: "x", linha: 1 });
+
+    expect(await cadastrarPacienteAction({}, formularioDeCadastroDePaciente("klini"))).toEqual({
+      erro: "x",
+      linha: 1,
+    });
+    expect(mocks.refresh).not.toHaveBeenCalled();
+  });
+});
 
 describe("SulAmérica — actions decidem pelo banco, não pelo cookie", () => {
   it("cookie admin desatualizado não permite criar nem excluir como recepção", async () => {

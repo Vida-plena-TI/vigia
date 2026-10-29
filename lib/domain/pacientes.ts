@@ -40,12 +40,12 @@ export type PacienteResolvido = { id: number; nome: string; criado: boolean };
 /**
  * Get-or-create do paciente, case-insensitive, em uma única ida ao banco.
  *
- * **Quem pode chamar (desde 28/10/2026):** só o cadastro de encaminhamento do
- * Klini (`encaminhamentos.ts`) — a única origem de paciente — e,
- * **temporariamente**, o cadastro de autorização da SulAmérica
- * (`autorizacoes-sulamerica.ts`), até ela ganhar a própria aba de
- * encaminhamentos. "Nova requisição" usa {@link buscarPacientePorNome}, que não
- * cria.
+ * **Quem pode chamar:** o cadastro de paciente com plano de terapias
+ * (`plano-terapias.ts`, desde 29/10/2026 — a porta de entrada em construção) e,
+ * até o P2, os dois cadastros de encaminhamento: Klini (`encaminhamentos.ts`) e
+ * SulAmérica (`autorizacoes-sulamerica.ts`). "Nova requisição" usa
+ * {@link buscarPacientePorNome}, que não cria. A lista é afirmada por
+ * `pacientes-origem.test.ts`.
  *
  * O `INSERT ... ON CONFLICT (lower("nome")) DO NOTHING` dentro de uma CTE
  * resolve a corrida que um `SELECT` seguido de `INSERT` deixaria aberta: dois
@@ -334,7 +334,9 @@ export async function contarParaExclusao(
  *   2. `requisicao` do paciente.
  *   3. `encaminhamento` do paciente (no máximo uma linha, `UNIQUE`).
  *   4. `autorizacao_sulamerica` do paciente, se houver.
- *   5. `paciente`.
+ *   5. `paciente` — e o `plano_terapia` dele vai junto pelo `ON DELETE
+ *      CASCADE` da migration `20261029120000_convenio_e_plano_de_terapias`,
+ *      sem DELETE próprio, pelo mesmo motivo dos atendimentos.
  *
  * Qualquer falha no meio — erro de banco, FK inesperada, queda de conexão —
  * lança, e a transação inteira volta atrás: **nada fica apagado pela metade**.

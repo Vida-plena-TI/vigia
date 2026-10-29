@@ -38,13 +38,16 @@ Sistema de controle de autorizações de terapia de uma clínica.
 
 ## Entidades
 
-- **paciente**: id, nome (texto, indexado). **Só nasce pelo cadastro de encaminhamento**
-  (regra 21): get-or-create por nome ali, busca sem criação em "Nova requisição";
+- **paciente**: id, nome (texto, indexado). **Nasce pelo cadastro de paciente com plano**
+  (regra 23, porta de entrada em andamento) **e, até o P2, pelos dois cadastros de
+  encaminhamento** (regra 21): get-or-create por nome ali, busca sem criação em "Nova requisição";
   comparação case-insensitive, nome sempre trimado antes de salvar/buscar. **Único case-insensitive**
   no banco via índice `UNIQUE (lower(nome))`. Desde 28/10/2026 também
   **numero_carteirinha** (texto, **NULL permitido**, `CHECK ~ '^[A-Za-z0-9]{5,25}$'`,
   único sem caixa via `UNIQUE (lower(numero_carteirinha)) WHERE numero_carteirinha IS NOT
   NULL`) e **crm_medico** (texto, **NULL permitido**, `CHECK ~ '^[0-9]{1,10}$'`) — regra 20.
+  Desde 29/10/2026 também **convenio** (texto, **NULL permitido**, `CHECK (convenio IN
+  ('klini', 'sulamerica'))` `paciente_convenio_valido`, sem default) — regra 23.
 - **usuario**: id, username (único, comparação **case-sensitive** — diferente de
   paciente.nome), password_hash (bcrypt), ativo (bool, default true), **papel** (texto,
   `NOT NULL`, `CHECK (papel IN ('admin', 'recepcao'))`, **sem default**). O `papel` entrou
@@ -70,6 +73,13 @@ Sistema de controle de autorizações de terapia de uma clínica.
   substitui o anterior (regra 13). O status de vencimento não é coluna — vem da view
   `encaminhamento_status`.
 
+- **plano_terapia** (29/10/2026, regra 23): id, paciente_id (FK **ON DELETE CASCADE**),
+  terapia_id (FK `RESTRICT`), minutos_semanais (INT NOT NULL, `CHECK` > 0, <= 10080 e
+  múltiplo de 15 — `plano_terapia_minutos_semanais_validos`). `UNIQUE (paciente_id,
+  terapia_id)` (`plano_terapia_paciente_id_terapia_id_key`, que serve também de índice por
+  `paciente_id`). **Só informativo**: nenhum campo calculado, nenhuma soma. Sem colunas de
+  auditoria — nenhuma tabela do projeto tem.
+
 - **autorizacao_sulamerica**: id, paciente_id (FK RESTRICT e UNIQUE), data_inicio
   (DATE NOT NULL), prazo_meses (INT NOT NULL, CHECK em 3, 6 ou 12), data_vencimento
   (DATE gerada STORED), **nome_medico** (TEXT, **NULL permitido**, `CHECK
@@ -79,14 +89,15 @@ Sistema de controle de autorizações de terapia de uma clínica.
   (que **não** tem `nome_medico`: a listagem o lê da tabela). O paciente é compartilhado
   com o Klini; excluir esta autorização não exclui nenhum outro registro.
 
-Demais FKs (ex: requisicao → paciente) ficam no padrão `RESTRICT`. Só o caminho
-atendimento → requisicao_terapia tem cascade — decisão já implementada e confirmada por
+Demais FKs (ex: requisicao → paciente) ficam no padrão `RESTRICT`. Só dois caminhos têm
+cascade: atendimento → requisicao_terapia e, desde 29/10/2026, plano_terapia → paciente
+(regra 23). O primeiro é decisão já implementada e confirmada por
 teste manual (exclusão de guia com atendimentos: cascade ok; exclusão de requisição com
 guias vinculadas: falha, como esperado).
 
 A exclusão completa de um paciente (regra 16) percorre essa cadeia `RESTRICT` à mão, de
-baixo para cima, numa transação — e deixa os atendimentos para o único cascade que
-existe. Ver `excluirPacienteNaTransacao` em `lib/domain/pacientes.ts`.
+baixo para cima, numa transação — e deixa os atendimentos e o plano de terapias para os
+dois cascades que existem. Ver `excluirPacienteNaTransacao` em `lib/domain/pacientes.ts`.
 
 ## Campos calculados (guia) — vêm de uma view SQL, não de fórmula em TypeScript
 
@@ -392,7 +403,9 @@ teste passar hoje e mentir no mês que vem.
       encaminhamento Klini em si não é tocado. Não resolvido de propósito; há teste de
       integração que fixa este comportamento.
 
-21. **Paciente só nasce pelos dois cadastros de encaminhamento (28/10/2026).** As
+21. **Paciente só nasce pelos dois cadastros de encaminhamento (28/10/2026).** *(Desde
+    29/10/2026 o cadastro de paciente da regra 23 também cria; os dois encaminhamentos
+    saem da lista no P2.)* As
     **únicas** formas de criar paciente são o cadastro de encaminhamento da Klini
     (`/klini/encaminhamentos`: nome + data + carteirinha + CRM, regra 20,
     `encaminhamentos.ts`) e o da SulAmérica (`/sulamerica/encaminhamentos`: nome + data +
@@ -448,6 +461,33 @@ teste passar hoje e mentir no mês que vem.
       foram apagados e a guia nova recusa lançamento. Se o envio cair numa requisição que já
       existe (mesmo número), a situação dela não muda.
 
+23. **Convênio do paciente, plano de terapias e Cadastro como porta de entrada (29/10/2026
+    — EM ANDAMENTO ATÉ O P2).**
+    - **Convênio por paciente**: `paciente.convenio` é `klini`, `sulamerica` ou NULL ("ainda
+      não decidido"). Um paciente pertence a um convênio só.
+    - **Plano de terapias informativo**: por paciente, minutos por semana de cada terapia
+      (`plano_terapia`). O formulário recebe horas ("2", "2,5", "2.5", "0,25") e o domínio
+      converte para minutos inteiros (`lib/domain/tempo-semanal.ts`): maior que zero, até
+      168 h, passo de 15 min. **Sem cálculo**: nenhum campo derivado, nenhuma soma, e nada
+      no sistema lê o plano para decidir saldo, guia ou atendimento.
+    - **Cadastro de paciente** (`cadastrarPaciente` em `lib/domain/plano-terapias.ts`):
+      nome + convênio + ao menos uma terapia (sem repetir terapia na mesma entrada), numa
+      transação. Paciente novo → nasce com o convênio e o plano. Existe com o **mesmo**
+      convênio → o plano é **substituído inteiro** (DELETE + INSERT das linhas do plano; o
+      nome gravado não muda). Existe com convênio **NULL** → adota o convênio e grava o
+      plano. Existe com o **outro** convênio → "Este paciente já está cadastrado no outro
+      convênio.", nada gravado. Nome casado pelo get-or-create de sempre (trim,
+      `lower(nome)`).
+    - **Porta de entrada — em andamento até o P2.** Hoje o cadastro é **um** dos três
+      caminhos que criam paciente: os dois cadastros de encaminhamento (regra 21) continuam
+      autorizados e criam paciente **sem convênio** (NULL). O P2 os tira da lista, e então
+      este cadastro passa a ser a única porta. Ainda **sem tela**: há domínio e Server
+      Action (`cadastrarPacienteAction`, só admin, rota da aba de encaminhamentos do
+      convênio do envio).
+    - Preenchimento dos pacientes que já existiam (migration
+      `20261029120000_convenio_e_plano_de_terapias`): com encaminhamento → `klini`; com
+      autorização SulAmérica → `sulamerica`; com os dois ou nenhum → NULL.
+
 ## Decisões assumidas (perguntas em aberto no relatório de auditoria original)
 
 - `paciente.nome`: único case-insensitive no banco.
@@ -463,6 +503,71 @@ teste passar hoje e mentir no mês que vem.
 - Edição de atendimento para 0 créditos continua permitida.
 
 ## Decisões tomadas durante a implementação (não estavam no relatório original)
+
+- **Convênio, plano de terapias e cadastro de paciente — banco e domínio (29/10/2026,
+  branch `feat/cadastro-plano-dominio`, a partir da `main` em `eecec84`; sem commit, sem
+  merge, sem push).** Regra 23. Só banco e domínio: nenhuma tela, e os fluxos de
+  encaminhamento **não** mudaram (P2).
+  - **Migration `20261029120000_convenio_e_plano_de_terapias`, aditiva**: `paciente.convenio
+    TEXT` NULL + CHECK `paciente_convenio_valido`; o preenchimento (um `UPDATE` com
+    `EXISTS(encaminhamento) <> EXISTS(autorizacao)`, só onde `convenio IS NULL`) entre os
+    marcadores `-- inicio/fim: preenchimento do convenio`, que o teste lê do disco; e a
+    tabela `plano_terapia`. No banco local saíram 2 `klini`, 1 `sulamerica` e 2 NULL (sem
+    nenhum dos dois); **nenhum paciente com os dois**. Schema: `convenio String?` e o
+    model `PlanoTerapia` (`@@unique([pacienteId, terapiaId])`, `onDelete: Cascade` no
+    paciente). Depois de aplicada, `migrate dev --create-only` gerou migration vazia
+    (apagada), `migrate diff --from-config-datasource --to-schema` vazio e `db pull
+    --print` igual ao schema.
+  - **Sem colunas de auditoria**: o pedido falava em "colunas de auditoria no mesmo padrão
+    das outras tabelas", mas nenhuma tabela do projeto tem (`criado_em` etc.). Seguido o
+    padrão real: nenhuma. Se for para ter, é decisão para todas as tabelas.
+  - **Sem índice separado em `paciente_id`**: a UNIQUE `(paciente_id, terapia_id)` começa
+    por ele e serve às mesmas buscas (mesmo raciocínio das migrations de
+    `encaminhamento` e `requisicao_terapia`). Não há índice em `terapia_id` (só a FK
+    RESTRICT; nenhuma tela apaga terapia).
+  - **GRANTs**: nenhuma migration do projeto tem GRANT (regra "Não colocar configuração
+    específica do Supabase em `prisma/migrations`"). No local, `ALTER DEFAULT PRIVILEGES`
+    do `postgres` já dá `arwd` em tabela e `rU` em sequência ao `vigia_klini` —
+    conferido em `plano_terapia` e `plano_terapia_id_seq` depois de aplicar. No Supabase
+    **não foi conferido** (ver pendências).
+  - **Módulos**: `plano-terapias.ts` (banco), `plano-terapias-actions.ts`,
+    `plano-terapias-mensagens.ts`, e dois puros a mais, sem banco, para o formulário do
+    P3 poder importar: `convenio.ts` (`CONVENIOS`, espelho do CHECK) e
+    `tempo-semanal.ts` (`lerHorasSemanais`, `formatarMinutosSemanais`; conta com
+    inteiros, sem ponto flutuante). `listarTerapias` é reexportada de `requisicoes.ts`
+    (mesmo catálogo).
+  - **Ordem de lock** de `cadastrarPaciente`: `obterOuCriarPaciente` → `SELECT convenio
+    ... FOR NO KEY UPDATE` no paciente (decide o desfecho; serializa dois cadastros do
+    mesmo paciente; não bloqueia o `FOR KEY SHARE` da requisição) → `UPDATE convenio` se
+    NULL → terapias `FOR KEY SHARE` (recusa de terapia inexistente vira frase com a linha,
+    não erro de FK) → `DELETE` do plano → `createMany`. Direção paciente → filhos, a mesma
+    da exclusão (paciente `FOR UPDATE` → … → plano pelo cascade). Paciente apagado entre o
+    get-or-create e a trava → `ERRO_PACIENTE_EXCLUIDO_AGORA`. Erros de negócio são
+    `throw` (desfazem o paciente recém-criado); `cadastrarPacienteNaTransacao` é a
+    variante de teste.
+  - **Leituras**: `listarPacientesDoConvenio(convenio)` (id, nome, `plano` em ordem de
+    nome da terapia via `json_agg`, `temPlano`), `planoDoPaciente(id)` e
+    `listarTerapias()`; cada uma com a variante `ComCliente` para o teste.
+  - **Exclusão permanente**: `excluirPacienteNaTransacao` não mudou; o `DELETE` do
+    paciente leva o plano pelo cascade (teste de integração). A contagem do diálogo não
+    cita o plano.
+  - **Testes** (673 em 40 arquivos; eram 582 em 38): `plano-terapias.test.ts` (tempo
+    semanal — 0,25 ok, 0,1 recusa, 168 ok, 168,25 recusa, vírgula/ponto, texto, sinal,
+    mensagens sem o valor digitado —, formatação, convênio, `validarEntrada`);
+    `plano-terapias.integration.test.ts` (novo com plano; reenvio substitui sem duplicar,
+    com caixa/espaço diferentes; adota NULL; outro convênio recusado; repetida e vazia
+    sem criar paciente; terapia inexistente; CHECK recusando 0, 10, -15, 10081 e 10095 e
+    aceitando 15 e 10080; UNIQUE; CHECK do convênio; exclusão leva o plano; leituras;
+    preenchimento da migration sobre tabelas temporárias de mesmo nome; e dois testes
+    **commitados**: recusa pela `cadastrarPaciente` de produção e `Proxy` que estoura o
+    `createMany` depois do paciente criado — nos dois o paciente não sobra);
+    `acesso-por-papel.test.ts` (recepção recusada nos dois convênios e num inválido;
+    admin chega ao domínio); `pacientes-origem.test.ts` (`plano-terapias.ts` na lista do
+    get-or-create; só a action chama `cadastrarPaciente`). Mutações conferidas: sem a
+    checagem de outro convênio e sem o DELETE da substituição, o teste correspondente cai.
+  - **Não testado**: corrida de dois cadastros simultâneos do mesmo paciente (o lock é o
+    mesmo já testado nos encaminhamentos, mas não há teste com portão aqui); a Server
+    Action por HTTP; o Supabase.
 
 - **Substituir guias da mesma terapia (29/10/2026, branch `feat/substituir-requisicao`, a
   partir da `main` em `d61a8be`; sem commit, sem merge, sem push).** Regra 22. Nenhuma
@@ -1872,8 +1977,8 @@ parecer íntegro na tela.
   (criação, só no encaminhamento) ou `buscarPacientePorNome` (busca, com lock) de
   `lib/domain/pacientes.ts`. Uma segunda implementação com outra regra de comparação
   discordaria do índice `UNIQUE (lower(nome))`.
-- Não criar paciente fora dos dois cadastros de encaminhamento, Klini e SulAmérica
-  (regra 21) — nem em requisição, nem em atendimento, nem no painel da SulAmérica, nem em
+- Não criar paciente fora do cadastro de paciente (regra 23) e, até o P2, dos dois
+  cadastros de encaminhamento, Klini e SulAmérica (regra 21) — nem em requisição, nem em atendimento, nem no painel da SulAmérica, nem em
   script ou rota nova. Não há mais exceção temporária; não acrescentar uma. Não
   "afrouxar" `pacientes-origem.test.ts` para um caminho novo passar: um caminho novo que
   crie paciente é conversa, não ajuste.
@@ -1993,6 +2098,20 @@ parecer íntegro na tela.
   `excluirGuiaNaTransacao`. Não tirar o `FOR UPDATE OF rt ... ORDER BY id` nem trocar a
   ordem guia → requisição.
 - Não confiar na prévia para apagar: o servidor refaz a consulta dentro da transação.
+
+- Não pôr campo calculado nem soma no plano de terapias (total semanal, saldo, etc.), nem
+  fazer saldo/guia/atendimento depender dele: o plano é informativo (regra 23).
+- Não mudar os limites do tempo semanal só no CHECK `plano_terapia_minutos_semanais_validos`
+  ou só em `lib/domain/tempo-semanal.ts`, nem os convênios só no CHECK
+  `paciente_convenio_valido` ou só em `CONVENIOS` (`lib/domain/convenio.ts`): mudam juntos.
+- Não converter horas em minutos com ponto flutuante (`Number(...) * 60`): a conta é com
+  inteiros em `lerHorasSemanais`.
+- Não "escolher" convênio para paciente com encaminhamento **e** autorização: fica NULL até
+  decisão humana. Não trocar o convênio de um paciente pelo cadastro (outro convênio é
+  recusado).
+- Não acrescentar `DELETE FROM plano_terapia` à exclusão de paciente: vai pelo cascade.
+- Não criar paciente por outro caminho além de `cadastrarPaciente` e, até o P2, dos dois
+  encaminhamentos.
 
 ## Progresso
 
@@ -2441,6 +2560,14 @@ parecer íntegro na tela.
     arquivos**, `next build` concluído.
   - **Interação manual no navegador pendente** — roteiro em pendências.
 
+- [ ] **P1 — Convênio, plano de terapias e cadastro de paciente: banco e domínio**
+      (29/10/2026, branch `feat/cadastro-plano-dominio`, **sem commit, sem merge e sem
+      push**). Regra 23, em andamento até o P2. Migration
+      `20261029120000_convenio_e_plano_de_terapias` aplicada **só no Postgres local**.
+      `tsc --noEmit` limpo, eslint limpo nos arquivos tocados, **673 testes em 40
+      arquivos**, `next build` concluído. Falta: P2 (encaminhamentos deixam de criar
+      paciente) e a tela.
+
 - [x] Substituir guias da mesma terapia (29/10/2026, branch `feat/substituir-requisicao`,
       **sem commit, sem merge e sem push**). Ver regra 22 e a decisão correspondente.
       Nenhuma migration.
@@ -2471,6 +2598,29 @@ sessões seguintes precisam do plano completo para não implementar a fase errad
       interativa do usuário antes de merge e publicação.
 
 ## Pendências conhecidas (não bloqueiam o próximo passo, mas não esquecer)
+
+- **Migration `20261029120000_convenio_e_plano_de_terapias` a aplicar no Supabase ANTES do
+  deploy.** Aditiva (coluna NULL + CHECK que NULL passa + `UPDATE` de preenchimento +
+  tabela nova): o código antigo não lê nem grava nada disto e continua funcionando com ela
+  aplicada; o código novo sem ela quebra no cadastro e nas leituras do plano. Ordem:
+  **(1)** merge; **(2)** antes de aplicar, ver quantos pacientes têm os dois cadastros —
+  `SELECT count(*) FROM paciente p WHERE EXISTS (SELECT 1 FROM encaminhamento e WHERE
+  e.paciente_id = p.id) AND EXISTS (SELECT 1 FROM autorizacao_sulamerica a WHERE
+  a.paciente_id = p.id);` — esses ficam NULL e precisam de decisão humana; **(3)** `npm run
+  db:migrate:deploy`; **(4)** conferir os GRANTs do `vigia_app` na tabela nova (as
+  migrations não têm GRANT): `SELECT grantee, privilege_type FROM
+  information_schema.role_table_grants WHERE table_name = 'plano_terapia';` e o mesmo para
+  a sequência (`\dp plano_terapia_id_seq`). Se faltar: `GRANT SELECT, INSERT, UPDATE,
+  DELETE ON plano_terapia TO vigia_app; GRANT USAGE, SELECT ON SEQUENCE
+  plano_terapia_id_seq TO vigia_app;` (à mão, como os grants anteriores). Avaliar também
+  `ALTER TABLE plano_terapia ENABLE ROW LEVEL SECURITY;` para seguir
+  `scripts/supabase/enable-rls.sql`; **(5)** deploy; **(6)** `SELECT convenio, count(*) FROM
+  paciente GROUP BY 1;`.
+- **P2**: tirar os dois cadastros de encaminhamento da lista de quem cria paciente
+  (`pacientes-origem.test.ts`) e fazê-los exigir paciente cadastrado; até lá eles criam
+  paciente com `convenio` NULL.
+- **Pacientes com encaminhamento e autorização ao mesmo tempo** ficam com `convenio` NULL
+  pela migration — no local não há nenhum; em produção, conferir (passo 2 acima).
 
 - **Substituir guias: roteiro manual de navegador** (nada disto foi feito; sem navegador
   nesta sessão). Como admin, em `/klini/requisicoes/nova`, com um paciente que tenha a
