@@ -421,6 +421,33 @@ teste passar hoje e mentir no mês que vem.
       Prisma, sem encaminhamento — fica, por ser só de desenvolvimento.
       `scripts/seed-terapias.ts` não toca em paciente.
 
+22. **Substituir guias da mesma terapia (29/10/2026).** "Nova requisição" tem a caixinha
+    **"Substituir guias da mesma terapia"**, **desmarcada por padrão** (apagar atendimento
+    não tem volta; inverter o padrão é a constante `SUBSTITUIR_PADRAO` do formulário).
+    - **Marcada**: para cada terapia do envio, as guias (`requisicao_terapia`) do **mesmo
+      paciente** com a **mesma terapia** em requisições de **outro número** são apagadas,
+      **com os atendimentos** (cascade), e a guia nova entra. Terapias que o paciente tem e
+      que não vêm no envio ficam intactas. Ex.: 333 com Fono + TO; lançar 444 só com Fono,
+      marcada → 333 fica só com TO, 444 com Fono.
+    - Requisição antiga que fica **sem nenhuma guia** é apagada também (não sobra pasta
+      vazia). A que ainda tem guia fica, com a situação que tinha.
+    - Marcada sem terapia em comum: nada é apagado. **Desmarcada**: comportamento de antes,
+      as guias coexistem.
+    - Nunca toca em guia de outro paciente. A guia da **mesma requisição** (mesmo número)
+      não é apagada: segue o UPDATE da regra 5, que tem prioridade.
+    - Tudo na transação de `criarRequisicao` (atômico). Antes de gravar, o formulário pede a
+      **prévia** (`previsaoDeSubstituicao`, só leitura) e, havendo o que apagar, mostra um
+      diálogo com a lista (terapia, requisição, nº de atendimentos), "Cancelar" e
+      "Substituir e apagar"; sem nada a apagar, grava direto. O servidor é a autoridade:
+      refaz a consulta sob `FOR UPDATE` e apaga o que casar naquele momento.
+    - Sucesso com substituição: "Requisição <n> lançada. Substituído: Fono (requisição 333,
+      12 atendimentos apagados)." — com os números da transação, não da prévia.
+    - Só admin (página, action da prévia e action de criar, papel lido do banco).
+    - A requisição **nova** nasce `solicitada` (regra 19): depois de substituir, aquela
+      terapia fica **sem guia lançável** até o admin aprovar — os atendimentos antigos já
+      foram apagados e a guia nova recusa lançamento. Se o envio cair numa requisição que já
+      existe (mesmo número), a situação dela não muda.
+
 ## Decisões assumidas (perguntas em aberto no relatório de auditoria original)
 
 - `paciente.nome`: único case-insensitive no banco.
@@ -436,6 +463,56 @@ teste passar hoje e mentir no mês que vem.
 - Edição de atendimento para 0 créditos continua permitida.
 
 ## Decisões tomadas durante a implementação (não estavam no relatório original)
+
+- **Substituir guias da mesma terapia (29/10/2026, branch `feat/substituir-requisicao`, a
+  partir da `main` em `d61a8be`; sem commit, sem merge, sem push).** Regra 22. Nenhuma
+  migration.
+  - **FK conferida**: `atendimento_requisicao_terapia_id_fkey` é `ON DELETE CASCADE`
+    (migration `20260828120000_init`); `requisicao_terapia → requisicao` é `RESTRICT`. Por
+    isso a guia é apagada antes da requisição, e os atendimentos não têm DELETE próprio.
+  - **Reuso**: cada guia sai por `excluirGuiaNaTransacao` (`guias.ts`), a mesma exclusão do
+    painel; não há DELETE novo de guia. O DELETE novo é só o da requisição vazia.
+  - **Ordem de lock** (documentada no topo de `atendimentos.ts`): paciente `FOR KEY SHARE`
+    (`buscarPacientePorNome`, já existia) → `SELECT ... FOR UPDATE OF rt` nas guias alvo,
+    `ORDER BY id` → contagem de atendimentos (comando novo, enxerga o que um lançamento
+    concorrente commitou) → `excluirGuiaNaTransacao` em ordem de id → `FOR UPDATE` nas
+    requisições antigas, por id → `DELETE ... WHERE NOT EXISTS (guia)` num comando novo
+    (um cadastro que acabou de pendurar guia na pasta antiga é visto e a pasta fica). A
+    substituição roda depois da checagem de terapias e antes de qualquer INSERT.
+  - **Prévia e transação usam a mesma consulta** (`guiasDaSubstituicao`), a prévia sem
+    lock e sem filtro de ids. Paciente inexistente na prévia → lista vazia (o envio segue
+    e a recusa vem da criação).
+  - **Assinatura**: `previsaoDeSubstituicao(pacienteNome, terapiaIds, numeroRequisicao)` —
+    o número entrou porque a guia da requisição de mesmo número não é apagada, e sem ele a
+    prévia diria mais do que a transação apaga. `substituir` é opcional em
+    `EntradaNovaRequisicao` (ausente = `false`), para os chamadores antigos continuarem no
+    caminho que não apaga nada. A action só liga com o valor exato `"sim"`.
+  - **Resultado**: `ResultadoCriacao` ganhou `substituidas` (guias apagadas, com terapia,
+    número e atendimentos) e `requisicoesApagadas`. A action repassa ao cliente só os
+    campos de texto. Requisição antiga apagada aparece na descrição do toast.
+  - **Formulário**: seção "3. Guias antigas" com checkbox nativo (rótulo visível, texto de
+    apoio por `aria-describedby`, sem cor nova). Com a caixinha marcada, o submit é
+    interceptado, a prévia roda ("Verificando..." no botão) e o `AlertDialog` lista o que
+    será apagado; "Substituir e apagar" reenvia o formulário por `requestSubmit` com uma
+    trava de um uso, "Cancelar"/Esc não envia nada. O botão de confirmar usa o carmim já
+    existente (como em "Excluir tudo"). Depois do sucesso a caixinha volta a desmarcada.
+  - **Testes** (582 em 38 arquivos; eram 557 em 37): `requisicoes-substituicao.integration.test.ts`
+    (marcada apaga guia + atendimentos e preserva TO; pasta vazia some e a mista fica; sem
+    terapia em comum; desmarcada; outro paciente; mesmo número atualiza e só a de outro
+    número sai; prévia = transação e não escreve; prévia de nome inexistente; saldo limpo
+    na view; atomicidade com cenário commitado e `Proxy` que faz o `requisicao.create`
+    estourar **depois** do DELETE da guia; duas corridas com portão e `pg_stat_activity`).
+    Unitários: checkbox só com `"sim"` consulta a substituição; mensagens. Papel: recepção
+    recusada na prévia e na criação com a caixinha. Mutações conferidas (cada uma derruba
+    um teste): sem checagem de papel na prévia; sem `FOR UPDATE OF rt` (a contagem fica
+    velha na corrida); sem filtro de número; sem filtro de paciente; sem DELETE da pasta
+    vazia.
+  - **Limitações conhecidas**: a contagem de atendimentos é feita sob o lock da guia, mas
+    a exclusão de atendimento não trava a guia — uma exclusão simultânea pode tornar o
+    número citado 1 maior que o apagado. Um cadastro concorrente acrescentando terapia
+    **na pasta antiga** que chegue depois do `FOR UPDATE` da requisição espera e, se a pasta
+    for apagada, falha com erro de FK cru (raro: exige o mesmo paciente e número antigo ao
+    mesmo tempo).
 
 - **Encaminhamentos da SulAmérica (28/10/2026, branch `feat/sulamerica-encaminhamentos`, a
   partir de `feat/paciente-so-por-encaminhamento` em `168a848`; sem commit, sem merge, sem
@@ -1907,6 +1984,16 @@ parecer íntegro na tela.
 - Não tirar o `SAVEPOINT` de `gravarCarteirinhaECrm` nem mover o UPDATE do paciente para
   depois do lock do encaminhamento (ordem de lock: paciente → encaminhamento).
 
+- Não marcar a caixinha "Substituir" por padrão sem decisão do usuário (`SUBSTITUIR_PADRAO`
+  no formulário): ela apaga atendimentos.
+- Não apagar guia da **mesma** requisição (mesmo número) na substituição: ela segue o
+  UPDATE da regra 5. Não estender a substituição a outro paciente nem a terapia que não
+  veio no envio.
+- Não escrever um segundo DELETE de guia para a substituição: ela usa
+  `excluirGuiaNaTransacao`. Não tirar o `FOR UPDATE OF rt ... ORDER BY id` nem trocar a
+  ordem guia → requisição.
+- Não confiar na prévia para apagar: o servidor refaz a consulta dentro da transação.
+
 ## Progresso
 
 - [x] Prompt 0 — Setup inicial do projeto
@@ -2354,6 +2441,13 @@ parecer íntegro na tela.
     arquivos**, `next build` concluído.
   - **Interação manual no navegador pendente** — roteiro em pendências.
 
+- [x] Substituir guias da mesma terapia (29/10/2026, branch `feat/substituir-requisicao`,
+      **sem commit, sem merge e sem push**). Ver regra 22 e a decisão correspondente.
+      Nenhuma migration.
+  - `tsc --noEmit` limpo, eslint limpo nos arquivos tocados, **582 testes em 38
+    arquivos**, `next build` concluído.
+  - **Interação manual no navegador pendente** — roteiro em pendências.
+
 ### Plano de papéis e convênios — 4 fases
 
 Registrado aqui inteiro de propósito: a Fase A sozinha não explica por que existe, e as
@@ -2377,6 +2471,33 @@ sessões seguintes precisam do plano completo para não implementar a fase errad
       interativa do usuário antes de merge e publicação.
 
 ## Pendências conhecidas (não bloqueiam o próximo passo, mas não esquecer)
+
+- **Substituir guias: roteiro manual de navegador** (nada disto foi feito; sem navegador
+  nesta sessão). Como admin, em `/klini/requisicoes/nova`, com um paciente que tenha a
+  requisição A com Fono + TO e atendimentos lançados nas duas:
+  1. **Caixinha**: a seção "3. Guias antigas" mostra a caixinha **desmarcada**, o rótulo
+     "Substituir guias da mesma terapia" e o texto de apoio. Tab chega nela, Espaço marca;
+     clicar no rótulo também marca.
+  2. **Desmarcada não apaga**: enviar B só com Fono, sem marcar. Toast de sempre; no painel,
+     Fono aparece em A e em B, com os atendimentos de A.
+  3. **Marcada sem terapia em comum**: marcar e enviar C só com uma terapia que o paciente
+     não tem. Nenhum diálogo; toast de sempre; nada some.
+  4. **Diálogo mostra o que apaga**: marcar e enviar D só com Fono. O botão mostra
+     "Verificando..." e abre o diálogo listando "Fono (requisição A, N atendimentos)" (e B,
+     se o passo 2 foi feito), com "Cancelar" e "Substituir e apagar".
+  5. **Cancelar não apaga**: Cancelar (e, numa segunda vez, Esc). Nada gravado; o formulário
+     continua preenchido e a caixinha marcada.
+  6. **Confirmar apaga**: repetir e confirmar. Toast "Requisição D lançada. Substituído:
+     Fono (requisição A, N atendimentos apagados)…"; no painel A fica só com TO (com os
+     atendimentos dela) e D tem Fono com saldo cheio e "Solicitada"; a caixinha volta
+     desmarcada.
+  7. **Requisição vazia some**: com um paciente cuja requisição E só tem Fono, substituir
+     Fono numa F. A descrição do toast diz que E ficou sem guias e foi apagada; E não
+     aparece mais no painel.
+  8. **Tela estreita (390px)**: rótulo e texto de apoio quebram sem rolagem lateral; o
+     diálogo cabe, com a lista quebrando nomes longos.
+  9. **Recepção**: logado como recepção, `/klini/requisicoes/nova` pela barra cai em
+     `/klini/dashboard`, sem a tela abrir.
 
 - **Migration `20261028140000_nome_do_medico_sulamerica` a aplicar no Supabase ANTES do
   deploy.** Aditiva (coluna NULL + CHECK que NULL passa; nenhuma linha reescrita), então a

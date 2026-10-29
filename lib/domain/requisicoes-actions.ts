@@ -34,9 +34,14 @@ import { autorizarRota } from "@/lib/auth/current-user";
 
 import {
   criarRequisicao,
+  previsaoDeSubstituicao,
   type EntradaNovaRequisicao,
   type LinhaDeTerapia,
 } from "./requisicoes";
+import type { ItemDeSubstituicao } from "./requisicoes-mensagens";
+
+/** Valor do checkbox "Substituir guias da mesma terapia" quando marcado. */
+const VALOR_SUBSTITUIR = "sim";
 
 /** Estado que o formulário lê de volta via `useActionState`. */
 export type EstadoNovaRequisicao = {
@@ -62,6 +67,10 @@ export type EstadoNovaRequisicao = {
      * uma terapia que já estava nela.
      */
     terapiasAtualizadas: number;
+    /** O que a substituição apagou de fato (vazio sem a caixinha). */
+    substituidas: ItemDeSubstituicao[];
+    /** Requisições antigas apagadas por terem ficado sem guia. */
+    requisicoesApagadas: string[];
     /**
      * Identificador da criação, único por submissão.
      *
@@ -135,6 +144,10 @@ export async function criarRequisicaoAction(
     pacienteNome: String(formData.get("pacienteNome") ?? ""),
     numeroRequisicao: String(formData.get("numeroRequisicao") ?? ""),
     linhas: lerLinhas(formData),
+    // Só o valor exato liga a substituição: um campo ausente, vazio ou com
+    // qualquer outro texto é o comportamento de sempre — o caminho que não
+    // apaga nada.
+    substituir: formData.get("substituir") === VALOR_SUBSTITUIR,
   };
 
   const resultado = await criarRequisicao(entrada);
@@ -152,7 +165,60 @@ export async function criarRequisicaoAction(
       requisicaoCriada: resultado.requisicaoCriada,
       terapiasAdicionadas: resultado.terapiasAdicionadas,
       terapiasAtualizadas: resultado.terapiasAtualizadas,
+      // Só os campos de texto; os ids ficam no servidor.
+      substituidas: resultado.substituidas.map((guia) => ({
+        terapiaNome: guia.terapiaNome,
+        numeroRequisicao: guia.numeroRequisicao,
+        atendimentos: guia.atendimentos,
+      })),
+      requisicoesApagadas: resultado.requisicoesApagadas,
       token: crypto.randomUUID(),
     },
+  };
+}
+
+export type ResultadoDaPrevisao =
+  { ok: true; itens: ItemDeSubstituicao[] } | { ok: false; erro: string };
+
+/**
+ * O que a caixinha "Substituir" apagaria, para o diálogo de confirmação.
+ *
+ * Leitura pura: não grava, não trava, não chama `refresh()`. Mesmo par de
+ * `contarParaExcluirPaciente`: a prévia vem **antes** do diálogo, para a frase
+ * citar o que o banco tem e não uma estimativa. Quem apaga é
+ * `criarRequisicaoAction`, que refaz a consulta dentro da transação.
+ *
+ * Só admin, como a criação: ela lê as guias e os atendimentos de um paciente,
+ * e esta tela não é da recepção. Os argumentos chegam de um POST que pode ter
+ * sido montado à mão, então são conferidos aqui em vez de confiados ao tipo.
+ */
+export async function previsaoDeSubstituicaoAction(entrada: {
+  pacienteNome: string;
+  numeroRequisicao: string;
+  terapiaIds: number[];
+}): Promise<ResultadoDaPrevisao> {
+  if (!(await autorizarRota(ROTA_NOVA_REQUISICAO))) {
+    return { ok: false, erro: MENSAGEM_SEM_PERMISSAO };
+  }
+
+  const terapiaIds = Array.isArray(entrada?.terapiaIds)
+    ? entrada.terapiaIds.filter(
+        (id): id is number => typeof id === "number" && Number.isInteger(id),
+      )
+    : [];
+
+  const guias = await previsaoDeSubstituicao(
+    String(entrada?.pacienteNome ?? ""),
+    terapiaIds,
+    String(entrada?.numeroRequisicao ?? ""),
+  );
+
+  return {
+    ok: true,
+    itens: guias.map((guia) => ({
+      terapiaNome: guia.terapiaNome,
+      numeroRequisicao: guia.numeroRequisicao,
+      atendimentos: guia.atendimentos,
+    })),
   };
 }

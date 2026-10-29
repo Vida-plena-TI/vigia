@@ -19,7 +19,10 @@ const mocks = vi.hoisted(() => {
   /** O "banco". Cada teste ajusta antes de chamar a action. */
   const banco = {
     /** Paciente devolvido pela busca por nome; `null` = nome de ninguém. */
-    paciente: { id: 10, nome: "José Silva" } as { id: number; nome: string } | null,
+    paciente: { id: 10, nome: "José Silva" } as {
+      id: number;
+      nome: string;
+    } | null,
     /**
      * `true` quando o paciente já tem requisição com o número pedido.
      *
@@ -110,6 +113,14 @@ const mocks = vi.hoisted(() => {
         return banco.paciente ? [banco.paciente] : [];
       }
 
+      // O lock das guias que a caixinha "Substituir" apagaria. O dublê não
+      // tem guias em outras requisições: a substituição em si é coberta em
+      // `requisicoes-substituicao.integration.test.ts`. Aqui só importa
+      // **se** a consulta foi feita.
+      if (sql.includes("FOR UPDATE OF rt")) {
+        return [];
+      }
+
       throw new Error(`consulta nao prevista pelo teste: ${sql}`);
     },
   );
@@ -178,7 +189,10 @@ vi.mock("@/lib/auth/current-user", () => ({
 vi.mock("next/cache", () => ({ refresh: mocks.refresh }));
 
 import {
+  APOIO_SUBSTITUIR,
+  avisoDeRequisicoesApagadas,
   criarRequisicao,
+  descreverItemDeSubstituicao,
   ERRO_NUMERO_OBRIGATORIO,
   ERRO_PACIENTE_NAO_CADASTRADO,
   ERRO_PACIENTE_OBRIGATORIO,
@@ -192,6 +206,8 @@ import {
   erroCorridaNaGuia,
   erroCorridaNaRequisicao,
   mensagemDeCriacao,
+  mensagemDeSubstituicao,
+  ROTULO_SUBSTITUIR,
   type EntradaNovaRequisicao,
 } from "./requisicoes";
 import { criarRequisicaoAction } from "./requisicoes-actions";
@@ -230,6 +246,8 @@ describe("criarRequisicao — paciente só é procurado, nunca criado", () => {
       requisicaoCriada: true,
       terapiasAdicionadas: 1,
       terapiasAtualizadas: 0,
+      substituidas: [],
+      requisicoesApagadas: [],
     });
     // Só a requisição foi escrita; nada em `paciente`.
     expect(mocks.escritas).toEqual(["requisicao"]);
@@ -242,7 +260,10 @@ describe("criarRequisicao — paciente só é procurado, nunca criado", () => {
       entrada({ pacienteNome: "Nome Nunca Visto" }),
     );
 
-    expect(resultado).toEqual({ ok: false, erro: ERRO_PACIENTE_NAO_CADASTRADO });
+    expect(resultado).toEqual({
+      ok: false,
+      erro: ERRO_PACIENTE_NAO_CADASTRADO,
+    });
     expect(mocks.escritas).toEqual([]);
     // Nem chega a perguntar por encaminhamento, número ou terapias.
     expect(mocks.buscarEncaminhamento).not.toHaveBeenCalled();
@@ -334,6 +355,8 @@ describe("criarRequisicao — número que o paciente já tem", () => {
       requisicaoCriada: false,
       terapiasAdicionadas: 2,
       terapiasAtualizadas: 0,
+      substituidas: [],
+      requisicoesApagadas: [],
     });
   });
 
@@ -833,10 +856,41 @@ describe("criarRequisicaoAction (Server Action)", () => {
         requisicaoCriada: true,
         terapiasAdicionadas: 1,
         terapiasAtualizadas: 0,
+        substituidas: [],
+        requisicoesApagadas: [],
         token: expect.any(String),
       },
     });
   });
+
+  it.each([
+    ["ausente", undefined, false],
+    ["vazio", "", false],
+    ["com outro valor", "on", false],
+    ["marcado", "sim", true],
+  ])(
+    "caixinha Substituir %s: só o valor exato consulta guias a substituir",
+    async (_rotulo, valor, consulta) => {
+      const dados = formulario();
+
+      if (valor !== undefined) {
+        dados.set("substituir", valor);
+      }
+
+      const estado = await criarRequisicaoAction({}, dados);
+
+      expect(estado.sucesso).toBeDefined();
+
+      const consultouSubstituicao = mocks.consultar.mock.calls.some(
+        ([partes]) =>
+          (partes as TemplateStringsArray)
+            .join(" ")
+            .includes("FOR UPDATE OF rt"),
+      );
+
+      expect(consultouSubstituicao).toBe(consulta);
+    },
+  );
 
   it("gera um token diferente para cada sucesso", async () => {
     const primeiro = await criarRequisicaoAction({}, formulario());
@@ -1012,4 +1066,53 @@ describe("mensagemDeCriacao", () => {
       ).toBe(frase);
     },
   );
+});
+
+describe("mensagens da substituição", () => {
+  it("a confirmação cita terapia, requisição antiga e atendimentos apagados", () => {
+    expect(
+      mensagemDeSubstituicao("444", [
+        { terapiaNome: "Fono", numeroRequisicao: "333", atendimentos: 12 },
+      ]),
+    ).toBe(
+      "Requisição 444 lançada. Substituído: Fono (requisição 333, 12 atendimentos apagados).",
+    );
+  });
+
+  it("singular, zero e mais de uma guia", () => {
+    expect(
+      mensagemDeSubstituicao("9", [
+        { terapiaNome: "Fono", numeroRequisicao: "1", atendimentos: 1 },
+        { terapiaNome: "TO", numeroRequisicao: "2", atendimentos: 0 },
+      ]),
+    ).toBe(
+      "Requisição 9 lançada. Substituído: Fono (requisição 1, 1 atendimento apagado); TO (requisição 2, nenhum atendimento apagado).",
+    );
+  });
+
+  it("a linha do diálogo diz o que será apagado, sem o verbo no passado", () => {
+    expect(
+      descreverItemDeSubstituicao({
+        terapiaNome: "Fono",
+        numeroRequisicao: "333",
+        atendimentos: 12,
+      }),
+    ).toBe("Fono (requisição 333, 12 atendimentos)");
+  });
+
+  it("aviso de requisição antiga apagada por ficar vazia", () => {
+    expect(avisoDeRequisicoesApagadas(["333"])).toBe(
+      "A requisição 333 ficou sem guias e foi apagada.",
+    );
+    expect(avisoDeRequisicoesApagadas(["1", "2"])).toBe(
+      "As requisições 1, 2 ficaram sem guias e foram apagadas.",
+    );
+  });
+
+  it("o texto de apoio da caixinha é o combinado", () => {
+    expect(ROTULO_SUBSTITUIR).toBe("Substituir guias da mesma terapia");
+    expect(APOIO_SUBSTITUIR).toBe(
+      "Apaga a guia da mesma terapia em requisições antigas deste paciente, com os atendimentos já lançados.",
+    );
+  });
 });

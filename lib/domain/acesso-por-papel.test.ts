@@ -24,6 +24,7 @@ const mocks = vi.hoisted(() => ({
   getSession: vi.fn(),
   refresh: vi.fn(),
   criarRequisicao: vi.fn(),
+  previsaoDeSubstituicao: vi.fn(),
   registrarEncaminhamento: vi.fn(),
   contarParaExclusao: vi.fn(),
   excluirPacientePeloId: vi.fn(),
@@ -39,7 +40,10 @@ vi.mock("@/lib/auth/session", () => ({
 
 vi.mock("next/cache", () => ({ refresh: mocks.refresh }));
 
-vi.mock("./requisicoes", () => ({ criarRequisicao: mocks.criarRequisicao }));
+vi.mock("./requisicoes", () => ({
+  criarRequisicao: mocks.criarRequisicao,
+  previsaoDeSubstituicao: mocks.previsaoDeSubstituicao,
+}));
 
 vi.mock("./encaminhamentos", () => ({
   registrarEncaminhamento: mocks.registrarEncaminhamento,
@@ -61,7 +65,10 @@ import {
   contarParaExcluirPaciente,
   excluirPaciente,
 } from "./pacientes-actions";
-import { criarRequisicaoAction } from "./requisicoes-actions";
+import {
+  criarRequisicaoAction,
+  previsaoDeSubstituicaoAction,
+} from "./requisicoes-actions";
 
 /** Sessao valida no cookie; o papel de verdade e o que o banco responder. */
 function logadoComoPapelNoBanco(papel: PapelUsuario) {
@@ -154,6 +161,28 @@ describe("recepcao chamando as actions restritas direto", () => {
     expect(mocks.criarRequisicao).not.toHaveBeenCalled();
   });
 
+  it("criar requisicao com a caixinha Substituir marcada e recusada, e nada e apagado", async () => {
+    const dados = formularioDeRequisicao();
+    dados.set("substituir", "sim");
+
+    const estado = await criarRequisicaoAction({}, dados);
+
+    expect(estado.erro).toBe(MENSAGEM_SEM_PERMISSAO);
+    expect(estado.sucesso).toBeUndefined();
+    expect(mocks.criarRequisicao).not.toHaveBeenCalled();
+  });
+
+  it("previa da substituicao e recusada — ela le guias e atendimentos do paciente", async () => {
+    const resultado = await previsaoDeSubstituicaoAction({
+      pacienteNome: "Fulano de Tal",
+      numeroRequisicao: "123",
+      terapiaIds: [1],
+    });
+
+    expect(resultado).toEqual({ ok: false, erro: MENSAGEM_SEM_PERMISSAO });
+    expect(mocks.previsaoDeSubstituicao).not.toHaveBeenCalled();
+  });
+
   it("criar/substituir encaminhamento e recusado, e nada e gravado", async () => {
     const estado = await criarEncaminhamentoAction(
       {},
@@ -192,6 +221,9 @@ describe("admin chamando as mesmas actions", () => {
       numeroRequisicao: "123",
       requisicaoCriada: true,
       terapiasAdicionadas: 1,
+      terapiasAtualizadas: 0,
+      substituidas: [],
+      requisicoesApagadas: [],
     });
 
     const estado = await criarRequisicaoAction({}, formularioDeRequisicao());
@@ -199,6 +231,57 @@ describe("admin chamando as mesmas actions", () => {
     expect(estado.erro).toBeUndefined();
     expect(estado.sucesso?.numeroRequisicao).toBe("123");
     expect(mocks.criarRequisicao).toHaveBeenCalledOnce();
+  });
+
+  it("criar requisicao com Substituir marcada chega no dominio pedindo a substituicao", async () => {
+    mocks.criarRequisicao.mockResolvedValue({
+      ok: true,
+      pacienteNome: "Fulano de Tal",
+      numeroRequisicao: "123",
+      requisicaoCriada: true,
+      terapiasAdicionadas: 1,
+      terapiasAtualizadas: 0,
+      substituidas: [],
+      requisicoesApagadas: [],
+    });
+    const dados = formularioDeRequisicao();
+    dados.set("substituir", "sim");
+
+    const estado = await criarRequisicaoAction({}, dados);
+
+    expect(estado.erro).toBeUndefined();
+    expect(mocks.criarRequisicao).toHaveBeenCalledWith(
+      expect.objectContaining({ substituir: true }),
+    );
+  });
+
+  it("previa da substituicao chega no dominio e devolve so os campos de texto", async () => {
+    mocks.previsaoDeSubstituicao.mockResolvedValue([
+      {
+        guiaId: 5,
+        terapiaId: 1,
+        terapiaNome: "Fono",
+        requisicaoId: 3,
+        numeroRequisicao: "333",
+        atendimentos: 12,
+      },
+    ]);
+
+    const resultado = await previsaoDeSubstituicaoAction({
+      pacienteNome: "Fulano de Tal",
+      numeroRequisicao: "444",
+      terapiaIds: [1],
+    });
+
+    expect(resultado).toEqual({
+      ok: true,
+      itens: [{ terapiaNome: "Fono", numeroRequisicao: "333", atendimentos: 12 }],
+    });
+    expect(mocks.previsaoDeSubstituicao).toHaveBeenCalledWith(
+      "Fulano de Tal",
+      [1],
+      "444",
+    );
   });
 
   it("criar encaminhamento chega no dominio", async () => {

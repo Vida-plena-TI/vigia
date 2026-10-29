@@ -130,9 +130,10 @@ export const ERRO_SEM_ENCAMINHAMENTO =
 export const ERRO_PACIENTE_NAO_CADASTRADO =
   "Paciente não cadastrado. Cadastre primeiro o encaminhamento em Encaminhamentos.";
 
-export const ERRO_REQUISICAO_ID_INVALIDO = "Identificador de requisição inválido.";
+export const ERRO_REQUISICAO_ID_INVALIDO =
+  "Identificador de requisição inválido.";
 export const ERRO_SITUACAO_INVALIDA =
-  "Situação inválida. Use \"solicitada\" ou \"aprovada\".";
+  'Situação inválida. Use "solicitada" ou "aprovada".';
 export const ERRO_REQUISICAO_INEXISTENTE =
   "Requisição não encontrada. Recarregue a página e tente de novo.";
 
@@ -144,4 +145,72 @@ export function mensagemDeSituacaoAlterada(
   return situacao === "aprovada"
     ? `Requisição ${numeroRequisicao} aprovada. Já aceita lançamento de atendimento.`
     : `Requisição ${numeroRequisicao} voltou para "Solicitada". Novos lançamentos ficam bloqueados.`;
+}
+
+// ---------------------------------------------------------------------------
+// Substituição de guias da mesma terapia (desde 29/10/2026)
+// ---------------------------------------------------------------------------
+
+export const ROTULO_SUBSTITUIR = "Substituir guias da mesma terapia";
+
+export const APOIO_SUBSTITUIR =
+  "Apaga a guia da mesma terapia em requisições antigas deste paciente, com os atendimentos já lançados.";
+
+/**
+ * Uma guia que a substituição apaga, como o diálogo e a confirmação a citam.
+ *
+ * Só os três campos de texto: é o que viaja da prévia para o cliente. O tipo
+ * do domínio (`GuiaSubstituida`) tem estes e mais os ids.
+ */
+export type ItemDeSubstituicao = {
+  terapiaNome: string;
+  numeroRequisicao: string;
+  atendimentos: number;
+};
+
+/** "nenhum atendimento", "1 atendimento", "12 atendimentos" (+ sufixo). */
+function contarAtendimentos(quantidade: number, apagados: boolean): string {
+  if (quantidade === 0) {
+    return apagados ? "nenhum atendimento apagado" : "nenhum atendimento";
+  }
+
+  if (quantidade === 1) {
+    return apagados ? "1 atendimento apagado" : "1 atendimento";
+  }
+
+  return apagados
+    ? `${quantidade} atendimentos apagados`
+    : `${quantidade} atendimentos`;
+}
+
+/** "Fono (requisição 333, 12 atendimentos)" — a linha do diálogo. */
+export function descreverItemDeSubstituicao(item: ItemDeSubstituicao): string {
+  return `${item.terapiaNome} (requisição ${item.numeroRequisicao}, ${contarAtendimentos(item.atendimentos, false)})`;
+}
+
+/**
+ * Confirmação de um envio que substituiu guias:
+ * "Requisição 444 lançada. Substituído: Fono (requisição 333, 12 atendimentos
+ * apagados)."
+ *
+ * Os números citados são os que a **transação** apagou, não os da prévia —
+ * entre o diálogo e a gravação o banco pode ter mudado.
+ */
+export function mensagemDeSubstituicao(
+  numeroRequisicao: string,
+  itens: readonly ItemDeSubstituicao[],
+): string {
+  const partes = itens.map(
+    (item) =>
+      `${item.terapiaNome} (requisição ${item.numeroRequisicao}, ${contarAtendimentos(item.atendimentos, true)})`,
+  );
+
+  return `Requisição ${numeroRequisicao} lançada. Substituído: ${partes.join("; ")}.`;
+}
+
+/** Aviso das requisições antigas apagadas por ficarem sem guia. */
+export function avisoDeRequisicoesApagadas(numeros: readonly string[]): string {
+  return numeros.length === 1
+    ? `A requisição ${numeros[0]} ficou sem guias e foi apagada.`
+    : `As requisições ${numeros.join(", ")} ficaram sem guias e foram apagadas.`;
 }

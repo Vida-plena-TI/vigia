@@ -62,6 +62,11 @@
  *     `requisicao_terapia`, e o INSERT de guia pede `FOR KEY SHARE` na
  *     requisição, que não conflita com `FOR SHARE` nem com o UPDATE da
  *     situação (que não mexe em chave).
+ *   - **cadastro de requisição com "Substituir"** (desde 29/10/2026):
+ *     `paciente` (FOR KEY SHARE) -> guias antigas (FOR UPDATE, por id) ->
+ *     requisições antigas (FOR UPDATE, por id) -> DELETE. Mesma direção guia
+ *     -> requisição; um lançamento na guia antiga ou espera a substituição (e
+ *     não acha mais a guia) ou a faz esperar (e o atendimento sai no cascade).
  *
  * Em todos, quem trava as duas tabelas trava guia antes de requisição; nenhum
  * caminho segura requisição esperando guia. Sem ordem invertida, não há ciclo.

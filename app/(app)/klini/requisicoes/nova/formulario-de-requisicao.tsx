@@ -1,18 +1,36 @@
 "use client";
 
-import { useActionState, useEffect, useRef, useState } from "react";
+import {
+  useActionState,
+  useEffect,
+  useRef,
+  useState,
+  useTransition,
+} from "react";
 import { useFormStatus } from "react-dom";
 import Link from "next/link";
 import { toast } from "sonner";
 
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
   criarRequisicaoAction,
+  previsaoDeSubstituicaoAction,
   type EstadoNovaRequisicao,
 } from "@/lib/domain/requisicoes-actions";
 import {
+  APOIO_SUBSTITUIR,
   ERRO_PACIENTE_NAO_CADASTRADO,
   ERRO_PACIENTE_OBRIGATORIO,
   ERRO_QTD_INVALIDA,
@@ -20,7 +38,12 @@ import {
   ERRO_SEM_TERAPIA,
   ERRO_TERAPIA_OBRIGATORIA,
   ERRO_TERAPIA_REPETIDA_NO_ENVIO,
+  ROTULO_SUBSTITUIR,
+  avisoDeRequisicoesApagadas,
+  descreverItemDeSubstituicao,
   mensagemDeCriacao,
+  mensagemDeSubstituicao,
+  type ItemDeSubstituicao,
 } from "@/lib/domain/requisicoes-mensagens";
 import type { TerapiaParaEscolha } from "@/lib/domain/requisicoes";
 
@@ -44,6 +67,18 @@ const ERROS_DO_PACIENTE = new Set([
  * Action) não sabe deste número.
  */
 const QTD_AUTORIZADA_PADRAO = "4";
+
+/**
+ * Estado inicial da caixinha "Substituir guias da mesma terapia": **desmarcada**.
+ *
+ * Marcada, o envio apaga guias e atendimentos de outras requisições, e isso
+ * não tem volta. Inverter o padrão é trocar este valor — o servidor não sabe
+ * dele, só do que o formulário enviar.
+ */
+const SUBSTITUIR_PADRAO = false;
+
+const ERRO_AO_VERIFICAR_SUBSTITUICAO =
+  "Não foi possível verificar o que seria substituído. Tente de novo.";
 
 /**
  * Uma linha do formulário.
@@ -130,6 +165,21 @@ export function FormularioDeRequisicao({
   const [mensagemDeSucesso, setMensagemDeSucesso] = useState<string | null>(
     null,
   );
+  const [substituir, setSubstituir] = useState(SUBSTITUIR_PADRAO);
+  /**
+   * O que a prévia disse que seria apagado. `null` enquanto o diálogo não deve
+   * aparecer — como em `ExcluirPaciente`, o diálogo não existe sem a lista que
+   * ele precisa citar.
+   */
+  const [previa, setPrevia] = useState<ItemDeSubstituicao[] | null>(null);
+  const [verificando, iniciarVerificacao] = useTransition();
+  const formularioRef = useRef<HTMLFormElement>(null);
+  /**
+   * Liga quando o envio já passou pela prévia (confirmado no diálogo, ou sem
+   * nada a apagar): a próxima submissão vai direto para a action. É desligado
+   * pela própria submissão que o consome.
+   */
+  const envioLiberado = useRef(false);
 
   // O erro do cliente só vale até a próxima submissão; depois disso quem manda
   // é a resposta do servidor.
@@ -157,21 +207,33 @@ export function FormularioDeRequisicao({
     // tinha atualiza a guia em vez de virar outra. Sem essas palavras, quem
     // digitou o número errado acharia ter criado uma requisição nova — e uma
     // quantidade sobrescrita passaria sem aviso.
-    const mensagem = mensagemDeCriacao(
-      sucesso.pacienteNome,
-      sucesso.numeroRequisicao,
-      sucesso.terapiasAdicionadas,
-      sucesso.terapiasAtualizadas,
-      sucesso.requisicaoCriada,
-    );
+    //
+    // Com substituição, a frase diz o que foi apagado — com os números da
+    // transação, não os da prévia.
+    const mensagem =
+      sucesso.substituidas.length > 0
+        ? mensagemDeSubstituicao(sucesso.numeroRequisicao, sucesso.substituidas)
+        : mensagemDeCriacao(
+            sucesso.pacienteNome,
+            sucesso.numeroRequisicao,
+            sucesso.terapiasAdicionadas,
+            sucesso.terapiasAtualizadas,
+            sucesso.requisicaoCriada,
+          );
 
     toast.success(mensagem, {
-      description: `Número ${sucesso.numeroRequisicao}.`,
+      description:
+        sucesso.requisicoesApagadas.length > 0
+          ? avisoDeRequisicoesApagadas(sucesso.requisicoesApagadas)
+          : `Número ${sucesso.numeroRequisicao}.`,
     });
 
     setMensagemDeSucesso(mensagem);
     setPacienteNome("");
     setNumeroRequisicao("");
+    // A caixinha volta ao padrão a cada requisição: apagar tem de ser uma
+    // escolha deste envio, não uma sobra do anterior.
+    setSubstituir(SUBSTITUIR_PADRAO);
     setLinhas([linhaNova(proximaChave.current++, validadePadrao)]);
     setErroLocal(null);
 
@@ -215,6 +277,14 @@ export function FormularioDeRequisicao({
   function validarNoCliente(evento: React.FormEvent<HTMLFormElement>) {
     setMensagemDeSucesso(null);
 
+    // Envio que já passou pela prévia: segue direto. A validação abaixo já
+    // rodou na submissão que abriu a prévia, e os campos não mudaram desde
+    // então (o diálogo é modal).
+    if (envioLiberado.current) {
+      envioLiberado.current = false;
+      return;
+    }
+
     if (linhas.length === 0) {
       evento.preventDefault();
       setErroLocal({ erro: ERRO_SEM_TERAPIA });
@@ -248,167 +318,298 @@ export function FormularioDeRequisicao({
     }
 
     setErroLocal(null);
+
+    if (substituir) {
+      evento.preventDefault();
+      verificarSubstituicao();
+    }
+  }
+
+  /**
+   * Caixinha marcada: pergunta ao servidor o que seria apagado. Havendo algo,
+   * abre o diálogo; não havendo, envia direto, sem diálogo.
+   *
+   * É só a prévia — o servidor refaz a consulta dentro da transação e apaga o
+   * que casar naquele momento.
+   */
+  function verificarSubstituicao() {
+    iniciarVerificacao(async () => {
+      try {
+        const resultado = await previsaoDeSubstituicaoAction({
+          pacienteNome,
+          numeroRequisicao,
+          terapiaIds: linhas.map((linha) => Number(linha.terapiaId)),
+        });
+
+        if (!resultado.ok) {
+          setErroLocal({ erro: resultado.erro });
+          return;
+        }
+
+        if (resultado.itens.length === 0) {
+          enviarSemNovaPrevia();
+          return;
+        }
+
+        setPrevia(resultado.itens);
+      } catch {
+        setErroLocal({ erro: ERRO_AO_VERIFICAR_SUBSTITUICAO });
+      }
+    });
+  }
+
+  function enviarSemNovaPrevia() {
+    envioLiberado.current = true;
+    formularioRef.current?.requestSubmit();
+  }
+
+  function confirmarSubstituicao() {
+    setPrevia(null);
+    enviarSemNovaPrevia();
   }
 
   return (
-    <form
-      action={action}
-      onSubmit={validarNoCliente}
-      noValidate
-      className="flex flex-col gap-8"
-    >
-      <section className="flex flex-col gap-4">
-        <div className="flex flex-col gap-1">
-          <h2 className="regua-de-secao">1. Paciente e requisição</h2>
-          <p className="max-w-prose text-xs text-muted-foreground">
-            Só pacientes com encaminhamento cadastrado. A comparação ignora
-            maiúsculas e minúsculas: &quot;José Silva&quot; e &quot;JOSÉ
-            SILVA&quot; são a mesma pessoa.{" "}
-            <Link
-              href="/klini/encaminhamentos"
-              className="underline underline-offset-2 hover:text-foreground"
-            >
-              Cadastrar encaminhamento
-            </Link>
-          </p>
-        </div>
-
-        <div className="grid gap-4 sm:grid-cols-2">
-          <div className="flex flex-col gap-1.5">
-            <Label htmlFor="pacienteNome" className="text-xs">
-              Nome do paciente
-            </Label>
-            <Input
-              ref={campoPacienteRef}
-              id="pacienteNome"
-              name="pacienteNome"
-              list="pacientes-existentes"
-              autoComplete="off"
-              autoFocus
-              className="h-9"
-              value={pacienteNome}
-              aria-invalid={erroDoPaciente ? true : undefined}
-              aria-describedby={erroDoPaciente ? "pacienteNome-erro" : undefined}
-              onChange={(evento) => {
-                setMensagemDeSucesso(null);
-                setPacienteNome(evento.target.value);
-              }}
-              placeholder="Digite ou escolha um paciente"
-            />
-            {erroDoPaciente ? (
-              <p
-                id="pacienteNome-erro"
-                role="alert"
-                className="aviso-de-erro"
+    <>
+      <form
+        ref={formularioRef}
+        action={action}
+        onSubmit={validarNoCliente}
+        noValidate
+        className="flex flex-col gap-8"
+      >
+        <section className="flex flex-col gap-4">
+          <div className="flex flex-col gap-1">
+            <h2 className="regua-de-secao">1. Paciente e requisição</h2>
+            <p className="max-w-prose text-xs text-muted-foreground">
+              Só pacientes com encaminhamento cadastrado. A comparação ignora
+              maiúsculas e minúsculas: &quot;José Silva&quot; e &quot;JOSÉ
+              SILVA&quot; são a mesma pessoa.{" "}
+              <Link
+                href="/klini/encaminhamentos"
+                className="underline underline-offset-2 hover:text-foreground"
               >
-                {erroDoPaciente}
-              </p>
-            ) : null}
-            {/*
+                Cadastrar encaminhamento
+              </Link>
+            </p>
+          </div>
+
+          <div className="grid gap-4 sm:grid-cols-2">
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="pacienteNome" className="text-xs">
+                Nome do paciente
+              </Label>
+              <Input
+                ref={campoPacienteRef}
+                id="pacienteNome"
+                name="pacienteNome"
+                list="pacientes-existentes"
+                autoComplete="off"
+                autoFocus
+                className="h-9"
+                value={pacienteNome}
+                aria-invalid={erroDoPaciente ? true : undefined}
+                aria-describedby={
+                  erroDoPaciente ? "pacienteNome-erro" : undefined
+                }
+                onChange={(evento) => {
+                  setMensagemDeSucesso(null);
+                  setPacienteNome(evento.target.value);
+                }}
+                placeholder="Digite ou escolha um paciente"
+              />
+              {erroDoPaciente ? (
+                <p
+                  id="pacienteNome-erro"
+                  role="alert"
+                  className="aviso-de-erro"
+                >
+                  {erroDoPaciente}
+                </p>
+              ) : null}
+              {/*
               `datalist` sugere, não restringe: só traz quem já tem
               encaminhamento, mas digitar outro nome ainda envia — e o servidor
               recusa sem criar nada. Quem decide é a transação, não a lista.
             */}
-            <datalist id="pacientes-existentes">
-              {nomesDePacientes.map((nome) => (
-                <option key={nome} value={nome} />
-              ))}
-            </datalist>
-          </div>
+              <datalist id="pacientes-existentes">
+                {nomesDePacientes.map((nome) => (
+                  <option key={nome} value={nome} />
+                ))}
+              </datalist>
+            </div>
 
-          <div className="flex flex-col gap-1.5">
-            <Label htmlFor="numeroRequisicao" className="text-xs">
-              Número da requisição
-            </Label>
-            <Input
-              id="numeroRequisicao"
-              name="numeroRequisicao"
-              autoComplete="off"
-              className="h-9"
-              value={numeroRequisicao}
-              onChange={(evento) => {
-                setMensagemDeSucesso(null);
-                setNumeroRequisicao(evento.target.value);
-              }}
-              placeholder="Ex.: 2026-00187"
-            />
-            <p className="text-xs text-muted-foreground">
-              Repetir um número que este paciente já tem acrescenta as terapias
-              àquela requisição, em vez de criar outra. Uma terapia que a
-              requisição já tem não vira segunda guia: a quantidade e a validade
-              dela são atualizadas, e os atendimentos já lançados continuam. O
-              mesmo número em pacientes diferentes continua sendo requisições
-              diferentes.
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="numeroRequisicao" className="text-xs">
+                Número da requisição
+              </Label>
+              <Input
+                id="numeroRequisicao"
+                name="numeroRequisicao"
+                autoComplete="off"
+                className="h-9"
+                value={numeroRequisicao}
+                onChange={(evento) => {
+                  setMensagemDeSucesso(null);
+                  setNumeroRequisicao(evento.target.value);
+                }}
+                placeholder="Ex.: 2026-00187"
+              />
+              <p className="text-xs text-muted-foreground">
+                Repetir um número que este paciente já tem acrescenta as
+                terapias àquela requisição, em vez de criar outra. Uma terapia
+                que a requisição já tem não vira segunda guia: a quantidade e a
+                validade dela são atualizadas, e os atendimentos já lançados
+                continuam. O mesmo número em pacientes diferentes continua sendo
+                requisições diferentes.
+              </p>
+            </div>
+          </div>
+        </section>
+
+        <section className="flex flex-col gap-4">
+          <div className="flex flex-col gap-1">
+            <h2 className="regua-de-secao">2. Terapias autorizadas</h2>
+            <p className="max-w-prose text-xs text-muted-foreground">
+              Uma linha por terapia. A validade já vem sugerida para um mês a
+              partir de hoje — continua editável, e apagá-la deixa a guia sem
+              prazo.
             </p>
           </div>
-        </div>
-      </section>
 
-      <section className="flex flex-col gap-4">
-        <div className="flex flex-col gap-1">
-          <h2 className="regua-de-secao">2. Terapias autorizadas</h2>
-          <p className="max-w-prose text-xs text-muted-foreground">
-            Uma linha por terapia. A validade já vem sugerida para um mês a
-            partir de hoje — continua editável, e apagá-la deixa a guia sem
-            prazo.
-          </p>
-        </div>
+          <div className="folha divide-y divide-regua overflow-hidden">
+            {linhas.map((linha, indice) => (
+              <LinhaDeTerapiaDoFormulario
+                key={linha.chave}
+                linha={linha}
+                indice={indice}
+                terapias={terapias}
+                podeRemover={linhas.length > 1}
+                temErro={erroExibido.linha === indice}
+                aoAlterar={alterarLinha}
+                aoRemover={removerLinha}
+              />
+            ))}
+          </div>
 
-        <div className="folha divide-y divide-regua overflow-hidden">
-          {linhas.map((linha, indice) => (
-            <LinhaDeTerapiaDoFormulario
-              key={linha.chave}
-              linha={linha}
-              indice={indice}
-              terapias={terapias}
-              podeRemover={linhas.length > 1}
-              temErro={erroExibido.linha === indice}
-              aoAlterar={alterarLinha}
-              aoRemover={removerLinha}
+          <div>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={adicionarLinha}
+            >
+              Adicionar outra terapia
+            </Button>
+          </div>
+        </section>
+
+        <section className="flex flex-col gap-2">
+          <h2 className="regua-de-secao">3. Guias antigas</h2>
+          <div className="flex items-start gap-2.5">
+            <input
+              id="substituir"
+              name="substituir"
+              type="checkbox"
+              value="sim"
+              className="mt-0.5 size-4 shrink-0"
+              checked={substituir}
+              aria-describedby="substituir-apoio"
+              onChange={(evento) => {
+                setMensagemDeSucesso(null);
+                setSubstituir(evento.target.checked);
+              }}
             />
-          ))}
-        </div>
+            <div className="flex min-w-0 flex-col gap-0.5">
+              <Label htmlFor="substituir" className="text-sm font-medium">
+                {ROTULO_SUBSTITUIR}
+              </Label>
+              <p
+                id="substituir-apoio"
+                className="max-w-prose text-xs text-muted-foreground"
+              >
+                {APOIO_SUBSTITUIR} Antes de gravar, o sistema mostra o que será
+                apagado e pede confirmação.
+              </p>
+            </div>
+          </div>
+        </section>
 
-        <div>
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            onClick={adicionarLinha}
-          >
-            Adicionar outra terapia
+        {erroExibido.erro && !erroDoPaciente ? (
+          <p role="alert" className="aviso-de-erro">
+            {erroExibido.erro}
+          </p>
+        ) : null}
+
+        {mensagemDeSucesso ? (
+          <p role="status" className="text-sm font-medium text-regular">
+            {mensagemDeSucesso}
+          </p>
+        ) : null}
+
+        <div className="flex items-center gap-3 border-t border-regua-forte pt-5">
+          <BotaoDeSubmit verificando={verificando} />
+          <Button asChild variant="ghost" size="sm">
+            <Link href="/klini/dashboard">Cancelar</Link>
           </Button>
         </div>
-      </section>
+      </form>
 
-      {erroExibido.erro && !erroDoPaciente ? (
-        <p role="alert" className="aviso-de-erro">
-          {erroExibido.erro}
-        </p>
-      ) : null}
+      <AlertDialog
+        open={previa !== null}
+        onOpenChange={(aberto) => {
+          if (!aberto) {
+            setPrevia(null);
+          }
+        }}
+      >
+        {previa === null ? null : (
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>
+                Substituir e apagar guias antigas?
+              </AlertDialogTitle>
+              <AlertDialogDescription>
+                Estas guias de outras requisições de {pacienteNome.trim()} serão
+                apagadas, com os atendimentos já lançados nelas. Isso não pode
+                ser desfeito.
+              </AlertDialogDescription>
+            </AlertDialogHeader>
 
-      {mensagemDeSucesso ? (
-        <p role="status" className="text-sm font-medium text-regular">
-          {mensagemDeSucesso}
-        </p>
-      ) : null}
+            <ul className="flex list-disc flex-col gap-1 pl-5 text-sm break-words">
+              {previa.map((item) => (
+                <li key={`${item.numeroRequisicao}-${item.terapiaNome}`}>
+                  {descreverItemDeSubstituicao(item)}
+                </li>
+              ))}
+            </ul>
 
-      <div className="flex items-center gap-3 border-t border-regua-forte pt-5">
-        <BotaoDeSubmit />
-        <Button asChild variant="ghost" size="sm">
-          <Link href="/klini/dashboard">Cancelar</Link>
-        </Button>
-      </div>
-    </form>
+            <AlertDialogFooter>
+              <AlertDialogCancel>Cancelar</AlertDialogCancel>
+              <AlertDialogAction
+                variant="destructive"
+                className="bg-esgotada text-white hover:bg-esgotada/90"
+                onClick={confirmarSubstituicao}
+              >
+                Substituir e apagar
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        )}
+      </AlertDialog>
+    </>
   );
 }
 
-function BotaoDeSubmit() {
+function BotaoDeSubmit({ verificando }: { verificando: boolean }) {
   const { pending } = useFormStatus();
 
   return (
-    <Button type="submit" size="lg" disabled={pending}>
-      {pending ? "Salvando..." : "Criar requisição"}
+    <Button type="submit" size="lg" disabled={pending || verificando}>
+      {pending
+        ? "Salvando..."
+        : verificando
+          ? "Verificando..."
+          : "Criar requisição"}
     </Button>
   );
 }
@@ -460,7 +661,9 @@ function LinhaDeTerapiaDoFormulario({
   return (
     <div
       className={`flex flex-col gap-3 border-l-[3px] px-3 py-3 sm:flex-row sm:items-end ${
-        temErro ? "border-l-esgotada bg-esgotada-fundo/50" : "border-l-transparent"
+        temErro
+          ? "border-l-esgotada bg-esgotada-fundo/50"
+          : "border-l-transparent"
       }`}
     >
       <div className="flex min-w-0 flex-1 flex-col gap-1.5">

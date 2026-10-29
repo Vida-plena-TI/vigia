@@ -31,11 +31,17 @@
  * **não se cria requisição para paciente sem encaminhamento cadastrado**. Ver
  * {@link criarNaTransacao} para o porquê de a checagem morar dentro da
  * transação, e não antes dela.
+ *
+ * Desde 29/10/2026 o envio pode **substituir** (caixinha do formulário): as
+ * guias da mesma terapia em outras requisições do paciente são apagadas, com
+ * os atendimentos, na mesma transação — ver {@link substituirGuiasNaTransacao}
+ * e a prévia {@link previsaoDeSubstituicao}.
  */
 import { getPrismaClient } from "@/lib/db";
 import { OPCOES_DE_TRANSACAO } from "@/lib/db/transacao";
 import type { Prisma } from "@/lib/generated/prisma/client";
 
+import { excluirGuiaNaTransacao } from "./guias";
 import { buscarPacientePorNome } from "./pacientes";
 import {
   SITUACAO_INICIAL,
@@ -81,6 +87,34 @@ export type EntradaNovaRequisicao = {
   pacienteNome: string;
   numeroRequisicao: string;
   linhas: LinhaDeTerapia[];
+  /**
+   * Caixinha "Substituir guias da mesma terapia" (desde 29/10/2026).
+   *
+   * `true`: para cada terapia do envio, as guias do **mesmo paciente** com a
+   * **mesma terapia** em **outras** requisições são apagadas, com os
+   * atendimentos delas (cascade), e a requisição antiga que ficar sem guia
+   * nenhuma some junto. Ver {@link substituirGuiasNaTransacao}.
+   *
+   * Ausente ou `false`: o comportamento de sempre — as guias coexistem. É o
+   * padrão porque apagar atendimento não tem volta.
+   */
+  substituir?: boolean;
+};
+
+/**
+ * Uma guia que a substituição apaga (ou apagaria, na prévia).
+ *
+ * `atendimentos` é quantos atendimentos estavam pendurados nela, contados
+ * **depois** do `FOR UPDATE` dentro da transação — ou no instante da leitura,
+ * na prévia.
+ */
+export type GuiaSubstituida = {
+  guiaId: number;
+  terapiaId: number;
+  terapiaNome: string;
+  requisicaoId: number;
+  numeroRequisicao: string;
+  atendimentos: number;
 };
 
 /** Uma terapia como o `select` do formulário precisa dela. */
@@ -116,6 +150,16 @@ export type ResultadoCriacao =
        * acabou de nascer não há guia anterior a atualizar.
        */
       terapiasAtualizadas: number;
+      /**
+       * Guias de outras requisições apagadas pela substituição, em ordem de
+       * id. Sempre vazia quando `substituir` não veio marcado.
+       */
+      substituidas: GuiaSubstituida[];
+      /**
+       * Números das requisições antigas apagadas por terem ficado sem guia
+       * nenhuma depois da substituição.
+       */
+      requisicoesApagadas: string[];
     }
   | {
       ok: false;
@@ -303,6 +347,20 @@ async function criarNaTransacao(
     throw new ErroDeNegocio(ERRO_TERAPIA_INEXISTENTE, indiceRuim);
   }
 
+  // Caixinha marcada: as guias da mesma terapia em **outras** requisições
+  // deste paciente saem antes de a guia nova entrar. Mesma transação: se
+  // qualquer passo daqui para baixo lançar, nada foi apagado. A guia da
+  // requisição de mesmo número fica de fora — segue o caminho de UPDATE do
+  // desfecho 2, como sempre.
+  const { substituidas, requisicoesApagadas } = entrada.substituir
+    ? await substituirGuiasNaTransacao(
+        tx,
+        paciente.id,
+        numeroRequisicao,
+        idsPedidos,
+      )
+    : { substituidas: [], requisicoesApagadas: [] };
+
   // As mesmas linhas servem aos dois desfechos: a `validade` é atributo de
   // cada `requisicao_terapia`, não da requisição. Uma terapia acrescentada hoje
   // a uma pasta antiga carrega a validade dela própria, sem tocar nas guias
@@ -377,6 +435,8 @@ async function criarNaTransacao(
       requisicaoCriada: false,
       terapiasAdicionadas: novas.length,
       terapiasAtualizadas: repetidas.length,
+      substituidas,
+      requisicoesApagadas,
     };
   }
 
@@ -406,7 +466,193 @@ async function criarNaTransacao(
     requisicaoCriada: true,
     terapiasAdicionadas: guias.length,
     terapiasAtualizadas: 0,
+    substituidas,
+    requisicoesApagadas,
   };
+}
+
+/**
+ * As guias que a substituição alcança, com o que a tela precisa citar.
+ *
+ * Uma consulta só para a prévia e para a transação — é o que faz a prévia
+ * dizer exatamente o que a transação apagaria naquele instante. O critério:
+ *
+ *   - guia do **mesmo paciente** (`r.paciente_id`): nunca a de outra pessoa;
+ *   - de uma das terapias do envio;
+ *   - em requisição de **outro número**: a de mesmo número é a pasta que
+ *     recebe o envio, e a guia dela é atualizada (regra 5), não apagada.
+ *
+ * `ids` restringe às guias já travadas, dentro da transação; a prévia passa
+ * `null`.
+ */
+async function guiasDaSubstituicao(
+  cliente: Prisma.TransactionClient,
+  pacienteId: number,
+  numeroRequisicao: string,
+  terapiaIds: number[],
+  ids: number[] | null,
+): Promise<GuiaSubstituida[]> {
+  return cliente.$queryRaw<GuiaSubstituida[]>`
+    SELECT
+      rt."id"                AS "guiaId",
+      t."id"                 AS "terapiaId",
+      t."nome"               AS "terapiaNome",
+      r."id"                 AS "requisicaoId",
+      r."numero_requisicao"  AS "numeroRequisicao",
+      (SELECT count(*)::int FROM "atendimento" a
+        WHERE a."requisicao_terapia_id" = rt."id") AS "atendimentos"
+    FROM "requisicao_terapia" rt
+    JOIN "requisicao" r ON r."id" = rt."requisicao_id"
+    JOIN "terapia"    t ON t."id" = rt."terapia_id"
+    WHERE r."paciente_id" = ${pacienteId}
+      AND r."numero_requisicao" <> ${numeroRequisicao}
+      AND rt."terapia_id" = ANY(${terapiaIds}::int[])
+      AND (${ids}::int[] IS NULL OR rt."id" = ANY(${ids}::int[]))
+    ORDER BY rt."id"
+  `;
+}
+
+/**
+ * Apaga as guias substituídas e as requisições antigas que ficam vazias.
+ *
+ * Roda dentro da transação de {@link criarNaTransacao}, depois do
+ * `FOR KEY SHARE` do paciente e antes de qualquer INSERT. Ordem de lock, a
+ * mesma direção guia -> requisição de todo o resto (ver o topo de
+ * `atendimentos.ts`):
+ *
+ *   1. `FOR UPDATE OF rt` nas guias alcançadas, **por id**. É o mesmo lock que
+ *      o lançamento de atendimento pede: um lançamento em curso numa dessas
+ *      guias faz esta transação esperar o commit dele (e o atendimento que ele
+ *      gravou é apagado junto, pelo cascade); um lançamento que chegar depois
+ *      espera esta, e ao destravar não acha mais a guia — recusa com "guia não
+ *      encontrada", sem atendimento órfão nem erro de FK.
+ *   2. A contagem de atendimentos, num comando novo (snapshot novo, já com o
+ *      que o lançamento concorrente commitou).
+ *   3. `excluirGuiaNaTransacao` em cada guia — a mesma exclusão do painel; o
+ *      `FOR UPDATE` dela é sobre linha já travada, e o DELETE leva os
+ *      atendimentos pelo `ON DELETE CASCADE`.
+ *   4. `FOR UPDATE` nas requisições antigas, por id, e só **depois** o DELETE
+ *      das que não têm mais guia, num comando novo: um cadastro concorrente
+ *      que tenha acabado de pendurar guia numa delas é visto e a requisição
+ *      fica.
+ */
+async function substituirGuiasNaTransacao(
+  tx: Prisma.TransactionClient,
+  pacienteId: number,
+  numeroRequisicao: string,
+  terapiaIds: number[],
+): Promise<{ substituidas: GuiaSubstituida[]; requisicoesApagadas: string[] }> {
+  const travadas = await tx.$queryRaw<{ id: number }[]>`
+    SELECT rt."id"
+    FROM "requisicao_terapia" rt
+    JOIN "requisicao" r ON r."id" = rt."requisicao_id"
+    WHERE r."paciente_id" = ${pacienteId}
+      AND r."numero_requisicao" <> ${numeroRequisicao}
+      AND rt."terapia_id" = ANY(${terapiaIds}::int[])
+    ORDER BY rt."id"
+    FOR UPDATE OF rt
+  `;
+
+  if (travadas.length === 0) {
+    return { substituidas: [], requisicoesApagadas: [] };
+  }
+
+  const substituidas = await guiasDaSubstituicao(
+    tx,
+    pacienteId,
+    numeroRequisicao,
+    terapiaIds,
+    travadas.map((guia) => guia.id),
+  );
+
+  for (const guia of substituidas) {
+    const exclusao = await excluirGuiaNaTransacao(tx, guia.guiaId);
+
+    // Inalcançável: a guia está travada por esta transação desde o passo 1.
+    // Se acontecer, lançar desfaz tudo — melhor que seguir pela metade.
+    if (!exclusao.ok) {
+      throw new Error(`substituição: a guia ${guia.guiaId} sumiu sob lock`);
+    }
+  }
+
+  const requisicaoIds = [
+    ...new Set(substituidas.map((guia) => guia.requisicaoId)),
+  ].sort((a, b) => a - b);
+
+  await tx.$queryRaw`
+    SELECT "id" FROM "requisicao"
+    WHERE "id" = ANY(${requisicaoIds}::int[])
+    ORDER BY "id"
+    FOR UPDATE
+  `;
+
+  const apagadas = await tx.$queryRaw<{ numeroRequisicao: string }[]>`
+    DELETE FROM "requisicao" r
+    WHERE r."id" = ANY(${requisicaoIds}::int[])
+      AND NOT EXISTS (
+        SELECT 1 FROM "requisicao_terapia" rt WHERE rt."requisicao_id" = r."id"
+      )
+    RETURNING r."numero_requisicao" AS "numeroRequisicao"
+  `;
+
+  return {
+    substituidas,
+    requisicoesApagadas: apagadas.map((linha) => linha.numeroRequisicao).sort(),
+  };
+}
+
+/**
+ * O que a caixinha "Substituir" apagaria se o envio fosse gravado agora.
+ *
+ * **Só leitura**: nenhum lock, nenhuma escrita. Alimenta o diálogo de
+ * confirmação do formulário; quem decide de verdade é a transação de
+ * {@link criarRequisicao}, que refaz a mesma consulta sob `FOR UPDATE` e apaga
+ * o que casar *naquele* momento.
+ *
+ * Nome que não é de paciente nenhum, ou entrada que não dá para consultar,
+ * devolve lista vazia: o formulário então envia direto, e a recusa certa vem
+ * da criação.
+ */
+export async function previsaoDeSubstituicao(
+  pacienteNome: string,
+  terapiaIds: number[],
+  numeroRequisicao: string,
+): Promise<GuiaSubstituida[]> {
+  return previsaoDeSubstituicaoComCliente(
+    getPrismaClient(),
+    pacienteNome,
+    terapiaIds,
+    numeroRequisicao,
+  );
+}
+
+/** {@link previsaoDeSubstituicao} num cliente dado — o teste passa a transação. */
+export async function previsaoDeSubstituicaoComCliente(
+  cliente: Prisma.TransactionClient,
+  pacienteNome: string,
+  terapiaIds: number[],
+  numeroRequisicao: string,
+): Promise<GuiaSubstituida[]> {
+  const nome = pacienteNome.trim();
+  const numero = numeroRequisicao.trim();
+  const ids = [
+    ...new Set(terapiaIds.filter((id) => Number.isInteger(id) && id > 0)),
+  ];
+
+  if (!nome || !numero || ids.length === 0) {
+    return [];
+  }
+
+  // Mesma comparação de `buscarPacientePorNome`, sem o lock: aqui é leitura.
+  const [paciente] = await cliente.$queryRaw<{ id: number }[]>`
+    SELECT "id" FROM "paciente" WHERE lower("nome") = lower(${nome})
+  `;
+
+  if (!paciente) {
+    return [];
+  }
+
+  return guiasDaSubstituicao(cliente, paciente.id, numero, ids, null);
 }
 
 /** Código do Prisma para violação de unique. */
