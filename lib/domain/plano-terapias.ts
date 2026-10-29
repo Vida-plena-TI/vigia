@@ -2,12 +2,11 @@
  * Cadastro de paciente com convênio e plano de terapias por semana
  * (29/10/2026).
  *
- * {@link cadastrarPaciente} é a porta de entrada do paciente que está sendo
- * construída: nome + convênio + ao menos uma terapia com as horas por semana.
- * **Em andamento até o P2**: por enquanto os dois cadastros de encaminhamento
- * (Klini e SulAmérica) continuam criando paciente também — sem convênio
- * (`convenio` NULL) —, e este cadastro adota o convênio quando encontra um
- * paciente assim.
+ * {@link cadastrarPaciente} é a **única porta de entrada do paciente** (regra
+ * 24, desde 29/10/2026): nome + convênio + ao menos uma terapia com as horas
+ * por semana, pela aba Cadastro de cada convênio. Os dois cadastros de
+ * encaminhamento (Klini e SulAmérica) só acham paciente que já existe. Um
+ * paciente antigo sem convênio (`convenio` NULL) adota o convênio aqui.
  *
  * O plano é **só informativo**: minutos por semana de cada terapia, sem campo
  * calculado nem soma. Nada no sistema lê o plano para decidir saldo, guia ou
@@ -22,8 +21,8 @@
  *   - existe com convênio NULL → adota o convênio e grava o plano;
  *   - existe com o outro convênio → recusa, sem gravar nada.
  *
- * **Ordem de lock**: get-or-create do paciente (`obterOuCriarPaciente`, o mesmo
- * dos encaminhamentos) → `SELECT ... FOR NO KEY UPDATE` no paciente (o mesmo
+ * **Ordem de lock**: get-or-create do paciente (`obterOuCriarPaciente`, que só
+ * este módulo chama) → `SELECT ... FOR NO KEY UPDATE` no paciente (o mesmo
  * lock da carteirinha nos encaminhamentos: serializa dois cadastros do mesmo
  * paciente e não bloqueia o `FOR KEY SHARE` de uma requisição) → terapias
  * `FOR KEY SHARE` → `plano_terapia` (DELETE + INSERT). É a direção paciente →

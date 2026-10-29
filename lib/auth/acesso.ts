@@ -47,6 +47,13 @@ export const ROTA_ENCAMINHAMENTOS = "/klini/encaminhamentos";
 export const ROTA_SULAMERICA = "/sulamerica/dashboard";
 export const ROTA_SULAMERICA_ENCAMINHAMENTOS = "/sulamerica/encaminhamentos";
 
+/**
+ * Aba Cadastro de cada convênio (29/10/2026, regra 24): a única porta de
+ * entrada do paciente. Só admin — como toda rota fora do allowlist acima.
+ */
+export const ROTA_KLINI_PACIENTES = "/klini/pacientes";
+export const ROTA_SULAMERICA_PACIENTES = "/sulamerica/pacientes";
+
 /** Para onde mandar quem esta autenticado mas nao alcanca a rota pedida. */
 export const ROTA_PADRAO_DA_RECEPCAO = "/klini/dashboard";
 

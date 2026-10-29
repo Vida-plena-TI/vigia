@@ -1,7 +1,8 @@
 /**
- * Paciente: o get-or-create por nome (só para o cadastro de encaminhamento),
- * a busca sem criação (para a requisição), as listas de nomes para
- * autocomplete e a **exclusão permanente e completa** do cadastro.
+ * Paciente: o get-or-create por nome (só para o cadastro de paciente, aba
+ * Cadastro), as buscas sem criação (para a requisição e para os dois cadastros
+ * de encaminhamento), as listas de nomes para autocomplete e a **exclusão
+ * permanente e completa** do cadastro.
  *
  * Este módulo nasceu de `lib/domain/requisicoes.ts`, onde as duas funções
  * moravam quando só o cadastro de requisição precisava delas. Com o cadastro
@@ -22,9 +23,13 @@ import { getPrismaClient } from "@/lib/db";
 import { OPCOES_DE_TRANSACAO } from "@/lib/db/transacao";
 import type { Prisma } from "@/lib/generated/prisma/client";
 
+import type { Convenio } from "./convenio";
 import {
   ERRO_ID_INVALIDO,
+  ERRO_PACIENTE_DE_OUTRO_CONVENIO,
   ERRO_PACIENTE_INEXISTENTE,
+  ERRO_PACIENTE_FORA_DO_CADASTRO,
+  ERRO_PACIENTE_SEM_CONVENIO,
 } from "./pacientes-mensagens";
 
 /**
@@ -40,12 +45,12 @@ export type PacienteResolvido = { id: number; nome: string; criado: boolean };
 /**
  * Get-or-create do paciente, case-insensitive, em uma única ida ao banco.
  *
- * **Quem pode chamar:** o cadastro de paciente com plano de terapias
- * (`plano-terapias.ts`, desde 29/10/2026 — a porta de entrada em construção) e,
- * até o P2, os dois cadastros de encaminhamento: Klini (`encaminhamentos.ts`) e
- * SulAmérica (`autorizacoes-sulamerica.ts`). "Nova requisição" usa
- * {@link buscarPacientePorNome}, que não cria. A lista é afirmada por
- * `pacientes-origem.test.ts`.
+ * **Quem pode chamar:** só o cadastro de paciente com plano de terapias
+ * (`cadastrarPaciente` em `plano-terapias.ts`, aba Cadastro de cada convênio —
+ * a única porta de entrada do paciente desde 29/10/2026, regra 24). "Nova
+ * requisição" usa {@link buscarPacientePorNome} e os dois cadastros de
+ * encaminhamento usam {@link exigirPacienteDoConvenio}; nenhum dos dois cria. A
+ * lista é afirmada por `pacientes-origem.test.ts`.
  *
  * O `INSERT ... ON CONFLICT (lower("nome")) DO NOTHING` dentro de uma CTE
  * resolve a corrida que um `SELECT` seguido de `INSERT` deixaria aberta: dois
@@ -105,8 +110,8 @@ export type PacienteEncontrado = { id: number; nome: string };
  * Busca o paciente pelo nome **sem criar**, travando a linha com
  * `FOR KEY SHARE`. Devolve `null` quando o nome não é de ninguém.
  *
- * É o caminho de "Nova requisição" desde 28/10/2026: paciente só nasce pelo
- * cadastro de encaminhamento, e a requisição só procura. A comparação é a do
+ * É o caminho de "Nova requisição" desde 28/10/2026: a requisição só procura
+ * (desde 29/10/2026 paciente só nasce pela aba Cadastro, regra 24). A comparação é a do
  * get-or-create acima — `lower(nome) = lower($1)`, a expressão do índice —
  * e o nome deve chegar já trimado, como lá.
  *
@@ -131,6 +136,70 @@ export async function buscarPacientePorNome(
   `;
 
   return linhas[0] ?? null;
+}
+
+/** Um paciente achado pelo encaminhamento, já conferido contra o convênio. */
+export type PacienteDoEncaminhamento = { id: number; nome: string };
+
+/**
+ * O paciente do encaminhamento, **sem criar**: o nome tem de ser de um
+ * paciente já cadastrado **neste** convênio (regra 24).
+ *
+ * Substitui o get-or-create que os dois cadastros de encaminhamento faziam até
+ * 29/10/2026. Três recusas, nenhuma grava nada:
+ *
+ *   - nome de ninguém → {@link ERRO_PACIENTE_FORA_DO_CADASTRO};
+ *   - paciente do outro convênio → {@link ERRO_PACIENTE_DE_OUTRO_CONVENIO};
+ *   - paciente com `convenio` NULL → {@link ERRO_PACIENTE_SEM_CONVENIO} — o
+ *     encaminhamento não decide convênio; o Cadastro decide.
+ *
+ * A comparação é a do get-or-create (`lower(nome) = lower($1)`, a expressão do
+ * índice), e o nome chega já trimado, como lá.
+ *
+ * **A trava é a mesma** que o cadastro de encaminhamento já tomava no paciente
+ * (`FOR NO KEY UPDATE`, a de `situacaoDaCarteirinha` em
+ * `carteirinha-crm-gravacao.ts`), só que tomada já na busca, porque o convênio
+ * lido aqui decide o desfecho:
+ *
+ *   - dois encaminhamentos do mesmo paciente continuam se serializando aqui;
+ *   - um Cadastro que esteja adotando o convênio deste paciente (o mesmo lock,
+ *     em `cadastrarPaciente`) faz esta busca esperar, e ela enxerga o convênio
+ *     gravado (READ COMMITTED relê a linha travada);
+ *   - uma exclusão permanente em curso (`FOR UPDATE`) também faz esperar, e
+ *     depois do commit dela a busca não acha ninguém — vira "não cadastrado";
+ *   - não conflita com o `FOR KEY SHARE` de uma requisição.
+ *
+ * Ordem de lock inalterada: paciente → encaminhamento/autorização.
+ */
+export async function exigirPacienteDoConvenio(
+  tx: Prisma.TransactionClient,
+  nome: string,
+  convenio: Convenio,
+): Promise<
+  { ok: true; paciente: PacienteDoEncaminhamento } | { ok: false; erro: string }
+> {
+  const [linha] = await tx.$queryRaw<
+    { id: number; nome: string; convenio: string | null }[]
+  >`
+    SELECT "id", "nome", "convenio"
+    FROM "paciente"
+    WHERE lower("nome") = lower(${nome})
+    FOR NO KEY UPDATE
+  `;
+
+  if (!linha) {
+    return { ok: false, erro: ERRO_PACIENTE_FORA_DO_CADASTRO };
+  }
+
+  if (linha.convenio === null) {
+    return { ok: false, erro: ERRO_PACIENTE_SEM_CONVENIO };
+  }
+
+  if (linha.convenio !== convenio) {
+    return { ok: false, erro: ERRO_PACIENTE_DE_OUTRO_CONVENIO };
+  }
+
+  return { ok: true, paciente: { id: linha.id, nome: linha.nome } };
 }
 
 /**
@@ -168,22 +237,33 @@ export type PacienteParaEncaminhamento = {
 };
 
 /**
- * Nomes de pacientes para os dois formulários de encaminhamento (Klini e
- * SulAmérica), todos os pacientes.
+ * Nomes de pacientes para o formulário de encaminhamento de um convênio: só
+ * os cadastrados **nele** (regra 24) — os demais seriam recusados pela
+ * transação de qualquer jeito.
  *
  * Só o nome — o `datalist` sugere texto, e o paciente é resolvido no servidor
- * pelo nome (get-or-create), não por id — mais um booleano: com ele o campo da
- * carteirinha aparece como opcional quando o nome digitado é de quem já tem
- * uma (regra 20). É dica de tela; quem decide é a transação do cadastro.
+ * pelo nome ({@link exigirPacienteDoConvenio}), não por id — mais um booleano:
+ * com ele o campo da carteirinha aparece como opcional quando o nome digitado
+ * é de quem já tem uma (regra 20). É dica de tela; quem decide é a transação
+ * do cadastro.
  */
-export async function listarPacientesParaEncaminhamento(): Promise<
-  PacienteParaEncaminhamento[]
-> {
-  return getPrismaClient().$queryRaw<PacienteParaEncaminhamento[]>`
+export async function listarPacientesParaEncaminhamento(
+  convenio: Convenio,
+): Promise<PacienteParaEncaminhamento[]> {
+  return listarPacientesParaEncaminhamentoComCliente(getPrismaClient(), convenio);
+}
+
+/** {@link listarPacientesParaEncaminhamento} num cliente dado — o teste passa a transação. */
+export async function listarPacientesParaEncaminhamentoComCliente(
+  cliente: Pick<Prisma.TransactionClient, "$queryRaw">,
+  convenio: Convenio,
+): Promise<PacienteParaEncaminhamento[]> {
+  return cliente.$queryRaw<PacienteParaEncaminhamento[]>`
     SELECT
       "nome",
       "numero_carteirinha" IS NOT NULL AS "temCarteirinha"
     FROM "paciente"
+    WHERE "convenio" = ${convenio}
     ORDER BY lower("nome"), "id"
   `;
 }

@@ -22,7 +22,9 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { getPrismaClient } from "@/lib/db";
 
+import { cadastrarPacienteDeTeste } from "@/test/paciente-cadastrado";
 import { registrarEncaminhamentoNaTransacao } from "./encaminhamentos";
+import { ERRO_PACIENTE_FORA_DO_CADASTRO } from "./pacientes-mensagens";
 import { listarNomesParaRequisicaoComCliente } from "./pacientes";
 import {
   criarRequisicao,
@@ -146,20 +148,21 @@ async function dataEmDias(
 }
 
 /**
- * Dá ao paciente (criando-o se preciso) um encaminhamento — o que a regra 15
- * exige antes de qualquer requisição.
+ * Cadastra o paciente (aba Cadastro da Klini) e lhe dá um encaminhamento — o
+ * que a regra 15 exige antes de qualquer requisição.
  *
  * Quase todo teste deste arquivo precisa disto no preparo, e nenhum deles é
  * sobre isto: o que eles testam é a unicidade do número, o reaproveitamento do
- * paciente e o rollback. Reaproveita `registrarEncaminhamentoNaTransacao` em
- * vez de inserir na mão: desde 28/10/2026 é o **único** caminho do Klini que
- * cria paciente, e o preparo passa por ele como a tela passaria.
+ * paciente e o rollback. Passa pelos dois caminhos de verdade, como a tela
+ * passaria: desde 29/10/2026 (regra 24) o Cadastro é a **única** porta de
+ * entrada do paciente, e o encaminhamento só acha quem já foi cadastrado.
  */
 async function comEncaminhamento(
   tx: ClienteDaTransacao,
   pacienteNome: string,
   dataEncaminhamento?: string,
 ): Promise<void> {
+  await cadastrarPacienteDeTeste(tx, pacienteNome);
   const resultado = await registrarEncaminhamentoNaTransacao(tx, {
     pacienteNome,
     dataEncaminhamento:
@@ -204,16 +207,37 @@ describe.skipIf(!temBanco)("cadastro de requisicao contra o banco real", () => {
     await getPrismaClient().$disconnect();
   });
 
-  it("fluxo completo: o encaminhamento cria o paciente e a requisição passa", async () => {
+  it("fluxo completo: Cadastro cria o paciente, Encaminhamento o acha, Nova requisição passa", async () => {
     const nome = `Paciente Novo ${SUFIXO}`;
 
     const resultado = await comRollback(async (tx) => {
       const terapiaId = await criarTerapia(tx, "novo");
       const antes = await contarPacientes(tx, nome);
 
-      // O único caminho para um paciente novo receber requisição: o cadastro
-      // do encaminhamento é que o cria.
-      await comEncaminhamento(tx, nome);
+      // Sem cadastro, nem o encaminhamento nem a requisição passam — e
+      // nenhum dos dois cria o paciente.
+      const encaminhamentoSemCadastro = await registrarEncaminhamentoNaTransacao(tx, {
+        pacienteNome: nome,
+        dataEncaminhamento: await dataDeEncaminhamentoEmDia(tx),
+        numeroCarteirinha: carteirinhaDeTeste(),
+        crmMedico: "123456",
+      });
+      const requisicaoSemCadastro = await criarRequisicaoNaTransacao(tx, {
+        pacienteNome: nome,
+        numeroRequisicao: `REQ-NOVO-${SUFIXO}`,
+        linhas: [{ terapiaId, qtdAutorizada: 12, validade: "2026-12-31" }],
+      });
+      const depoisDasRecusas = await contarPacientes(tx, nome);
+
+      // O único caminho: a aba Cadastro cria; depois o encaminhamento.
+      await cadastrarPacienteDeTeste(tx, nome, "klini");
+      const depoisDoCadastro = await contarPacientes(tx, nome);
+      const encaminhamento = await registrarEncaminhamentoNaTransacao(tx, {
+        pacienteNome: nome,
+        dataEncaminhamento: await dataDeEncaminhamentoEmDia(tx),
+        numeroCarteirinha: carteirinhaDeTeste(),
+        crmMedico: "123456",
+      });
       const depoisDoEncaminhamento = await contarPacientes(tx, nome);
 
       const criacao = await criarRequisicaoNaTransacao(tx, {
@@ -231,10 +255,22 @@ describe.skipIf(!temBanco)("cadastro de requisicao contra o banco real", () => {
           })
         : [];
 
-      return { criacao, antes, depoisDoEncaminhamento, pacientes, guias };
+      return {
+        criacao, antes, encaminhamentoSemCadastro, requisicaoSemCadastro,
+        depoisDasRecusas, depoisDoCadastro, encaminhamento,
+        depoisDoEncaminhamento, pacientes, guias,
+      };
     });
 
     expect(resultado.antes).toBe(0);
+    expect(resultado.encaminhamentoSemCadastro).toEqual({
+      ok: false,
+      erro: ERRO_PACIENTE_FORA_DO_CADASTRO,
+    });
+    expect(resultado.requisicaoSemCadastro).toMatchObject({ ok: false });
+    expect(resultado.depoisDasRecusas).toBe(0);
+    expect(resultado.depoisDoCadastro).toBe(1);
+    expect(resultado.encaminhamento).toMatchObject({ ok: true, substituiuAnterior: false });
     expect(resultado.depoisDoEncaminhamento).toBe(1);
     expect(resultado.criacao).toMatchObject({ ok: true, requisicaoCriada: true });
     // A requisição não acrescentou paciente: continua um só.

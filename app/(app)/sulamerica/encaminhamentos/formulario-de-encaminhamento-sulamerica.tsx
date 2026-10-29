@@ -4,6 +4,7 @@ import { useActionState, useEffect, useRef, useState } from "react";
 import { useFormStatus } from "react-dom";
 import { toast } from "sonner";
 
+import { AvisoDeErroDoEncaminhamento } from "@/components/aviso-de-erro-do-encaminhamento";
 import { CampoDeCarteirinha, CampoDeCrm } from "@/components/campos-carteirinha-crm";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -27,6 +28,7 @@ import {
 } from "@/lib/domain/carteirinha-crm";
 import { ehErroDoNomeMedico, validarNomeMedico } from "@/lib/domain/nome-medico";
 import type { PacienteParaEncaminhamento } from "@/lib/domain/pacientes";
+import { ehErroDoPacienteDoEncaminhamento } from "@/lib/domain/pacientes-mensagens";
 
 import { formatarData } from "../../klini/dashboard/formato";
 
@@ -40,14 +42,21 @@ const ESTADO_INICIAL: EstadoNovoEncaminhamentoSulamerica = {};
  *
  * O prazo volta para "sem escolha" (regra 18: escolha explícita, sem opção
  * pré-selecionada); a data volta para hoje.
+ *
+ * Só paciente já cadastrado na SulAmérica (regra 24): o `datalist` traz só
+ * esses, e nome fora dele é recusado pelo servidor com o link para Cadastro.
  */
 export function FormularioDeEncaminhamentoSulamerica({
   pacientes,
   hoje,
+  rotaDoCadastro,
 }: {
+  /** Só os pacientes da SulAmérica. */
   pacientes: PacienteParaEncaminhamento[];
   /** "AAAA-MM-DD" vinda do `CURRENT_DATE` do banco. */
   hoje: string;
+  /** A aba Cadastro da SulAmérica, para o link do erro. */
+  rotaDoCadastro: string;
 }) {
   const [estado, action] = useActionState(criarEncaminhamentoSulamericaAction, ESTADO_INICIAL);
 
@@ -107,7 +116,10 @@ export function FormularioDeEncaminhamentoSulamerica({
         : !prazoMeses
           ? ERRO_PRAZO_INVALIDO
           : [
-              decidirCarteirinha(numeroCarteirinha, situacaoDaCarteirinha),
+              // Nome fora da lista: quem responde é o servidor (ver a Klini).
+              situacaoDaCarteirinha === "paciente-novo"
+                ? ({ ok: true } as const)
+                : decidirCarteirinha(numeroCarteirinha, situacaoDaCarteirinha),
               validarCrm(crmMedico),
               validarNomeMedico(nomeMedico),
             ].find((resultado) => !resultado.ok)?.erro;
@@ -144,11 +156,14 @@ export function FormularioDeEncaminhamentoSulamerica({
               autoComplete="off"
               className="h-9"
               value={pacienteNome}
-              aria-invalid={erroExibido === ERRO_PACIENTE_OBRIGATORIO ? true : undefined}
+              aria-invalid={
+                erroExibido === ERRO_PACIENTE_OBRIGATORIO ||
+                ehErroDoPacienteDoEncaminhamento(erroExibido) ? true : undefined
+              }
               onChange={(evento) => mudou(setPacienteNome)(evento.target.value)}
-              placeholder="Digite ou escolha um paciente"
+              placeholder="Escolha um paciente cadastrado"
             />
-            {/* Sugere, não restringe: nome fora da lista cria o paciente. */}
+            {/* Só os pacientes da SulAmérica; nome fora da lista o servidor recusa. */}
             <datalist id="pacientes-existentes">
               {pacientes.map(({ nome }) => (
                 <option key={nome} value={nome} />
@@ -235,9 +250,7 @@ export function FormularioDeEncaminhamentoSulamerica({
       </div>
 
       {erroExibido ? (
-        <p role="alert" className="aviso-de-erro">
-          {erroExibido}
-        </p>
+        <AvisoDeErroDoEncaminhamento erro={erroExibido} rotaDoCadastro={rotaDoCadastro} />
       ) : null}
 
       {mensagemDeSucesso ? (

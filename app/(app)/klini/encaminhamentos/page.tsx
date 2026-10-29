@@ -1,7 +1,8 @@
 import type { Metadata } from "next";
 import { headers } from "next/headers";
+import Link from "next/link";
 
-import { ROTA_ENCAMINHAMENTOS } from "@/lib/auth/acesso";
+import { ROTA_ENCAMINHAMENTOS, ROTA_KLINI_PACIENTES } from "@/lib/auth/acesso";
 import { requireAcessoARota } from "@/lib/auth/current-user";
 import { PATHNAME_HEADER } from "@/lib/auth/pathname-header";
 import { dataDeHoje } from "@/lib/domain/atendimentos";
@@ -56,7 +57,7 @@ export default async function EncaminhamentosPage() {
   // banco no tempo de resposta da página.
   const [encaminhamentos, pacientes, hoje] = await Promise.all([
     listarEncaminhamentos(),
-    listarPacientesParaEncaminhamento(),
+    listarPacientesParaEncaminhamento("klini"),
     dataDeHoje(),
   ]);
 
@@ -68,7 +69,14 @@ export default async function EncaminhamentosPage() {
           O vencimento é calculado pelo banco: 180 dias corridos depois da data
           do encaminhamento. Cada paciente tem um encaminhamento só — cadastrar
           outro substitui o anterior. Sem encaminhamento cadastrado, o paciente
-          não pode receber requisição.
+          não pode receber requisição. Só paciente já cadastrado na aba{" "}
+          <Link
+            href={ROTA_KLINI_PACIENTES}
+            className="font-medium text-foreground underline underline-offset-4 hover:text-muted-foreground"
+          >
+            Cadastro
+          </Link>{" "}
+          recebe encaminhamento.
         </p>
       </div>
 
@@ -78,6 +86,7 @@ export default async function EncaminhamentosPage() {
         <FormularioDeEncaminhamento
           pacientes={pacientes}
           hoje={hoje}
+          rotaDoCadastro={ROTA_KLINI_PACIENTES}
         />
       </section>
 

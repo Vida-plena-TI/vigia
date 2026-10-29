@@ -19,17 +19,27 @@ describe("itensDeNavegacaoPara", () => {
     "/klini/requisicoes/nova",
     "/klini/futura/subpagina",
     "/klini?busca=sulamerica",
-  ])("admin ve so os cinco itens Klini em %s", (caminho) => {
+    "/klini/pacientes",
+  ])("admin ve so os seis itens Klini em %s", (caminho) => {
     expect(rotulos("admin", caminho)).toEqual([
       "Painel",
       "Nova requisição",
       "Lançar atendimento",
       "Atendimentos de hoje",
+      "Cadastro",
       "Encaminhamentos",
     ]);
   });
 
-  it("recepcao nao ve Nova requisição nem Encaminhamentos nem SulAmérica", () => {
+  it("o Cadastro de cada menu aponta para a aba do próprio convênio", () => {
+    const cadastro = (caminho: string) =>
+      itensDeNavegacaoPara("admin", caminho).find((item) => item.rotulo === "Cadastro")?.href;
+
+    expect(cadastro("/klini/dashboard")).toBe("/klini/pacientes");
+    expect(cadastro("/sulamerica/dashboard")).toBe("/sulamerica/pacientes");
+  });
+
+  it("recepcao nao ve Nova requisição, Cadastro, Encaminhamentos nem SulAmérica", () => {
     expect(rotulos("recepcao", "/klini/dashboard")).toEqual([
       "Painel",
       "Lançar atendimento",
@@ -43,9 +53,11 @@ describe("itensDeNavegacaoPara", () => {
     "/sulamerica/futura/subpagina",
     "/sulamerica?busca=klini",
     "/sulamerica/encaminhamentos",
-  ])("admin ve so os itens SulAmerica (Painel e Encaminhamentos) em %s", (caminho) => {
+    "/sulamerica/pacientes",
+  ])("admin ve so os itens SulAmerica (Painel, Cadastro e Encaminhamentos) em %s", (caminho) => {
     expect(itensDeNavegacaoPara("admin", caminho)).toEqual([
       { href: "/sulamerica/dashboard", rotulo: "Painel" },
+      { href: "/sulamerica/pacientes", rotulo: "Cadastro" },
       { href: "/sulamerica/encaminhamentos", rotulo: "Encaminhamentos" },
     ]);
   });
@@ -53,13 +65,18 @@ describe("itensDeNavegacaoPara", () => {
   it("recepcao continua sem itens SulAmerica", () => {
     expect(itensDeNavegacaoPara("recepcao", "/sulamerica/dashboard")).toEqual([]);
     expect(itensDeNavegacaoPara("recepcao", "/sulamerica/encaminhamentos")).toEqual([]);
+    expect(itensDeNavegacaoPara("recepcao", "/sulamerica/pacientes")).toEqual([]);
   });
 
   it("menu Klini nao aponta para SulAmerica, e vice-versa", () => {
-    const klini = itensDeNavegacaoPara("admin", "/klini/encaminhamentos").map((i) => i.href);
-    const sulamerica = itensDeNavegacaoPara("admin", "/sulamerica/encaminhamentos").map((i) => i.href);
-    expect(klini.every((href) => href.startsWith("/klini/"))).toBe(true);
-    expect(sulamerica.every((href) => href.startsWith("/sulamerica/"))).toBe(true);
+    for (const caminho of ["/klini/encaminhamentos", "/klini/pacientes"]) {
+      const klini = itensDeNavegacaoPara("admin", caminho).map((i) => i.href);
+      expect(klini.every((href) => href.startsWith("/klini/"))).toBe(true);
+    }
+    for (const caminho of ["/sulamerica/encaminhamentos", "/sulamerica/pacientes"]) {
+      const sulamerica = itensDeNavegacaoPara("admin", caminho).map((i) => i.href);
+      expect(sulamerica.every((href) => href.startsWith("/sulamerica/"))).toBe(true);
+    }
   });
 
   it.each([

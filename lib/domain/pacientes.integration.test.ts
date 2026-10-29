@@ -27,6 +27,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { getPrismaClient } from "@/lib/db";
 
+import { cadastrarPacienteDeTeste } from "@/test/paciente-cadastrado";
 import { registrarEncaminhamentoNaTransacao } from "./encaminhamentos";
 import {
   contarParaExclusao,
@@ -163,6 +164,7 @@ async function montarCenario(
   nome: string,
   rotulo: string,
 ): Promise<Cenario> {
+  await cadastrarPacienteDeTeste(tx, nome);
   const encaminhamento = await registrarEncaminhamentoNaTransacao(tx, {
     pacienteNome: nome,
     dataEncaminhamento: "2026-03-10",
@@ -327,6 +329,7 @@ describe.skipIf(!temBanco)("exclusao permanente de paciente", () => {
     const nome = `Exclusao So Encaminhamento ${SUFIXO}`;
 
     const resultado = await comRollback(async (tx) => {
+      await cadastrarPacienteDeTeste(tx, nome);
       const encaminhamento = await registrarEncaminhamentoNaTransacao(tx, {
         pacienteNome: nome,
         dataEncaminhamento: "2026-04-01",

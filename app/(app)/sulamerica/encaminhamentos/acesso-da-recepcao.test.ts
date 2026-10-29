@@ -127,6 +127,8 @@ describe("página de Encaminhamentos da SulAmérica", () => {
     await Pagina();
 
     expect(mocks.listarEncaminhamentosSulamerica).toHaveBeenCalledOnce();
+    // O datalist só traz os pacientes da SulAmérica (regra 24).
+    expect(mocks.listarPacientesParaEncaminhamento).toHaveBeenCalledExactlyOnceWith("sulamerica");
   });
 });
 

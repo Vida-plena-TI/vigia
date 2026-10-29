@@ -31,6 +31,7 @@ import * as mensagens from "./plano-terapias-mensagens";
 import {
   MINUTOS_SEMANAIS_MAXIMO,
   formatarMinutosSemanais,
+  minutosParaHorasDigitadas,
   lerHorasSemanais,
 } from "./tempo-semanal";
 
@@ -117,6 +118,29 @@ describe("formatarMinutosSemanais", () => {
     const lido = lerHorasSemanais("2,5");
 
     expect(lido.ok && formatarMinutosSemanais(lido.minutos)).toBe("2 h 30 min");
+  });
+});
+
+describe("minutosParaHorasDigitadas (o Editar da aba Cadastro)", () => {
+  it.each([
+    [15, "0,25"],
+    [45, "0,75"],
+    [60, "1"],
+    [75, "1,25"],
+    [90, "1,5"],
+    [150, "2,5"],
+    [10080, "168"],
+  ])("%i min viram %j", (minutos, texto) => {
+    expect(minutosParaHorasDigitadas(minutos)).toBe(texto);
+  });
+
+  it("é o inverso exato de lerHorasSemanais para todo valor que o CHECK aceita", () => {
+    for (let minutos = 15; minutos <= 10080; minutos += 15) {
+      expect(lerHorasSemanais(minutosParaHorasDigitadas(minutos))).toEqual({
+        ok: true,
+        minutos,
+      });
+    }
   });
 });
 

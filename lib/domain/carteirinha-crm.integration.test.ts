@@ -22,16 +22,18 @@ import { getPrismaClient } from "@/lib/db";
 
 import {
   ERRO_CARTEIRINHA_INVALIDA,
-  ERRO_CARTEIRINHA_OBRIGATORIA,
   ERRO_CARTEIRINHA_OBRIGATORIA_SEM_CADASTRO,
   ERRO_CRM_INVALIDO,
   erroCarteirinhaDeOutroPaciente,
 } from "./carteirinha-crm";
+import { cadastrarPacienteDeTeste } from "@/test/paciente-cadastrado";
+
 import {
   listarEncaminhamentosNaTransacao,
   registrarEncaminhamentoNaTransacao,
   type EntradaNovoEncaminhamento,
 } from "./encaminhamentos";
+import { ERRO_PACIENTE_FORA_DO_CADASTRO } from "./pacientes-mensagens";
 
 const temBanco = Boolean(process.env.DATABASE_URL);
 
@@ -158,16 +160,31 @@ async function tentarNoBanco(
   }
 }
 
-/** Insere um paciente cru, sem o domínio. */
+/**
+ * Insere um paciente cru, sem o domínio — como um paciente de antes da
+ * carteirinha. Com convênio `klini`, que é o que a migration de 29/10/2026 deu
+ * a quem já tinha encaminhamento: sem convênio o encaminhamento o recusaria
+ * (regra 24) antes de chegar à carteirinha.
+ */
 async function inserirPacienteCru(
   tx: ClienteDaTransacao,
   nome: string,
 ): Promise<number> {
   const [paciente] = await tx.$queryRaw<{ id: number }[]>`
-    INSERT INTO "paciente" ("nome") VALUES (${nome}) RETURNING "id"
+    INSERT INTO "paciente" ("nome", "convenio") VALUES (${nome}, 'klini') RETURNING "id"
   `;
 
   return paciente.id;
+}
+
+/**
+ * O paciente cadastrado na aba Cadastro da Klini — desde a regra 24 o
+ * encaminhamento só aceita paciente que já existe.
+ */
+async function cadastrado(tx: ClienteDaTransacao, ...nomes: string[]) {
+  for (const nome of nomes) {
+    await cadastrarPacienteDeTeste(tx, nome, "klini");
+  }
 }
 
 describe.skipIf(!temBanco)("carteirinha e CRM contra o banco real", () => {
@@ -180,10 +197,11 @@ describe.skipIf(!temBanco)("carteirinha e CRM contra o banco real", () => {
     await getPrismaClient().$disconnect();
   });
 
-  it("paciente novo nasce com carteirinha e CRM normalizados", async () => {
+  it("paciente cadastrado recebe carteirinha e CRM normalizados", async () => {
     const nome = `Carteirinha Novo ${SUFIXO}`;
 
     const resultado = await comRollback(async (tx) => {
+      await cadastrado(tx, nome);
       const gravacao = await registrarEncaminhamentoNaTransacao(
         tx,
         entrada(nome, {
@@ -201,10 +219,7 @@ describe.skipIf(!temBanco)("carteirinha e CRM contra o banco real", () => {
       };
     });
 
-    expect(resultado.gravacao).toMatchObject({
-      ok: true,
-      pacienteCriado: true,
-    });
+    expect(resultado.gravacao).toMatchObject({ ok: true });
     expect(resultado.pacientes).toHaveLength(1);
     // Espaços fora, caixa preservada; pontos fora do CRM.
     expect(resultado.pacientes[0]).toMatchObject({
@@ -223,6 +238,7 @@ describe.skipIf(!temBanco)("carteirinha e CRM contra o banco real", () => {
     const carteirinha = carteirinhaDeTeste();
 
     const resultado = await comRollback(async (tx) => {
+      await cadastrado(tx, nome);
       const primeiro = await registrarEncaminhamentoNaTransacao(
         tx,
         entrada(nome, { numeroCarteirinha: carteirinha, crmMedico: "111111" }),
@@ -249,7 +265,6 @@ describe.skipIf(!temBanco)("carteirinha e CRM contra o banco real", () => {
     expect(resultado.primeiro).toMatchObject({ ok: true });
     expect(resultado.segundo).toMatchObject({
       ok: true,
-      pacienteCriado: false,
       substituiuAnterior: true,
     });
     expect(resultado.pacientes).toHaveLength(1);
@@ -266,6 +281,7 @@ describe.skipIf(!temBanco)("carteirinha e CRM contra o banco real", () => {
     const carteirinha = carteirinhaDeTeste();
 
     const resultado = await comRollback(async (tx) => {
+      await cadastrado(tx, dono, outro);
       await registrarEncaminhamentoNaTransacao(
         tx,
         entrada(dono, { numeroCarteirinha: carteirinha, crmMedico: "111111" }),
@@ -293,10 +309,8 @@ describe.skipIf(!temBanco)("carteirinha e CRM contra o banco real", () => {
       numeroCarteirinha: carteirinha,
       crmMedico: "111111",
     });
-    // O outro não ganhou encaminhamento nem carteirinha. (Nesta variante "na
-    // transação" o paciente recém-criado pelo get-or-create continua dentro
-    // dela — o rollback é do chamador. Em `registrarEncaminhamento` o `throw`
-    // o desfaz junto.)
+    // O outro (cadastrado, sem encaminhamento) não ganhou encaminhamento nem
+    // carteirinha.
     expect(resultado.encaminhamentosDoOutro).toBe(0);
     expect(resultado.doOutro.every((p) => p.numeroCarteirinha === null)).toBe(
       true,
@@ -308,6 +322,7 @@ describe.skipIf(!temBanco)("carteirinha e CRM contra o banco real", () => {
     const outro = `Carteirinha Caixa Outro ${SUFIXO}`;
 
     const recusa = await comRollback(async (tx) => {
+      await cadastrado(tx, dono, outro);
       await registrarEncaminhamentoNaTransacao(
         tx,
         entrada(dono, { numeroCarteirinha: `ABCdef${SUFIXO}` }),
@@ -338,6 +353,7 @@ describe.skipIf(!temBanco)("carteirinha e CRM contra o banco real", () => {
     const carteirinha = carteirinhaDeTeste();
 
     const resultado = await comRollback(async (tx) => {
+      await cadastrado(tx, dono, outro);
       await registrarEncaminhamentoNaTransacao(
         tx,
         entrada(dono, { numeroCarteirinha: carteirinha }),
@@ -356,9 +372,13 @@ describe.skipIf(!temBanco)("carteirinha e CRM contra o banco real", () => {
           return (...argumentos: unknown[]) => {
             const sql = (argumentos[0] as readonly string[]).join("?");
 
+            // A checagem de dono (`donoDaCarteirinha`), e não a leitura de
+            // `situacaoDaCarteirinha`, que também tem "IS NOT NULL" no SQL:
+            // cegar aquela faria o teste passar pela checagem prévia, sem
+            // chegar ao índice.
             if (
               checagensCegadas === 0 &&
-              sql.includes('"numero_carteirinha" IS NOT NULL')
+              sql.includes('AND lower("numero_carteirinha") = lower(')
             ) {
               checagensCegadas += 1;
               return Promise.resolve([]);
@@ -446,6 +466,7 @@ describe.skipIf(!temBanco)("carteirinha e CRM contra o banco real", () => {
           },
         }) as ClienteDaTransacao;
 
+        await cadastrado(tx, nome);
         return registrarEncaminhamentoNaTransacao(adulterado, entrada(nome));
       });
     } catch (erro) {
@@ -599,7 +620,7 @@ describe.skipIf(!temBanco)("carteirinha e CRM contra o banco real", () => {
         tx,
         entrada(`Carteirinha Dominio ${SUFIXO}`, { crmMedico: "CRM 1234" }),
       ),
-      // Nada foi gravado: a validação roda antes do get-or-create.
+      // Nada foi gravado: a validação roda antes da busca do paciente.
       pacientes: await pacientesComNome(tx, `Carteirinha Dominio ${SUFIXO}`),
     }));
 
@@ -639,7 +660,10 @@ describe.skipIf(!temBanco)("carteirinha e CRM contra o banco real", () => {
       `;
     }
 
-    it("paciente novo sem carteirinha é recusado", async () => {
+    // Até 29/10/2026: "paciente novo sem carteirinha é recusado" (pela
+    // carteirinha). Desde a regra 24 não há paciente novo no encaminhamento:
+    // o nome de ninguém é recusado antes, e nada é criado.
+    it("nome não cadastrado é recusado antes da carteirinha, sem criar paciente", async () => {
       const nome = `Obrigatoria Novo ${SUFIXO}`;
 
       const resultado = await comRollback(async (tx) => ({
@@ -653,16 +677,10 @@ describe.skipIf(!temBanco)("carteirinha e CRM contra o banco real", () => {
 
       expect(resultado.recusa).toEqual({
         ok: false,
-        erro: ERRO_CARTEIRINHA_OBRIGATORIA,
+        erro: ERRO_PACIENTE_FORA_DO_CADASTRO,
       });
       expect(resultado.encaminhamentos).toBe(0);
-      // Nesta variante o paciente do get-or-create fica na transação (o
-      // rollback é do chamador); ele não ganhou nem carteirinha nem CRM.
-      expect(
-        resultado.pacientes.every(
-          (p) => p.numeroCarteirinha === null && p.crmMedico === null,
-        ),
-      ).toBe(true);
+      expect(resultado.pacientes).toHaveLength(0);
     });
 
     it("paciente legado sem carteirinha é recusado com a frase própria", async () => {
@@ -713,6 +731,7 @@ describe.skipIf(!temBanco)("carteirinha e CRM contra o banco real", () => {
         const carteirinha = carteirinhaDeTeste();
 
         const resultado = await comRollback(async (tx) => {
+          await cadastrado(tx, nome);
           await registrarEncaminhamentoNaTransacao(
             tx,
             entrada(nome, { numeroCarteirinha: carteirinha, crmMedico: "111" }),
@@ -735,7 +754,6 @@ describe.skipIf(!temBanco)("carteirinha e CRM contra o banco real", () => {
 
         expect(resultado.reenvio).toMatchObject({
           ok: true,
-          pacienteCriado: false,
           substituiuAnterior: true,
         });
         expect(resultado.pacientes).toHaveLength(1);
@@ -753,6 +771,7 @@ describe.skipIf(!temBanco)("carteirinha e CRM contra o banco real", () => {
       const carteirinha = carteirinhaDeTeste();
 
       const resultado = await comRollback(async (tx) => {
+        await cadastrado(tx, nome);
         await registrarEncaminhamentoNaTransacao(
           tx,
           entrada(nome, { numeroCarteirinha: carteirinha }),
@@ -778,6 +797,7 @@ describe.skipIf(!temBanco)("carteirinha e CRM contra o banco real", () => {
       const nova = carteirinhaDeTeste();
 
       const resultado = await comRollback(async (tx) => {
+        await cadastrado(tx, nome);
         await registrarEncaminhamentoNaTransacao(
           tx,
           entrada(nome, { numeroCarteirinha: antiga }),
@@ -804,6 +824,7 @@ describe.skipIf(!temBanco)("carteirinha e CRM contra o banco real", () => {
       const propria = carteirinhaDeTeste();
 
       const resultado = await comRollback(async (tx) => {
+        await cadastrado(tx, dono, nome);
         await registrarEncaminhamentoNaTransacao(
           tx,
           entrada(dono, { numeroCarteirinha: doDono }),

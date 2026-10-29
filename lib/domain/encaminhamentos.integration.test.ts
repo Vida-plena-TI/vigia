@@ -30,11 +30,20 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { getPrismaClient } from "@/lib/db";
 
+import { cadastrarPacienteDeTeste } from "@/test/paciente-cadastrado";
+
 import {
   listarEncaminhamentosNaTransacao,
   registrarEncaminhamentoNaTransacao,
+  type EntradaNovoEncaminhamento,
   type StatusEncaminhamento,
 } from "./encaminhamentos";
+import { listarPacientesParaEncaminhamentoComCliente } from "./pacientes";
+import {
+  ERRO_PACIENTE_DE_OUTRO_CONVENIO,
+  ERRO_PACIENTE_FORA_DO_CADASTRO,
+  ERRO_PACIENTE_SEM_CONVENIO,
+} from "./pacientes-mensagens";
 
 const temBanco = Boolean(process.env.DATABASE_URL);
 
@@ -81,6 +90,20 @@ async function comRollback<T>(
   }
 
   throw new Error("a transacao deveria ter sofrido rollback");
+}
+
+/**
+ * O preparo de quase todo teste: o paciente é cadastrado na aba Cadastro da
+ * Klini (a única porta de entrada desde 29/10/2026, regra 24) e só então
+ * recebe o encaminhamento. Reenvios do mesmo paciente chamam
+ * `registrarEncaminhamentoNaTransacao` direto.
+ */
+async function cadastrarERegistrar(
+  tx: ClienteDaTransacao,
+  entrada: EntradaNovoEncaminhamento,
+) {
+  await cadastrarPacienteDeTeste(tx, entrada.pacienteNome.trim(), "klini");
+  return registrarEncaminhamentoNaTransacao(tx, entrada);
 }
 
 /** Quantos pacientes têm este nome, comparando como o índice compara. */
@@ -165,7 +188,7 @@ describe.skipIf(!temBanco)("encaminhamento contra o banco real", () => {
     "a coluna gerada soma 180 dias corridos (%s)",
     async (rotulo, dataEncaminhamento, vencimentoEsperado) => {
       const resultado = await comRollback((tx) =>
-        registrarEncaminhamentoNaTransacao(tx, {
+        cadastrarERegistrar(tx, {
           pacienteNome: `Encaminhado ${rotulo} ${SUFIXO}`,
           dataEncaminhamento,
           numeroCarteirinha: carteirinhaDeTeste(),
@@ -187,7 +210,7 @@ describe.skipIf(!temBanco)("encaminhamento contra o banco real", () => {
     // JavaScript aqui não soma nada, só confere que as duas discordam e que a
     // que vale é a de 180 dias.
     const linhas = await comRollback(async (tx) => {
-      const gravacao = await registrarEncaminhamentoNaTransacao(tx, {
+      const gravacao = await cadastrarERegistrar(tx, {
         pacienteNome: `Encaminhado Seis Meses ${SUFIXO}`,
         dataEncaminhamento: "2026-01-01",
         numeroCarteirinha: carteirinhaDeTeste(),
@@ -253,8 +276,10 @@ describe.skipIf(!temBanco)("encaminhamento contra o banco real", () => {
     expect(erro).toMatch(/428C9|generated column|data_vencimento/i);
   });
 
-  it("cria o paciente quando ele ainda não existe", async () => {
-    const nome = `Encaminhado Paciente Novo ${SUFIXO}`;
+  it("nome que não é de ninguém é recusado e NÃO cria paciente", async () => {
+    // Até 29/10/2026 este cadastro criava o paciente (get-or-create). Desde a
+    // regra 24 ele só acha quem já foi cadastrado na aba Cadastro.
+    const nome = `Encaminhado Sem Cadastro ${SUFIXO}`;
 
     const resultado = await comRollback(async (tx) => {
       const gravacao = await registrarEncaminhamentoNaTransacao(tx, {
@@ -264,24 +289,120 @@ describe.skipIf(!temBanco)("encaminhamento contra o banco real", () => {
         crmMedico: "123456",
       });
 
-      return { gravacao, pacientes: await contarPacientes(tx, nome) };
+      return {
+        gravacao,
+        pacientes: await contarPacientes(tx, nome),
+        encaminhamentos: await encaminhamentosDoPaciente(tx, nome),
+      };
     });
 
-    expect(resultado.gravacao).toMatchObject({
-      ok: true,
-      pacienteNome: nome,
-      pacienteCriado: true,
-      substituiuAnterior: false,
-      dataVencimento: "2027-05-14",
+    expect(resultado.gravacao).toEqual({
+      ok: false,
+      erro: ERRO_PACIENTE_FORA_DO_CADASTRO,
     });
-    expect(resultado.pacientes).toBe(1);
+    expect(resultado.gravacao).toMatchObject({
+      erro: "Paciente não cadastrado. Cadastre primeiro em Cadastro.",
+    });
+    expect(resultado.pacientes).toBe(0);
+    expect(resultado.encaminhamentos).toHaveLength(0);
   });
 
-  it("reaproveita o paciente existente mesmo com a caixa trocada", async () => {
+  it("paciente da SulAmérica é recusado no encaminhamento da Klini, sem gravar nada", async () => {
+    const nome = `Encaminhado Outro Convenio ${SUFIXO}`;
+
+    const resultado = await comRollback(async (tx) => {
+      await cadastrarPacienteDeTeste(tx, nome, "sulamerica");
+      const gravacao = await registrarEncaminhamentoNaTransacao(tx, {
+        pacienteNome: nome,
+        dataEncaminhamento: "2026-11-15",
+        numeroCarteirinha: carteirinhaDeTeste(),
+        crmMedico: "123456",
+      });
+      const [paciente] = await tx.$queryRaw<
+        { convenio: string | null; carteirinha: string | null; crm: string | null }[]
+      >`
+        SELECT "convenio", "numero_carteirinha" AS "carteirinha", "crm_medico" AS "crm"
+        FROM "paciente" WHERE lower("nome") = lower(${nome})
+      `;
+
+      return {
+        gravacao,
+        paciente,
+        encaminhamentos: await encaminhamentosDoPaciente(tx, nome),
+      };
+    });
+
+    expect(resultado.gravacao).toEqual({
+      ok: false,
+      erro: ERRO_PACIENTE_DE_OUTRO_CONVENIO,
+    });
+    // Nem carteirinha nem CRM foram gravados no paciente da SulAmérica.
+    expect(resultado.paciente).toEqual({
+      convenio: "sulamerica",
+      carteirinha: null,
+      crm: null,
+    });
+    expect(resultado.encaminhamentos).toHaveLength(0);
+  });
+
+  it("paciente com convênio NULL é recusado com a orientação de cadastrá-lo", async () => {
+    // Paciente antigo, de antes do convênio (a migration deixou NULL). O
+    // encaminhamento não decide o convênio por ele.
+    const nome = `Encaminhado Sem Convenio ${SUFIXO}`;
+
+    const resultado = await comRollback(async (tx) => {
+      await tx.$executeRaw`INSERT INTO "paciente" ("nome") VALUES (${nome})`;
+      const gravacao = await registrarEncaminhamentoNaTransacao(tx, {
+        pacienteNome: nome,
+        dataEncaminhamento: "2026-11-15",
+        numeroCarteirinha: carteirinhaDeTeste(),
+        crmMedico: "123456",
+      });
+      const [paciente] = await tx.$queryRaw<{ convenio: string | null }[]>`
+        SELECT "convenio" FROM "paciente" WHERE lower("nome") = lower(${nome})
+      `;
+
+      return {
+        gravacao,
+        paciente,
+        encaminhamentos: await encaminhamentosDoPaciente(tx, nome),
+      };
+    });
+
+    expect(resultado.gravacao).toEqual({ ok: false, erro: ERRO_PACIENTE_SEM_CONVENIO });
+    expect(resultado.paciente.convenio).toBeNull();
+    expect(resultado.encaminhamentos).toHaveLength(0);
+  });
+
+  it("o datalist da Klini traz só os pacientes da Klini", async () => {
+    const klini = `Encaminhado Lista Klini ${SUFIXO}`;
+    const sulamerica = `Encaminhado Lista SulAmerica ${SUFIXO}`;
+    const semConvenio = `Encaminhado Lista Sem Convenio ${SUFIXO}`;
+
+    const nomes = await comRollback(async (tx) => {
+      await cadastrarPacienteDeTeste(tx, klini, "klini");
+      await cadastrarPacienteDeTeste(tx, sulamerica, "sulamerica");
+      await tx.$executeRaw`INSERT INTO "paciente" ("nome") VALUES (${semConvenio})`;
+
+      return {
+        klini: (await listarPacientesParaEncaminhamentoComCliente(tx, "klini")).map((p) => p.nome),
+        sulamerica: (await listarPacientesParaEncaminhamentoComCliente(tx, "sulamerica")).map((p) => p.nome),
+      };
+    });
+
+    expect(nomes.klini).toContain(klini);
+    expect(nomes.klini).not.toContain(sulamerica);
+    expect(nomes.klini).not.toContain(semConvenio);
+    expect(nomes.sulamerica).toContain(sulamerica);
+    expect(nomes.sulamerica).not.toContain(klini);
+    expect(nomes.sulamerica).not.toContain(semConvenio);
+  });
+
+  it("acha o paciente cadastrado mesmo com a caixa trocada", async () => {
     const nome = `Encaminhado Paciente Existente ${SUFIXO}`;
 
     const resultado = await comRollback(async (tx) => {
-      const primeiro = await registrarEncaminhamentoNaTransacao(tx, {
+      const primeiro = await cadastrarERegistrar(tx, {
         pacienteNome: nome,
         dataEncaminhamento: "2026-11-15",
         numeroCarteirinha: carteirinhaDeTeste(),
@@ -290,8 +411,7 @@ describe.skipIf(!temBanco)("encaminhamento contra o banco real", () => {
 
       // Mesma pessoa, digitada em caixa alta e com espaço sobrando: é a
       // comparação `lower(nome) = lower($1)` — a mesma do índice — que precisa
-      // reconhecê-la. É o get-or-create de `lib/domain/pacientes.ts`, o mesmo
-      // que o cadastro de requisição usa.
+      // reconhecê-la (`exigirPacienteDoConvenio` em `lib/domain/pacientes.ts`).
       const segundo = await registrarEncaminhamentoNaTransacao(tx, {
         pacienteNome: `  ${nome.toUpperCase()}  `,
         dataEncaminhamento: "2026-12-01",
@@ -316,17 +436,15 @@ describe.skipIf(!temBanco)("encaminhamento contra o banco real", () => {
 
     expect(resultado.primeiro).toMatchObject({
       ok: true,
-      pacienteCriado: true,
       substituiuAnterior: false,
       dataVencimento: "2027-05-14",
     });
     // O nome devolvido é o que já estava no banco, não o que foi digitado em
-    // caixa alta: o get-or-create reaproveitou a linha existente. E, como o
-    // paciente é o mesmo, o segundo cadastro *substituiu* o primeiro.
+    // caixa alta: a busca achou a linha existente. E, como o paciente é o
+    // mesmo, o segundo cadastro *substituiu* o primeiro.
     expect(resultado.segundo).toMatchObject({
       ok: true,
       pacienteNome: nome,
-      pacienteCriado: false,
       substituiuAnterior: true,
       dataVencimento: "2027-05-30",
     });
@@ -339,7 +457,7 @@ describe.skipIf(!temBanco)("encaminhamento contra o banco real", () => {
     const nome = `Encaminhado Substituicao ${SUFIXO}`;
 
     const resultado = await comRollback(async (tx) => {
-      const primeiro = await registrarEncaminhamentoNaTransacao(tx, {
+      const primeiro = await cadastrarERegistrar(tx, {
         pacienteNome: nome,
         dataEncaminhamento: "2026-01-01",
         numeroCarteirinha: carteirinhaDeTeste(),
@@ -392,14 +510,14 @@ describe.skipIf(!temBanco)("encaminhamento contra o banco real", () => {
     const segundoNome = `Encaminhado Vizinho B ${SUFIXO}`;
 
     const resultado = await comRollback(async (tx) => {
-      const a = await registrarEncaminhamentoNaTransacao(tx, {
+      const a = await cadastrarERegistrar(tx, {
         pacienteNome: primeiroNome,
         dataEncaminhamento: "2026-01-01",
         numeroCarteirinha: carteirinhaDeTeste(),
         crmMedico: "123456",
       });
 
-      const b = await registrarEncaminhamentoNaTransacao(tx, {
+      const b = await cadastrarERegistrar(tx, {
         pacienteNome: segundoNome,
         dataEncaminhamento: "2026-11-15",
         numeroCarteirinha: carteirinhaDeTeste(),
@@ -511,7 +629,7 @@ describe.skipIf(!temBanco)("encaminhamento contra o banco real", () => {
                   ((${expressaoDoAlvo}) - 180)::text AS "encaminhamento"`,
         );
 
-        const gravacao = await registrarEncaminhamentoNaTransacao(tx, {
+        const gravacao = await cadastrarERegistrar(tx, {
           pacienteNome: `Encaminhado Fronteira ${rotulo} ${SUFIXO}`,
           dataEncaminhamento: datas.encaminhamento,
           numeroCarteirinha: carteirinhaDeTeste(),
@@ -599,7 +717,7 @@ describe.skipIf(!temBanco)("encaminhamento contra o banco real", () => {
           `SELECT ((${expressaoDoAlvo}) - 180)::text AS "encaminhamento"`,
         );
 
-        const gravacao = await registrarEncaminhamentoNaTransacao(tx, {
+        const gravacao = await cadastrarERegistrar(tx, {
           pacienteNome: `${nome} ${SUFIXO}`,
           dataEncaminhamento: datas.encaminhamento,
           numeroCarteirinha: carteirinhaDeTeste(),

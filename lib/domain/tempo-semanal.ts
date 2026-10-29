@@ -110,3 +110,21 @@ export function formatarMinutosSemanais(minutos: number): string {
 
   return resto === 0 ? `${horas} h` : `${horas} h ${resto} min`;
 }
+
+/**
+ * Minutos gravados de volta para o texto em horas que o formulário aceita
+ * ("2", "2,5", "1,25", "0,75") — para o "Editar" da aba Cadastro preencher o
+ * campo. É o inverso exato de {@link lerHorasSemanais} para todo valor que o
+ * CHECK aceita (múltiplos de 15 min), com a mesma conta em inteiros.
+ */
+export function minutosParaHorasDigitadas(minutos: number): string {
+  const horas = Math.floor(minutos / 60);
+  // Múltiplo de 15 min → 0, 25, 50 ou 75 centésimos de hora, sem resto.
+  const centesimos = ((minutos % 60) * 100) / 60;
+
+  if (centesimos === 0) {
+    return String(horas);
+  }
+
+  return `${horas},${String(centesimos).padStart(2, "0").replace(/0+$/, "")}`;
+}

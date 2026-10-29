@@ -25,6 +25,7 @@ import {
   lancarLoteNaTransacao,
   type ResultadoDoLote,
 } from "./atendimentos";
+import { cadastrarPacienteDeTeste } from "@/test/paciente-cadastrado";
 import { registrarEncaminhamentoNaTransacao } from "./encaminhamentos";
 import { excluirPacientePeloId } from "./pacientes";
 import {
@@ -83,6 +84,7 @@ async function pacienteComEncaminhamento(
   rotulo: string,
 ): Promise<{ id: number; nome: string }> {
   const nome = `Paciente Substituicao ${rotulo} ${SUFIXO}`;
+  await cadastrarPacienteDeTeste(cliente, nome);
   const resultado = await registrarEncaminhamentoNaTransacao(cliente, {
     pacienteNome: nome,
     dataEncaminhamento: DATA,

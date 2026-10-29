@@ -45,6 +45,7 @@ import {
   type EntradaDeLote,
   type ResultadoDoLote,
 } from "./atendimentos";
+import { cadastrarPacienteDeTeste } from "@/test/paciente-cadastrado";
 import { registrarEncaminhamentoNaTransacao } from "./encaminhamentos";
 import {
   alterarSituacaoDaRequisicao,
@@ -409,6 +410,7 @@ describe.skipIf(!temBanco)("situação da requisição — schema e regras", () 
       const pacienteNome = `Paciente Criacao Situacao ${SUFIXO}`;
       const numeroRequisicao = `CRIA-SIT-${SUFIXO}`;
 
+      await cadastrarPacienteDeTeste(tx, pacienteNome);
       const encaminhamento = await registrarEncaminhamentoNaTransacao(tx, {
         pacienteNome,
         dataEncaminhamento: "2026-10-01",
@@ -477,6 +479,7 @@ describe.skipIf(!temBanco)("situação da requisição — schema e regras", () 
       const pacienteNome = `Paciente Acrescimo Solicitada ${SUFIXO}`;
       const numeroRequisicao = `ACR-SIT-${SUFIXO}`;
 
+      await cadastrarPacienteDeTeste(tx, pacienteNome);
       const encaminhamento = await registrarEncaminhamentoNaTransacao(tx, {
         pacienteNome,
         dataEncaminhamento: "2026-10-01",

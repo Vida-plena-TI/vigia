@@ -7,11 +7,15 @@ import {
 } from "./autorizacoes-sulamerica";
 import { ERRO_PRAZO_INVALIDO } from "./autorizacoes-sulamerica-mensagens";
 import {
-  ERRO_CARTEIRINHA_OBRIGATORIA, ERRO_CARTEIRINHA_OBRIGATORIA_SEM_CADASTRO, erroCarteirinhaDeOutroPaciente,
+  ERRO_CARTEIRINHA_OBRIGATORIA_SEM_CADASTRO, erroCarteirinhaDeOutroPaciente,
 } from "./carteirinha-crm";
+import { cadastrarPacienteDeTeste } from "@/test/paciente-cadastrado";
 import { registrarEncaminhamentoNaTransacao } from "./encaminhamentos";
 import { ERRO_NOME_MEDICO_INVALIDO, ERRO_NOME_MEDICO_OBRIGATORIO } from "./nome-medico";
 import { excluirPacienteNaTransacao } from "./pacientes";
+import {
+  ERRO_PACIENTE_DE_OUTRO_CONVENIO, ERRO_PACIENTE_FORA_DO_CADASTRO, ERRO_PACIENTE_SEM_CONVENIO,
+} from "./pacientes-mensagens";
 
 class Rollback<T> extends Error { constructor(readonly resultado: T) { super("rollback de teste"); } }
 async function comRollback<T>(executar: (tx: Prisma.TransactionClient) => Promise<T>): Promise<T> {
@@ -34,7 +38,9 @@ function entrada(pacienteNome: string, campos: Partial<EntradaAutorizacao> = {})
     numeroCarteirinha: carteirinha(), crmMedico: "123456", nomeMedico: "Dra. Teste", ...campos,
   };
 }
+/** Desde a regra 24 o paciente vem da aba Cadastro da SulAmérica; o preparo passa por ela. */
 async function registrar(tx: Prisma.TransactionClient, pacienteNome: string, dataInicio = "2026-01-31", prazoMeses = 3) {
+  await cadastrarPacienteDeTeste(tx, pacienteNome, "sulamerica");
   const resultado = await registrarAutorizacaoNaTransacao(tx, entrada(pacienteNome, { dataInicio, prazoMeses }));
   if (!resultado.ok) throw new Error(resultado.erro);
   return resultado;
@@ -69,13 +75,15 @@ describe.skipIf(!process.env.DATABASE_URL)("SulAmérica contra Postgres real", (
     expect(resultado.dataVencimento).toBe(esperado);
   });
 
-  it("upsert reaproveita paciente sem distinguir caixa e substitui data e prazo", async () => {
+  it("upsert acha o paciente sem distinguir caixa e substitui data e prazo", async () => {
     await comRollback(async tx => {
       const pacienteNome = nome();
       const primeiro = await registrar(tx, pacienteNome);
-      const segundo = await registrar(tx, ` ${pacienteNome.toUpperCase()} `, "2026-08-31", 6);
-      expect(primeiro).toMatchObject({ pacienteCriado: true, substituiuAnterior: false });
-      expect(segundo).toMatchObject({ id: primeiro.id, pacienteNome, pacienteCriado: false,
+      const segundo = await registrarAutorizacaoNaTransacao(tx, entrada(` ${pacienteNome.toUpperCase()} `, {
+        dataInicio: "2026-08-31", prazoMeses: 6,
+      }));
+      expect(primeiro).toMatchObject({ substituiuAnterior: false });
+      expect(segundo).toMatchObject({ id: primeiro.id, pacienteNome,
         substituiuAnterior: true, dataInicio: "2026-08-31", prazoMeses: 6, dataVencimento: "2027-02-28" });
       expect(await tx.autorizacaoSulamerica.count({ where: { paciente: { nome: pacienteNome } } })).toBe(1);
     });
@@ -141,15 +149,16 @@ describe.skipIf(!process.env.DATABASE_URL)("SulAmérica contra Postgres real", (
   });
 
   describe("encaminhamento SulAmérica: carteirinha, CRM e nome do médico", () => {
-    it("paciente novo nasce com autorização, carteirinha, CRM e médico na mesma transação", async () => {
+    it("paciente cadastrado recebe autorização, carteirinha, CRM e médico na mesma transação", async () => {
       await comRollback(async tx => {
         const pacienteNome = nome();
         const numero = carteirinha();
+        await cadastrarPacienteDeTeste(tx, pacienteNome, "sulamerica");
         const resultado = await registrarAutorizacaoNaTransacao(tx, entrada(pacienteNome, {
           numeroCarteirinha: ` ${numero.slice(0, 5)} ${numero.slice(5)} `, crmMedico: "123.456",
           nomeMedico: "  Dr.  João   D'Ávila-Silva ",
         }));
-        expect(resultado).toMatchObject({ ok: true, pacienteCriado: true, substituiuAnterior: false });
+        expect(resultado).toMatchObject({ ok: true, substituiuAnterior: false });
         expect(await gravado(tx, pacienteNome)).toEqual({
           pacientes: 1, autorizacoes: 1, carteirinha: numero, crm: "123456", medico: "Dr. João D'Ávila-Silva",
         });
@@ -165,11 +174,12 @@ describe.skipIf(!process.env.DATABASE_URL)("SulAmérica contra Postgres real", (
       await comRollback(async tx => {
         const pacienteNome = nome();
         const numero = carteirinha();
+        await cadastrarPacienteDeTeste(tx, pacienteNome, "sulamerica");
         const primeiro = await registrarAutorizacaoNaTransacao(tx, entrada(pacienteNome, { numeroCarteirinha: numero }));
         const segundo = await registrarAutorizacaoNaTransacao(tx, entrada(pacienteNome.toUpperCase(), {
           numeroCarteirinha: numero, dataInicio: "2026-08-31", prazoMeses: 6, crmMedico: "999", nomeMedico: "Dr. Outro",
         }));
-        expect(segundo).toMatchObject({ ok: true, pacienteCriado: false, substituiuAnterior: true,
+        expect(segundo).toMatchObject({ ok: true, substituiuAnterior: true,
           dataInicio: "2026-08-31", prazoMeses: 6, dataVencimento: "2027-02-28" });
         if (primeiro.ok && segundo.ok) expect(segundo.id).toBe(primeiro.id);
         expect(await gravado(tx, pacienteNome)).toEqual({
@@ -182,6 +192,7 @@ describe.skipIf(!process.env.DATABASE_URL)("SulAmérica contra Postgres real", (
       await comRollback(async tx => {
         const pacienteNome = nome();
         const numero = carteirinha();
+        await cadastrarPacienteDeTeste(tx, pacienteNome, "sulamerica");
         await registrarAutorizacaoNaTransacao(tx, entrada(pacienteNome, { numeroCarteirinha: numero }));
         const reenvio = await registrarAutorizacaoNaTransacao(tx, entrada(pacienteNome, {
           numeroCarteirinha: branco, crmMedico: "777",
@@ -191,18 +202,36 @@ describe.skipIf(!process.env.DATABASE_URL)("SulAmérica contra Postgres real", (
       });
     });
 
-    it.each(["", "   "])("paciente novo com carteirinha %j é recusado", async branco => {
+    // Até 29/10/2026 este caso era "paciente novo sem carteirinha", recusado
+    // pela carteirinha. Desde a regra 24 não há paciente novo aqui: o nome de
+    // ninguém é recusado antes, e nada é criado.
+    it.each(["", "   ", carteirinha()])("nome não cadastrado (carteirinha %j) é recusado e NÃO cria paciente", async numero => {
       await comRollback(async tx => {
         const pacienteNome = nome();
-        const resultado = await registrarAutorizacaoNaTransacao(tx, entrada(pacienteNome, { numeroCarteirinha: branco }));
-        expect(resultado).toEqual({ ok: false, erro: ERRO_CARTEIRINHA_OBRIGATORIA });
+        const resultado = await registrarAutorizacaoNaTransacao(tx, entrada(pacienteNome, { numeroCarteirinha: numero }));
+        expect(resultado).toEqual({ ok: false, erro: ERRO_PACIENTE_FORA_DO_CADASTRO });
+        expect(await gravado(tx, pacienteNome)).toMatchObject({ pacientes: 0, autorizacoes: 0 });
+      });
+    });
+
+    it("paciente com convênio NULL é recusado com a orientação de cadastrá-lo, nada gravado", async () => {
+      await comRollback(async tx => {
+        const pacienteNome = nome();
+        await tx.paciente.create({ data: { nome: pacienteNome } });
+        const resultado = await registrarAutorizacaoNaTransacao(tx, entrada(pacienteNome));
+        expect(resultado).toEqual({ ok: false, erro: ERRO_PACIENTE_SEM_CONVENIO });
+        expect(await gravado(tx, pacienteNome)).toEqual({
+          pacientes: 1, autorizacoes: 0, carteirinha: null, crm: null, medico: null,
+        });
+        expect(await tx.paciente.findFirst({ where: { nome: pacienteNome }, select: { convenio: true } }))
+          .toEqual({ convenio: null });
       });
     });
 
     it.each(["", "   "])("paciente existente sem carteirinha com campo %j é recusado, nada gravado", async branco => {
       await comRollback(async tx => {
         const pacienteNome = nome();
-        await tx.paciente.create({ data: { nome: pacienteNome } });
+        await cadastrarPacienteDeTeste(tx, pacienteNome, "sulamerica");
         const resultado = await registrarAutorizacaoNaTransacao(tx, entrada(pacienteNome, { numeroCarteirinha: branco }));
         expect(resultado).toEqual({ ok: false, erro: ERRO_CARTEIRINHA_OBRIGATORIA_SEM_CADASTRO });
         expect(await gravado(tx, pacienteNome)).toEqual({
@@ -259,11 +288,13 @@ describe.skipIf(!process.env.DATABASE_URL)("SulAmérica contra Postgres real", (
       await comRollback(async tx => {
         const donoNome = nome();
         const numero = carteirinha();
+        await cadastrarPacienteDeTeste(tx, donoNome, "klini");
         const klini = await registrarEncaminhamentoNaTransacao(tx, {
           pacienteNome: donoNome, dataEncaminhamento: "2026-10-01", numeroCarteirinha: numero, crmMedico: "1",
         });
         expect(klini.ok).toBe(true);
         const outro = nome();
+        await cadastrarPacienteDeTeste(tx, outro, "sulamerica");
         const resultado = await registrarAutorizacaoNaTransacao(tx, entrada(outro, { numeroCarteirinha: numero.toLowerCase() }));
         expect(resultado).toEqual({ ok: false, erro: erroCarteirinhaDeOutroPaciente(donoNome) });
         if (!resultado.ok) expect(resultado.erro).not.toContain(numero);
@@ -271,17 +302,21 @@ describe.skipIf(!process.env.DATABASE_URL)("SulAmérica contra Postgres real", (
       });
     });
 
-    it("paciente da Klini cadastrado na SulAmérica compartilha carteirinha e CRM (limite conhecido)", async () => {
+    // Até 29/10/2026 este teste fixava o "limite conhecido" da regra 20: o
+    // paciente da Klini registrado também na SulAmérica compartilhava
+    // carteirinha e CRM. Desde a regra 24 um paciente é de um convênio só, e a
+    // SulAmérica recusa o da Klini sem tocar em nada dele.
+    it("paciente da Klini é recusado no encaminhamento da SulAmérica, sem tocar carteirinha nem CRM", async () => {
       await comRollback(async tx => {
         const pacienteNome = nome();
         const numero = carteirinha();
+        await cadastrarPacienteDeTeste(tx, pacienteNome, "klini");
         await registrarEncaminhamentoNaTransacao(tx, {
           pacienteNome, dataEncaminhamento: "2026-10-01", numeroCarteirinha: numero, crmMedico: "111",
         });
         const resultado = await registrarAutorizacaoNaTransacao(tx, entrada(pacienteNome, { numeroCarteirinha: "", crmMedico: "222" }));
-        expect(resultado).toMatchObject({ ok: true, pacienteCriado: false, substituiuAnterior: false });
-        // Carteirinha em branco mantém a da Klini; o CRM passa a ser o da SulAmérica, para os dois.
-        expect(await gravado(tx, pacienteNome)).toMatchObject({ pacientes: 1, autorizacoes: 1, carteirinha: numero, crm: "222" });
+        expect(resultado).toEqual({ ok: false, erro: ERRO_PACIENTE_DE_OUTRO_CONVENIO });
+        expect(await gravado(tx, pacienteNome)).toMatchObject({ pacientes: 1, autorizacoes: 0, carteirinha: numero, crm: "111" });
         const [e] = await tx.$queryRaw<{ n: number }[]>`
           SELECT count(*)::int AS n FROM encaminhamento e JOIN paciente p ON p.id = e.paciente_id WHERE p.nome = ${pacienteNome}`;
         expect(e.n).toBe(1);
@@ -305,7 +340,9 @@ describe.skipIf(!process.env.DATABASE_URL)("SulAmérica contra Postgres real", (
             };
           },
         });
-        return registrarAutorizacaoNaTransacao(falso, entrada(nome(), { nomeMedico: medico }))
+        const pacienteNome = nome();
+        await cadastrarPacienteDeTeste(tx, pacienteNome, "sulamerica");
+        return registrarAutorizacaoNaTransacao(falso, entrada(pacienteNome, { nomeMedico: medico }))
           .then(() => null, (e: unknown) => e);
       });
       expect(erro).toBeInstanceOf(Error);
@@ -328,10 +365,16 @@ describe.skipIf(!process.env.DATABASE_URL)("SulAmérica contra Postgres real", (
     });
   });
 
-  describe("recusa desfaz o paciente recém-criado (transação de produção)", () => {
+  describe("recusa não deixa nada gravado (transação de produção)", () => {
     // `registrarAutorizacao` abre e commita a própria transação: aqui não há
     // rollback de teste por fora. Numa recusa nada pode sobrar; o `finally`
-    // recolhe o que sobrar se o código estiver errado, e o dono commitado.
+    // recolhe o que sobrar se o código estiver errado, e o que foi commitado
+    // no preparo. Até 29/10/2026 o caso era "o paciente recém-criado some";
+    // desde a regra 24 a recusa nem cria paciente, e o que se confere é que o
+    // paciente cadastrado não recebeu nada.
+    async function gravadoCommitado(pacienteNome: string) {
+      return comRollback(tx => gravado(tx, pacienteNome));
+    }
     async function existe(pacienteNome: string) {
       return (await getPrismaClient().paciente.count({ where: { nome: pacienteNome } })) > 0;
     }
@@ -342,27 +385,42 @@ describe.skipIf(!process.env.DATABASE_URL)("SulAmérica contra Postgres real", (
       await cliente.$executeRaw`DELETE FROM paciente WHERE nome = ANY(${nomes})`;
     }
 
-    it("carteirinha obrigatória em branco: o paciente criado pelo get-or-create some", async () => {
+    it("nome não cadastrado: nada é criado", async () => {
       const pacienteNome = nome();
       try {
-        expect(await registrarAutorizacao(entrada(pacienteNome, { numeroCarteirinha: " " })))
-          .toEqual({ ok: false, erro: ERRO_CARTEIRINHA_OBRIGATORIA });
+        expect(await registrarAutorizacao(entrada(pacienteNome)))
+          .toEqual({ ok: false, erro: ERRO_PACIENTE_FORA_DO_CADASTRO });
         expect(await existe(pacienteNome)).toBe(false);
       } finally { await apagar(pacienteNome); }
     });
 
-    it("carteirinha de outro paciente: o paciente novo some, o dono fica intacto", async () => {
+    it("carteirinha obrigatória em branco: o paciente cadastrado não recebe CRM nem autorização", async () => {
+      const pacienteNome = nome();
+      try {
+        await getPrismaClient().$executeRaw`INSERT INTO paciente (nome, convenio) VALUES (${pacienteNome}, 'sulamerica')`;
+        expect(await registrarAutorizacao(entrada(pacienteNome, { numeroCarteirinha: " " })))
+          .toEqual({ ok: false, erro: ERRO_CARTEIRINHA_OBRIGATORIA_SEM_CADASTRO });
+        expect(await gravadoCommitado(pacienteNome)).toEqual({
+          pacientes: 1, autorizacoes: 0, carteirinha: null, crm: null, medico: null,
+        });
+      } finally { await apagar(pacienteNome); }
+    });
+
+    it("carteirinha de outro paciente: o paciente cadastrado fica como estava, o dono intacto", async () => {
       const donoNome = nome();
-      const novo = nome();
+      const cadastrado = nome();
       const numero = carteirinha();
       try {
         await getPrismaClient().$executeRaw`INSERT INTO paciente (nome, numero_carteirinha, crm_medico)
           VALUES (${donoNome}, ${numero}, '1')`;
-        expect(await registrarAutorizacao(entrada(novo, { numeroCarteirinha: numero })))
+        await getPrismaClient().$executeRaw`INSERT INTO paciente (nome, convenio) VALUES (${cadastrado}, 'sulamerica')`;
+        expect(await registrarAutorizacao(entrada(cadastrado, { numeroCarteirinha: numero })))
           .toEqual({ ok: false, erro: erroCarteirinhaDeOutroPaciente(donoNome) });
-        expect(await existe(novo)).toBe(false);
-        expect(await existe(donoNome)).toBe(true);
-      } finally { await apagar(donoNome, novo); }
+        expect(await gravadoCommitado(cadastrado)).toEqual({
+          pacientes: 1, autorizacoes: 0, carteirinha: null, crm: null, medico: null,
+        });
+        expect(await gravadoCommitado(donoNome)).toMatchObject({ carteirinha: numero, crm: "1" });
+      } finally { await apagar(donoNome, cadastrado); }
     });
 
     it("nome do médico inválido: nada é criado", async () => {

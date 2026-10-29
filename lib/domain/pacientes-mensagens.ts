@@ -73,3 +73,47 @@ export function fraseDeExclusao(
 export function mensagemDeExclusao(pacienteNome: string): string {
   return `Cadastro de ${pacienteNome} apagado permanentemente.`;
 }
+
+// ---------------------------------------------------------------------------
+// Encaminhamento só de paciente já cadastrado (regra 24, 29/10/2026)
+// ---------------------------------------------------------------------------
+
+/**
+ * O nome digitado no encaminhamento não é de nenhum paciente. Nada é criado:
+ * paciente só nasce pela aba Cadastro do convênio. O formulário põe, junto
+ * desta frase, o link para essa aba.
+ */
+export const ERRO_PACIENTE_FORA_DO_CADASTRO =
+  "Paciente não cadastrado. Cadastre primeiro em Cadastro.";
+
+/** O paciente existe, mas pertence ao outro convênio. */
+export const ERRO_PACIENTE_DE_OUTRO_CONVENIO =
+  "Este paciente está cadastrado no outro convênio. Registre o encaminhamento na aba Encaminhamentos do convênio dele.";
+
+/**
+ * O paciente existe com `convenio` NULL (legado sem decisão de convênio). O
+ * encaminhamento não decide o convênio por ele: quem decide é o Cadastro.
+ */
+export const ERRO_PACIENTE_SEM_CONVENIO =
+  "Este paciente ainda não tem convênio definido. Cadastre-o primeiro em Cadastro, com o plano de terapias.";
+
+/**
+ * `true` se a recusa se resolve na aba Cadastro do convênio — para o
+ * formulário de encaminhamento mostrar o link para ela.
+ */
+export function ehErroQueLevaAoCadastro(mensagem: string | undefined): boolean {
+  return (
+    mensagem === ERRO_PACIENTE_FORA_DO_CADASTRO ||
+    mensagem === ERRO_PACIENTE_SEM_CONVENIO
+  );
+}
+
+/** `true` se a recusa é sobre o paciente digitado — para marcar o campo do nome. */
+export function ehErroDoPacienteDoEncaminhamento(
+  mensagem: string | undefined,
+): boolean {
+  return (
+    ehErroQueLevaAoCadastro(mensagem) ||
+    mensagem === ERRO_PACIENTE_DE_OUTRO_CONVENIO
+  );
+}

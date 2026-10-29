@@ -37,7 +37,7 @@ export function Navegacao({
   return (
     <nav
       aria-label="Seções do VIGIA"
-      // A rolagem horizontal é o que salva a faixa no celular: os cinco
+      // A rolagem horizontal é o que salva a faixa no celular: os seis
       // rótulos do admin não cabem em 360px e quebrar linha empurraria o
       // conteúdo.
       className="-mx-5 overflow-x-auto px-5 sm:mx-0 sm:overflow-x-auto sm:px-0"

@@ -3,14 +3,14 @@
 /**
  * Server Action do cadastro de paciente com plano de terapias.
  *
- * Ainda **sem tela** (29/10/2026): a action existe para o formulário que vem
- * depois, e já nasce com a checagem de papel. Como toda action, é alcançável
- * por POST direto: a autorização vem antes de chamar o domínio, e a validação
- * de verdade mora em `lib/domain/plano-terapias.ts`.
+ * É a action da aba Cadastro de cada convênio (`/klini/pacientes` e
+ * `/sulamerica/pacientes`) — a única que cria paciente (regra 24). Como toda
+ * action, é alcançável por POST direto: a autorização vem antes de chamar o
+ * domínio, e a validação de verdade mora em `lib/domain/plano-terapias.ts`.
  *
- * O cadastro é de cada convênio, e cada convênio tem a sua aba de
- * encaminhamentos — hoje as duas só do `admin`. A rota que autoriza é a da aba
- * do convênio do envio; um convênio inválido cai na da Klini (também só de
+ * O convênio gravado é o da página: o formulário o envia num campo escondido
+ * que a página preenche. A rota que autoriza é a aba Cadastro desse convênio
+ * (as duas só do `admin`); um convênio inválido cai na da Klini (também só de
  * admin) e é recusado pelo domínio em seguida.
  *
  * Linhas do plano viajam como campos repetidos (`terapiaId`, `horas`), lidos
@@ -22,8 +22,8 @@ import { refresh } from "next/cache";
 
 import {
   MENSAGEM_SEM_PERMISSAO,
-  ROTA_ENCAMINHAMENTOS,
-  ROTA_SULAMERICA_ENCAMINHAMENTOS,
+  ROTA_KLINI_PACIENTES,
+  ROTA_SULAMERICA_PACIENTES,
 } from "@/lib/auth/acesso";
 import { autorizarRota } from "@/lib/auth/current-user";
 
@@ -51,9 +51,7 @@ export async function cadastrarPacienteAction(
 ): Promise<EstadoCadastroDePaciente> {
   const convenio = String(formData.get("convenio") ?? "");
   const rota =
-    convenio === "sulamerica"
-      ? ROTA_SULAMERICA_ENCAMINHAMENTOS
-      : ROTA_ENCAMINHAMENTOS;
+    convenio === "sulamerica" ? ROTA_SULAMERICA_PACIENTES : ROTA_KLINI_PACIENTES;
 
   if (!(await autorizarRota(rota))) {
     return { erro: MENSAGEM_SEM_PERMISSAO };

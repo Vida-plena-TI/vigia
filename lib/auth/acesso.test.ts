@@ -11,9 +11,11 @@ import { describe, expect, it } from "vitest";
 import {
   ROTAS_DA_RECEPCAO,
   ROTA_ENCAMINHAMENTOS,
+  ROTA_KLINI_PACIENTES,
   ROTA_NOVA_REQUISICAO,
   ROTA_SULAMERICA,
   ROTA_SULAMERICA_ENCAMINHAMENTOS,
+  ROTA_SULAMERICA_PACIENTES,
   podeAcessarRota,
   podeAlterarSituacaoDeRequisicao,
 } from "./acesso";
@@ -23,6 +25,8 @@ const ROTAS_RESTRITAS = [
   ROTA_ENCAMINHAMENTOS,
   ROTA_SULAMERICA,
   ROTA_SULAMERICA_ENCAMINHAMENTOS,
+  ROTA_KLINI_PACIENTES,
+  ROTA_SULAMERICA_PACIENTES,
 ];
 
 describe("podeAcessarRota — admin", () => {

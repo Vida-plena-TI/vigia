@@ -4,6 +4,7 @@ import { useActionState, useEffect, useRef, useState } from "react";
 import { useFormStatus } from "react-dom";
 import { toast } from "sonner";
 
+import { AvisoDeErroDoEncaminhamento } from "@/components/aviso-de-erro-do-encaminhamento";
 import {
   CampoDeCarteirinha,
   CampoDeCrm,
@@ -28,6 +29,7 @@ import {
   mensagemDeCadastro,
 } from "@/lib/domain/encaminhamentos-mensagens";
 import type { PacienteParaEncaminhamento } from "@/lib/domain/pacientes";
+import { ehErroDoPacienteDoEncaminhamento } from "@/lib/domain/pacientes-mensagens";
 
 import { formatarData } from "../dashboard/formato";
 
@@ -57,14 +59,22 @@ const ESTADO_INICIAL: EstadoNovoEncaminhamento = {};
  * O formulário recebe, por nome, apenas *se* existe carteirinha — nunca o
  * número — e com isso marca o campo como opcional. Quem decide de verdade é a
  * transação do servidor, que lê o paciente travado.
+ *
+ * Desde 29/10/2026 o nome tem de ser de um paciente já cadastrado na Klini
+ * (regra 24): o `datalist` traz só esses, e um nome fora dele é recusado pelo
+ * servidor — sem criar nada — com o link para a aba Cadastro.
  */
 export function FormularioDeEncaminhamento({
   pacientes,
   hoje,
+  rotaDoCadastro,
 }: {
+  /** Só os pacientes da Klini. */
   pacientes: PacienteParaEncaminhamento[];
   /** "AAAA-MM-DD" vinda do `CURRENT_DATE` do banco. */
   hoje: string;
+  /** A aba Cadastro da Klini, para o link do erro. */
+  rotaDoCadastro: string;
 }) {
   const [estado, action] = useActionState(
     criarEncaminhamentoAction,
@@ -154,10 +164,13 @@ export function FormularioDeEncaminhamento({
       return;
     }
 
-    const carteirinha = decidirCarteirinha(
-      numeroCarteirinha,
-      situacaoDaCarteirinha,
-    );
+    // Nome fora da lista ("paciente-novo" na dica) não é checado aqui: o
+    // servidor recusa esse nome com a frase certa (não cadastrado, outro
+    // convênio ou sem convênio), e cobrar a carteirinha antes a esconderia.
+    const carteirinha =
+      situacaoDaCarteirinha === "paciente-novo"
+        ? ({ ok: true } as const)
+        : decidirCarteirinha(numeroCarteirinha, situacaoDaCarteirinha);
 
     if (!carteirinha.ok) {
       evento.preventDefault();
@@ -205,18 +218,20 @@ export function FormularioDeEncaminhamento({
             className="h-9"
             value={pacienteNome}
             aria-invalid={
-              erroExibido === ERRO_PACIENTE_OBRIGATORIO ? true : undefined
+              erroExibido === ERRO_PACIENTE_OBRIGATORIO ||
+              ehErroDoPacienteDoEncaminhamento(erroExibido)
+                ? true
+                : undefined
             }
             onChange={(evento) => {
               setMensagemDeSucesso(null);
               setPacienteNome(evento.target.value);
             }}
-            placeholder="Digite ou escolha um paciente"
+            placeholder="Escolha um paciente cadastrado"
           />
           {/*
-            Mesmo `datalist` de "Nova requisição": sugere, não restringe.
-            Digitar um nome fora da lista continua válido e cria o paciente —
-            é o comportamento que o get-or-create do servidor espera.
+            Só os pacientes cadastrados na Klini. O `datalist` sugere; quem
+            recusa um nome fora dele é o servidor, que não cria paciente.
           */}
           <datalist id="pacientes-existentes">
             {pacientes.map(({ nome }) => (
@@ -271,9 +286,10 @@ export function FormularioDeEncaminhamento({
       </div>
 
       {erroExibido ? (
-        <p role="alert" className="aviso-de-erro">
-          {erroExibido}
-        </p>
+        <AvisoDeErroDoEncaminhamento
+          erro={erroExibido}
+          rotaDoCadastro={rotaDoCadastro}
+        />
       ) : null}
 
       {mensagemDeSucesso ? (

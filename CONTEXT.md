@@ -38,9 +38,9 @@ Sistema de controle de autorizações de terapia de uma clínica.
 
 ## Entidades
 
-- **paciente**: id, nome (texto, indexado). **Nasce pelo cadastro de paciente com plano**
-  (regra 23, porta de entrada em andamento) **e, até o P2, pelos dois cadastros de
-  encaminhamento** (regra 21): get-or-create por nome ali, busca sem criação em "Nova requisição";
+- **paciente**: id, nome (texto, indexado). **Só nasce pela aba Cadastro do convênio**
+  (`cadastrarPaciente`, regras 23 e 24): get-or-create por nome ali; busca sem criação nos
+  dois cadastros de encaminhamento e em "Nova requisição";
   comparação case-insensitive, nome sempre trimado antes de salvar/buscar. **Único case-insensitive**
   no banco via índice `UNIQUE (lower(nome))`. Desde 28/10/2026 também
   **numero_carteirinha** (texto, **NULL permitido**, `CHECK ~ '^[A-Za-z0-9]{5,25}$'`,
@@ -68,8 +68,8 @@ Sistema de controle de autorizações de terapia de uma clínica.
 - **encaminhamento**: id, paciente_id (FK, `RESTRICT` como as demais, **`UNIQUE`**),
   data_encaminhamento (date, NOT NULL), data_vencimento (date, **coluna gerada pelo
   Postgres** — ver "Vencimento de encaminhamento" abaixo). Um encaminhamento sempre
-  pertence a um paciente já existente ou recém-criado pelo get-or-create por nome do
-  próprio cadastro de encaminhamento — o único lugar do Klini que cria paciente. **Um paciente tem no máximo um encaminhamento**: cadastrar outro
+  pertence a um paciente **já cadastrado na Klini** (regra 24: o cadastro de
+  encaminhamento não cria paciente desde 29/10/2026). **Um paciente tem no máximo um encaminhamento**: cadastrar outro
   substitui o anterior (regra 13). O status de vencimento não é coluna — vem da view
   `encaminhamento_status`.
 
@@ -307,8 +307,9 @@ teste passar hoje e mentir no mês que vem.
     existe hoje e a toda rota nova, sem precisar ser cadastrada em lugar nenhum.
     `recepcao` alcança **somente** `/klini/dashboard`, `/klini/atendimentos/novo`,
     `/klini/atendimentos/hoje` e a raiz `/`; qualquer outro caminho a manda para
-    `/klini/dashboard`. Na prática, o que fica de fora é "Nova requisição" e
-    "Encaminhamentos" (inclusive a exclusão permanente de paciente, que só existe lá). A
+    `/klini/dashboard`. Na prática, o que fica de fora é "Nova requisição",
+    "Encaminhamentos" (inclusive a exclusão permanente de paciente, que só existe lá) e,
+    desde 29/10/2026, as duas abas "Cadastro" (`/klini/pacientes`, `/sulamerica/pacientes`). A
     raiz `/` ramifica: admin vê a tela de escolha de convênio, recepção é redirecionada
     direto para `/klini/dashboard`, sem ver escolha nenhuma. Quem não tem permissão vai
     para `/klini/dashboard`, **não** para `/login`: a pessoa está autenticada: falta
@@ -323,7 +324,8 @@ teste passar hoje e mentir no mês que vem.
     no banco na página e nas actions. Prazo escolhido explicitamente entre 3, 6 e 12
     **meses de calendário**, sem opção pré-selecionada. O vencimento é calculado pelo
     Postgres, inclusive o ajuste para o último dia de mês, e nunca em TypeScript.
-    Cadastro faz upsert por paciente_id dentro da transação do get-or-create.
+    Cadastro faz upsert por paciente_id dentro da transação que acha o paciente (desde
+    29/10/2026 sem criar — regra 24).
     **Desde 28/10/2026 o cadastro mora na aba `/sulamerica/encaminhamentos`** (só admin),
     não mais no painel: nome do paciente, data do encaminhamento (**= `data_inicio`**: a
     autorização começa na data do encaminhamento), prazo (obrigatório, 3/6/12, sem
@@ -369,8 +371,12 @@ teste passar hoje e mentir no mês que vem.
       paciente. Reenviar a própria carteirinha (até em outra caixa) não é conflito.
     - A decisão é tomada **dentro da transação**, lendo o paciente com `FOR NO KEY
       UPDATE` (o mesmo lock que o UPDATE da carteirinha já tomava). A gravação mora na
-      mesma transação de sempre: get-or-create do paciente → leitura travada → decisão
-      da carteirinha → carteirinha/CRM no paciente → upsert do encaminhamento.
+      mesma transação de sempre: busca do paciente já travada (`exigirPacienteDoConvenio`,
+      desde 29/10/2026; antes, get-or-create) → leitura travada → decisão da carteirinha →
+      carteirinha/CRM no paciente → upsert do encaminhamento. Desde a regra 24 não há
+      mais "paciente novo" aqui: o paciente sempre vem do Cadastro, e o caso
+      "Informe o número da carteirinha." vale para quem foi cadastrado e ainda não tem uma
+      (com a frase "Este paciente ainda não tem carteirinha cadastrada. Informe o número.").
       **Reenviar atualiza** o CRM (e a carteirinha, se informada), sem duplicar paciente
       nem encaminhamento.
     - O formulário recebe por nome **só o booleano** "tem carteirinha" (nunca o número)
@@ -395,17 +401,19 @@ teste passar hoje e mentir no mês que vem.
       seu botão de copiar. O painel da SulAmérica não os recebe. O botão
       copia no navegador o valor que a página já recebeu — não existe rota que devolva
       esses números. Paciente sem o dado mostra "falta preencher" e o botão desabilitado.
-    - **Limitação conhecida (28/10/2026): carteirinha e CRM são do paciente, não do
-      convênio.** Um mesmo paciente cadastrado nos dois convênios compartilha os dois
-      campos: no cadastro SulAmérica de quem já tem encaminhamento Klini, a carteirinha
-      é opcional (vazio mantém a gravada pela Klini; preenchida, **substitui** a do
-      paciente para os dois) e o CRM digitado **substitui** o do paciente para os dois. O
-      encaminhamento Klini em si não é tocado. Não resolvido de propósito; há teste de
-      integração que fixa este comportamento.
+    - **Limitação conhecida (28/10/2026) — deixou de acontecer em 29/10/2026.** Carteirinha e
+      CRM são do paciente, não do convênio, e até a regra 24 um mesmo paciente podia ter
+      encaminhamento nos dois convênios e compartilhar os dois campos. Desde a regra 24 um
+      paciente é de **um** convênio só e a aba do outro o recusa sem tocar em nada; o
+      teste de integração que fixava o compartilhamento passou a fixar a recusa. Paciente
+      que já tinha os dois cadastros antes ficou com `convenio` NULL pela migration e é
+      recusado nos dois encaminhamentos até alguém decidir o convênio dele (pendência).
 
-21. **Paciente só nasce pelos dois cadastros de encaminhamento (28/10/2026).** *(Desde
-    29/10/2026 o cadastro de paciente da regra 23 também cria; os dois encaminhamentos
-    saem da lista no P2.)* As
+21. **Paciente só nasce pelos dois cadastros de encaminhamento (28/10/2026).** ***Substituída
+    pela regra 24 em 29/10/2026**: hoje só a aba Cadastro cria paciente e os dois
+    encaminhamentos só acham paciente que já existe. O texto abaixo é o histórico; as
+    partes que continuam valendo (busca em "Nova requisição", legado sem carteirinha não
+    bloqueado, seed) estão repetidas na regra 24.* As
     **únicas** formas de criar paciente são o cadastro de encaminhamento da Klini
     (`/klini/encaminhamentos`: nome + data + carteirinha + CRM, regra 20,
     `encaminhamentos.ts`) e o da SulAmérica (`/sulamerica/encaminhamentos`: nome + data +
@@ -461,8 +469,7 @@ teste passar hoje e mentir no mês que vem.
       foram apagados e a guia nova recusa lançamento. Se o envio cair numa requisição que já
       existe (mesmo número), a situação dela não muda.
 
-23. **Convênio do paciente, plano de terapias e Cadastro como porta de entrada (29/10/2026
-    — EM ANDAMENTO ATÉ O P2).**
+23. **Convênio do paciente, plano de terapias e Cadastro como porta de entrada (29/10/2026).**
     - **Convênio por paciente**: `paciente.convenio` é `klini`, `sulamerica` ou NULL ("ainda
       não decidido"). Um paciente pertence a um convênio só.
     - **Plano de terapias informativo**: por paciente, minutos por semana de cada terapia
@@ -478,15 +485,55 @@ teste passar hoje e mentir no mês que vem.
       plano. Existe com o **outro** convênio → "Este paciente já está cadastrado no outro
       convênio.", nada gravado. Nome casado pelo get-or-create de sempre (trim,
       `lower(nome)`).
-    - **Porta de entrada — em andamento até o P2.** Hoje o cadastro é **um** dos três
-      caminhos que criam paciente: os dois cadastros de encaminhamento (regra 21) continuam
-      autorizados e criam paciente **sem convênio** (NULL). O P2 os tira da lista, e então
-      este cadastro passa a ser a única porta. Ainda **sem tela**: há domínio e Server
-      Action (`cadastrarPacienteAction`, só admin, rota da aba de encaminhamentos do
-      convênio do envio).
+    - **Porta de entrada — concluída em 29/10/2026 (regra 24).** O cadastro é a **única**
+      forma de criar paciente, pela aba **Cadastro** de cada convênio (`/klini/pacientes`,
+      `/sulamerica/pacientes`, só admin). A action `cadastrarPacienteAction` autoriza pela
+      rota da aba Cadastro do convênio do envio, e o convênio gravado é o da página.
     - Preenchimento dos pacientes que já existiam (migration
       `20261029120000_convenio_e_plano_de_terapias`): com encaminhamento → `klini`; com
       autorização SulAmérica → `sulamerica`; com os dois ou nenhum → NULL.
+
+24. **Cadastro é a única porta de entrada; encaminhamento só de paciente existente
+    (29/10/2026).** Substitui a regra 21.
+    - **Aba Cadastro** em cada convênio (`/klini/pacientes`, `/sulamerica/pacientes`, item
+      "Cadastro" no menu do convênio, antes de "Encaminhamentos"). Só admin: proxy,
+      `requireAcessoARota` na página, `autorizarRota` na action, menu. O convênio da
+      página é o convênio gravado.
+    - **Formulário**: nome do paciente + linhas "terapia + tempo por semana (horas)"
+      (catálogo de `listarTerapias`; "Adicionar terapia", "Remover"; texto de apoio
+      "Digite em horas, por exemplo 2 ou 2,5."). Na tela a terapia já escolhida em outra
+      linha fica desabilitada; o servidor continua recusando a repetida. "Cadastrar
+      paciente" → sucesso limpa, volta o foco ao nome e mostra "Paciente cadastrado." ou
+      "Plano atualizado." (paciente que já existia no convênio, ou que adotou o convênio).
+    - **Lista** abaixo: pacientes do convênio da aba em ordem de nome, com o plano em uma
+      linha ("Fono 2 h · TO 1 h 30 min") ou "Plano não cadastrado" (paciente antigo),
+      busca por nome (mesma do painel) e "Editar". "Editar" carrega o paciente no
+      formulário com o **nome travado** (o paciente é casado pelo nome) e o envio
+      substitui o plano inteiro. Só nome e plano: a tela Cadastro não recebe carteirinha
+      nem CRM. Paciente com `convenio` NULL não aparece em nenhuma das duas listas;
+      digitar o nome dele no Cadastro o faz adotar o convênio da aba.
+    - **Encaminhamentos (Klini e SulAmérica) só de paciente já cadastrado naquele
+      convênio** (`exigirPacienteDoConvenio` em `pacientes.ts`, no lugar do get-or-create,
+      com a mesma trava `FOR NO KEY UPDATE` que a carteirinha já tomava). O `datalist` traz
+      só os pacientes do convênio. Recusas, sem gravar nada:
+      - nome de ninguém → "Paciente não cadastrado. Cadastre primeiro em Cadastro.", com
+        link "Ir para Cadastro" para a aba do convênio;
+      - paciente do outro convênio → "Este paciente está cadastrado no outro convênio.
+        Registre o encaminhamento na aba Encaminhamentos do convênio dele.";
+      - paciente com `convenio` NULL → "Este paciente ainda não tem convênio definido.
+        Cadastre-o primeiro em Cadastro, com o plano de terapias.", com o mesmo link.
+    - **O resto dos encaminhamentos não mudou**: carteirinha opcional quando o paciente já
+      tem uma (`decidirCarteirinha`), CRM sempre obrigatório, prazo e nome do médico na
+      SulAmérica, unicidade da carteirinha, botões de copiar, upsert (substituição) do
+      encaminhamento, "Excluir" (paciente inteiro) da Klini. "Nova requisição" continua
+      exigindo paciente com encaminhamento (regra 15), sem criar.
+    - **Legado sem carteirinha/CRM não é bloqueado** na requisição (decisão da regra 21,
+      mantida). O seed de desenvolvimento (`prisma/seed.ts`) continua criando pacientes
+      fictícios pelo Prisma, fora da varredura.
+    - Afirmado por `lib/domain/pacientes-origem.test.ts`: o get-or-create só é chamado por
+      `plano-terapias.ts` (uma vez, na transação do cadastro); `cadastrarPaciente` só pela
+      action; a action só pela tela Cadastro; os dois encaminhamentos só chamam
+      `exigirPacienteDoConvenio`. Sem exceção temporária.
 
 ## Decisões assumidas (perguntas em aberto no relatório de auditoria original)
 
@@ -503,6 +550,77 @@ teste passar hoje e mentir no mês que vem.
 - Edição de atendimento para 0 créditos continua permitida.
 
 ## Decisões tomadas durante a implementação (não estavam no relatório original)
+
+- **Aba Cadastro e encaminhamento só de paciente existente (29/10/2026, branch
+  `feat/cadastro-plano-ui`, a partir de `feat/cadastro-plano-dominio` em `92ec032`; sem
+  commit, sem merge, sem push).** Regra 24. Nenhuma migration.
+  - **Rotas**: `ROTA_KLINI_PACIENTES` e `ROTA_SULAMERICA_PACIENTES` em `lib/auth/acesso.ts`
+    (fora do allowlist da recepção, então fechadas para ela no proxy, na página e na
+    action sem mais nada). `cadastrarPacienteAction` passou a autorizar por essas rotas
+    (antes, pelas de Encaminhamentos).
+  - **Busca no lugar do get-or-create**: `exigirPacienteDoConvenio(tx, nome, convenio)` em
+    `pacientes.ts` — `SELECT ... FOR NO KEY UPDATE` por `lower(nome)`, a trava que
+    `situacaoDaCarteirinha` já tomava, agora tomada já na busca porque o convênio decide o
+    desfecho. Serializa com o Cadastro (mesmo lock) e com a exclusão (`FOR UPDATE`); não
+    conflita com o `FOR KEY SHARE` da requisição. Ordem de lock inalterada (paciente →
+    filho). `gravarCarteirinhaECrmNaTransacao` recebe só `{ id }` (o `criado` morreu: não
+    há mais paciente novo aqui), e `pacienteCriado` saiu de `ResultadoGravacao` dos dois
+    encaminhamentos — ficaria sempre `false`.
+  - **Mensagens** em `pacientes-mensagens.ts` (puro, o formulário importa):
+    `ERRO_PACIENTE_FORA_DO_CADASTRO` (o nome `ERRO_PACIENTE_NAO_CADASTRADO` já existe em
+    `requisicoes-mensagens.ts`, com outra frase), `ERRO_PACIENTE_DE_OUTRO_CONVENIO`,
+    `ERRO_PACIENTE_SEM_CONVENIO`, `ehErroQueLevaAoCadastro` (decide o link) e
+    `ehErroDoPacienteDoEncaminhamento` (marca o campo do nome). O link é
+    `components/aviso-de-erro-do-encaminhamento.tsx`, usado pelos dois formulários.
+  - **Formulários de encaminhamento**: nome fora do `datalist` não passa pela checagem
+    local da carteirinha — senão "Informe o número da carteirinha." esconderia a recusa
+    certa do servidor. O CRM continua checado no cliente (o servidor também o valida
+    antes da busca, então a ordem das mensagens é a mesma dos dois lados).
+  - **Tela Cadastro** em `components/cadastro-de-paciente/` (`tela-de-cadastro.tsx`, que
+    junta formulário e lista porque o "Editar" carrega o paciente no formulário;
+    `lista-de-pacientes.tsx`; `resumo-do-plano.ts`; `cabecalho-do-cadastro.tsx`). Páginas
+    finas em `app/(app)/{klini,sulamerica}/pacientes/page.tsx`. Decisões próprias: em
+    edição o botão diz **"Salvar plano"** (e há "Cancelar edição"), em vez de "Cadastrar
+    paciente"; em modo de cadastro, digitar o nome de quem já está na lista mostra o
+    aviso "Cadastrar de novo substitui o plano dele." (o domínio casa pelo nome); a toast
+    usa `mensagemDeCadastro` (com o nome) e a linha de status, as frases curtas pedidas;
+    "Adicionar terapia" desabilita quando todas as terapias do catálogo já estão em
+    alguma linha; "Remover" desabilita na última linha. O Cadastro **não** tem `datalist`
+    (sugerir nomes existentes convidaria a substituir plano sem querer). Minutos voltam a
+    texto de horas por `minutosParaHorasDigitadas` (`tempo-semanal.ts`, inverso exato de
+    `lerHorasSemanais`, testado para todos os múltiplos de 15 até 168 h).
+  - **Testes** (710 em 43 arquivos; eram 673 em 40): preparo comum
+    `test/paciente-cadastrado.ts` (fora das pastas varridas por `pacientes-origem.test.ts`;
+    cadastra pelo próprio `cadastrarPacienteNaTransacao`, reaproveitando a primeira
+    terapia do catálogo para os preparos commitados não deixarem terapia órfã);
+    `cadastro-e-encaminhamento.integration.test.ts` (fluxos Klini e SulAmérica Cadastro →
+    Encaminhamento, recusa cruzada, Editar substitui, NULL adota e passa a receber
+    encaminhamento, a linha da tela Cadastro só com `pacienteId/pacienteNome/plano/
+    temPlano`, `registrarEncaminhamento` de produção sem criar nada);
+    `app/(app)/klini/pacientes/acesso-da-recepcao.test.ts` (as duas páginas e a action,
+    papel do banco com cookie dizendo admin; para o admin, a página lê só o convênio dela
+    e grava esse convênio no campo escondido); `resumo-do-plano.test.ts`. Mutações
+    conferidas: sem `requireAcessoARota` na página, sem `autorizarRota` na action, sem a
+    recusa de outro convênio e sem a recusa de NULL, testes caem.
+  - **Testes antigos alterados** (nenhum afrouxado): os de integração que criavam paciente
+    pelo encaminhamento passam a cadastrá-lo antes; "cria o paciente quando ele ainda não
+    existe" virou "nome que não é de ninguém é recusado e NÃO cria paciente"; os "paciente
+    novo sem carteirinha" viraram "nome não cadastrado é recusado"; o que fixava o
+    "limite conhecido" (paciente Klini compartilhando carteirinha/CRM na SulAmérica) agora
+    fixa a recusa por outro convênio; os de transação de produção da SulAmérica ("o
+    paciente recém-criado some") agora conferem que o paciente cadastrado não recebeu
+    nada; asserções de `pacienteCriado` nos encaminhamentos saíram; o fluxo completo de
+    `requisicoes.integration.test.ts` virou Cadastro → Encaminhamento → Nova requisição;
+    `pacientes-origem.test.ts` com a lista nova; menu com "Cadastro" nos dois convênios;
+    `acesso.test.ts` e `proxy.test.ts` com as rotas novas. No teste da corrida da
+    carteirinha (`carteirinha-crm.integration.test.ts`), o dublê passou a cegar a
+    checagem de dono e não a leitura de `situacaoDaCarteirinha` (as duas têm "IS NOT
+    NULL" no SQL): cegando a errada, o teste passava pela checagem prévia sem chegar ao
+    índice único que diz testar.
+  - **Não testado**: a tela no navegador (clique, foco, `scrollIntoView` do Editar,
+    opção desabilitada no `select`, layout no celular) — roteiro em pendências; corrida
+    real entre um Cadastro adotando convênio e um encaminhamento do mesmo paciente (o
+    lock é o mesmo, sem teste com portão); as Server Actions por HTTP; o Supabase.
 
 - **Convênio, plano de terapias e cadastro de paciente — banco e domínio (29/10/2026,
   branch `feat/cadastro-plano-dominio`, a partir da `main` em `eecec84`; sem commit, sem
@@ -1974,11 +2092,12 @@ parecer íntegro na tela.
   `status_alerta`. Para uma tela com outro vocabulário, montar um mapa de apresentação em
   cima de `components/selo-de-status.tsx` — e sem introduzir cor saturada nova.
 - Não reimplementar busca/criação de paciente por nome: use `obterOuCriarPaciente`
-  (criação, só no encaminhamento) ou `buscarPacientePorNome` (busca, com lock) de
-  `lib/domain/pacientes.ts`. Uma segunda implementação com outra regra de comparação
+  (criação, só no cadastro de paciente), `exigirPacienteDoConvenio` (busca dos
+  encaminhamentos, com lock e convênio) ou `buscarPacientePorNome` (busca da requisição,
+  com lock) de `lib/domain/pacientes.ts`. Uma segunda implementação com outra regra de comparação
   discordaria do índice `UNIQUE (lower(nome))`.
-- Não criar paciente fora do cadastro de paciente (regra 23) e, até o P2, dos dois
-  cadastros de encaminhamento, Klini e SulAmérica (regra 21) — nem em requisição, nem em atendimento, nem no painel da SulAmérica, nem em
+- Não criar paciente fora do cadastro de paciente (`cadastrarPaciente`, aba Cadastro,
+  regras 23 e 24) — nem nos encaminhamentos, nem em requisição, nem em atendimento, nem no painel da SulAmérica, nem em
   script ou rota nova. Não há mais exceção temporária; não acrescentar uma. Não
   "afrouxar" `pacientes-origem.test.ts` para um caminho novo passar: um caminho novo que
   crie paciente é conversa, não ajuste.
@@ -2110,8 +2229,11 @@ parecer íntegro na tela.
   decisão humana. Não trocar o convênio de um paciente pelo cadastro (outro convênio é
   recusado).
 - Não acrescentar `DELETE FROM plano_terapia` à exclusão de paciente: vai pelo cascade.
-- Não criar paciente por outro caminho além de `cadastrarPaciente` e, até o P2, dos dois
-  encaminhamentos.
+- Não criar paciente por outro caminho além de `cadastrarPaciente`.
+- Não fazer o encaminhamento "decidir" o convênio de um paciente com `convenio` NULL: quem
+  decide é o Cadastro (regra 24).
+- Não mandar carteirinha nem CRM para a tela Cadastro (`listarPacientesDoConvenio` traz só
+  nome e plano).
 
 ## Progresso
 
@@ -2560,13 +2682,22 @@ parecer íntegro na tela.
     arquivos**, `next build` concluído.
   - **Interação manual no navegador pendente** — roteiro em pendências.
 
-- [ ] **P1 — Convênio, plano de terapias e cadastro de paciente: banco e domínio**
-      (29/10/2026, branch `feat/cadastro-plano-dominio`, **sem commit, sem merge e sem
-      push**). Regra 23, em andamento até o P2. Migration
-      `20261029120000_convenio_e_plano_de_terapias` aplicada **só no Postgres local**.
-      `tsc --noEmit` limpo, eslint limpo nos arquivos tocados, **673 testes em 40
-      arquivos**, `next build` concluído. Falta: P2 (encaminhamentos deixam de criar
-      paciente) e a tela.
+- [x] **P1 — Convênio, plano de terapias e cadastro de paciente: banco e domínio**
+      (29/10/2026, branch `feat/cadastro-plano-dominio`, commit `92ec032`, sem merge e sem
+      push). Regra 23. Migration `20261029120000_convenio_e_plano_de_terapias` aplicada
+      **só no Postgres local**. `tsc --noEmit` limpo, eslint limpo nos arquivos tocados,
+      **673 testes em 40 arquivos**, `next build` concluído. O "em andamento" acabou com o
+      item abaixo.
+
+- [x] **Aba Cadastro e encaminhamento só de paciente existente** (29/10/2026, branch
+      `feat/cadastro-plano-ui`, a partir de `feat/cadastro-plano-dominio` em `92ec032`;
+      **sem commit, sem merge e sem push**). Regra 24. Nenhuma migration.
+      `tsc --noEmit` limpo, eslint limpo nos arquivos tocados (o único erro do `eslint` do
+      projeto é o `react-hooks/set-state-in-effect` de
+      `app/(app)/klini/dashboard/acoes-da-guia.tsx`, que já existia e não foi tocado),
+      **710 testes em 43 arquivos**, `next build` concluído (rotas `/klini/pacientes` e
+      `/sulamerica/pacientes`). **Interação manual no navegador pendente** — roteiro em
+      pendências.
 
 - [x] Substituir guias da mesma terapia (29/10/2026, branch `feat/substituir-requisicao`,
       **sem commit, sem merge e sem push**). Ver regra 22 e a decisão correspondente.
@@ -2616,11 +2747,44 @@ sessões seguintes precisam do plano completo para não implementar a fase errad
   `ALTER TABLE plano_terapia ENABLE ROW LEVEL SECURITY;` para seguir
   `scripts/supabase/enable-rls.sql`; **(5)** deploy; **(6)** `SELECT convenio, count(*) FROM
   paciente GROUP BY 1;`.
-- **P2**: tirar os dois cadastros de encaminhamento da lista de quem cria paciente
-  (`pacientes-origem.test.ts`) e fazê-los exigir paciente cadastrado; até lá eles criam
-  paciente com `convenio` NULL.
 - **Pacientes com encaminhamento e autorização ao mesmo tempo** ficam com `convenio` NULL
-  pela migration — no local não há nenhum; em produção, conferir (passo 2 acima).
+  pela migration — no local não há nenhum; em produção, conferir (passo 2 acima). Desde a
+  regra 24 esses pacientes são **recusados nos dois encaminhamentos** até alguém
+  cadastrá-los na aba Cadastro do convênio certo (o Cadastro adota o convênio).
+- **Preencher o plano dos pacientes antigos.** Quem existia antes de 29/10/2026 aparece na
+  aba Cadastro com "Plano não cadastrado" (se a migration lhe deu convênio) ou em nenhuma
+  aba (convênio NULL). O preenchimento é manual: "Editar" na lista, ou digitar o nome no
+  formulário do Cadastro do convênio certo. Nada bloqueia o paciente sem plano — o plano é
+  informativo.
+- **Aba Cadastro: roteiro manual de navegador** (nada disto foi feito; sem navegador nesta
+  sessão). Como admin:
+  1. **Cadastrar na Klini com 2 terapias**: menu Klini → "Cadastro" (`/klini/pacientes`).
+     O menu não mostra itens da SulAmérica; "Trocar convênio" no cabeçalho. Nome novo,
+     terapia 1 = Fono, "2"; "Adicionar terapia", terapia 2 = TO, "1,5". Na linha 2, Fono
+     aparece desabilitada. "Cadastrar paciente" → "Paciente cadastrado.", formulário
+     vazio, foco no nome; na lista, "Fono 2 h · TO 1 h 30 min" (nomes do catálogo).
+  2. **Editar e trocar o plano**: "Editar" no paciente → nome travado com o texto de
+     apoio, linhas preenchidas ("2" e "1,5"), botão "Salvar plano" e "Cancelar edição".
+     Remover TO, mudar Fono para "0,75" → "Plano atualizado."; a lista mostra "Fono 45
+     min". Testar também "0,1" (recusa de passo, linha marcada) e campo vazio.
+  3. **Cadastrar na SulAmérica**: menu SulAmérica → "Cadastro" (`/sulamerica/pacientes`);
+     o menu não mostra itens da Klini. Cadastrar outro paciente; ele aparece só nesta
+     lista, não na da Klini.
+  4. **Nome inexistente no Encaminhamento**: em `/klini/encaminhamentos`, nome que não
+     existe, data, carteirinha e CRM → "Paciente não cadastrado. Cadastre primeiro em
+     Cadastro." com o link "Ir para Cadastro", que leva a `/klini/pacientes`; nada aparece
+     na lista. Repetir em `/sulamerica/encaminhamentos` (link para `/sulamerica/pacientes`).
+  5. **Paciente de outro convênio**: em `/klini/encaminhamentos`, digitar o nome do
+     paciente do passo 3 (ele **não** aparece no datalist) → recusa "Este paciente está
+     cadastrado no outro convênio…", sem link. E o caminho feliz: o paciente do passo 1
+     aparece no datalist e o encaminhamento passa (carteirinha obrigatória se ele ainda
+     não tem uma; CRM sempre).
+  6. **Legado**: paciente antigo com convênio e sem plano aparece com "Plano não
+     cadastrado" (cinza); "Editar" abre o formulário com uma linha vazia.
+  7. **Celular** (~360px): a lista vira blocos (nome + Editar, plano embaixo), as linhas
+     do plano empilham, nada rola de lado; a faixa do menu rola sozinha com os seis itens.
+  8. **Recepção sem acesso**: logado como recepção, o menu não mostra "Cadastro"; digitar
+     `/klini/pacientes` ou `/sulamerica/pacientes` leva ao painel.
 
 - **Substituir guias: roteiro manual de navegador** (nada disto foi feito; sem navegador
   nesta sessão). Como admin, em `/klini/requisicoes/nova`, com um paciente que tenha a

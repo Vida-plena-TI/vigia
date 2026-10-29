@@ -134,6 +134,8 @@ describe("página de Encaminhamentos", () => {
     await Pagina();
 
     expect(mocks.listarEncaminhamentos).toHaveBeenCalledOnce();
+    // O datalist só traz os pacientes da Klini (regra 24).
+    expect(mocks.listarPacientesParaEncaminhamento).toHaveBeenCalledExactlyOnceWith("klini");
   });
 });
 

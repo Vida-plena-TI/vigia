@@ -1,8 +1,10 @@
 import {
   ROTA_ENCAMINHAMENTOS,
+  ROTA_KLINI_PACIENTES,
   ROTA_NOVA_REQUISICAO,
   ROTA_SULAMERICA,
   ROTA_SULAMERICA_ENCAMINHAMENTOS,
+  ROTA_SULAMERICA_PACIENTES,
   podeAcessarRota,
 } from "@/lib/auth/acesso";
 import type { PapelUsuario } from "@/lib/auth/papel";
@@ -14,18 +16,22 @@ import type { PapelUsuario } from "@/lib/auth/papel";
  *
  * Mora num módulo separado da `Navegacao` (que é client component) para ser
  * uma função pura, testável sem renderizar React: o teste que garante que a
- * recepção não vê "Nova requisição" nem "Encaminhamentos" é sobre esta lista.
+ * recepção não vê "Nova requisição", "Cadastro" nem "Encaminhamentos" é sobre
+ * esta lista. "Cadastro" vem antes de "Encaminhamentos" porque é a ordem do
+ * trabalho: o paciente é cadastrado, depois recebe encaminhamento.
  */
 const ITENS_KLINI = [
   { href: "/klini/dashboard", rotulo: "Painel" },
   { href: ROTA_NOVA_REQUISICAO, rotulo: "Nova requisição" },
   { href: "/klini/atendimentos/novo", rotulo: "Lançar atendimento" },
   { href: "/klini/atendimentos/hoje", rotulo: "Atendimentos de hoje" },
+  { href: ROTA_KLINI_PACIENTES, rotulo: "Cadastro" },
   { href: ROTA_ENCAMINHAMENTOS, rotulo: "Encaminhamentos" },
 ] as const;
 
 const ITENS_SULAMERICA = [
   { href: ROTA_SULAMERICA, rotulo: "Painel" },
+  { href: ROTA_SULAMERICA_PACIENTES, rotulo: "Cadastro" },
   { href: ROTA_SULAMERICA_ENCAMINHAMENTOS, rotulo: "Encaminhamentos" },
 ] as const;
 

@@ -2,9 +2,14 @@
  * Carteirinha e CRM no paciente, dentro da transação de um cadastro de
  * encaminhamento — Klini (`encaminhamentos.ts`) ou SulAmérica
  * (`autorizacoes-sulamerica.ts`). Os dois chamam
- * {@link gravarCarteirinhaECrmNaTransacao} logo depois do get-or-create do
- * paciente e antes de travar a própria linha (encaminhamento ou autorização):
- * a ordem de lock é sempre paciente → filho.
+ * {@link gravarCarteirinhaECrmNaTransacao} logo depois de achar o paciente
+ * (`exigirPacienteDoConvenio`, que já trava a linha dele) e antes de travar a
+ * própria linha (encaminhamento ou autorização): a ordem de lock é sempre
+ * paciente → filho.
+ *
+ * Desde 29/10/2026 o encaminhamento não cria paciente (regra 24), então o
+ * caso "paciente novo" de `decidirCarteirinha` não chega mais daqui: o
+ * paciente sempre existe, com ou sem carteirinha.
  *
  * Movido de `encaminhamentos.ts` em 28/10/2026, quando a SulAmérica ganhou o
  * próprio cadastro de encaminhamento. As regras (regra 20) não mudaram.
@@ -26,9 +31,10 @@ import {
  * Erro de negócio lançado de dentro da transação.
  *
  * Mesmo papel do de `requisicoes.ts`: precisa ser lançado, e não devolvido,
- * porque é o `throw` que desfaz o paciente que o get-or-create acabou de
- * criar. Quem chama converte de volta para `{ ok: false }`. Compartilhado
- * pelos dois cadastros de encaminhamento (Klini e SulAmérica).
+ * porque é o `throw` que desfaz o que a transação já gravou (a carteirinha,
+ * quando a recusa vem depois dela). Quem chama converte de volta para
+ * `{ ok: false }`. Compartilhado pelos dois cadastros de encaminhamento (Klini
+ * e SulAmérica).
  */
 export class ErroDeNegocio extends Error {
   constructor(readonly erro: string) {
@@ -188,18 +194,14 @@ async function gravarCarteirinhaECrm(
  */
 async function situacaoDaCarteirinha(
   tx: Prisma.TransactionClient,
-  paciente: { id: number; criado: boolean },
-): Promise<SituacaoDaCarteirinha> {
+  pacienteId: number,
+): Promise<Exclude<SituacaoDaCarteirinha, "paciente-novo">> {
   const [linha] = await tx.$queryRaw<{ temCarteirinha: boolean }[]>`
     SELECT "numero_carteirinha" IS NOT NULL AS "temCarteirinha"
     FROM "paciente"
-    WHERE "id" = ${paciente.id}
+    WHERE "id" = ${pacienteId}
     FOR NO KEY UPDATE
   `;
-
-  if (paciente.criado) {
-    return "paciente-novo";
-  }
 
   return linha?.temCarteirinha ? "com-carteirinha" : "sem-carteirinha";
 }
@@ -210,21 +212,20 @@ async function situacaoDaCarteirinha(
  * Situação da carteirinha (`FOR NO KEY UPDATE`) → `decidirCarteirinha` →
  * {@link gravarCarteirinhaECrm}. A obrigatoriedade da carteirinha é decidida
  * aqui, e não na validação sem banco, porque depende do que o paciente já
- * tem. Recusa é `throw` de {@link ErroDeNegocio}, que desfaz o paciente
- * recém-criado junto com a transação.
+ * tem. Recusa é `throw` de {@link ErroDeNegocio}, que desfaz a transação.
  *
  * `numeroCarteirinha` e `crmMedico` chegam como foram digitados; o CRM já foi
  * validado pelo chamador (`validarCrm`), aqui só é normalizado.
  */
 export async function gravarCarteirinhaECrmNaTransacao(
   tx: Prisma.TransactionClient,
-  paciente: { id: number; criado: boolean },
+  paciente: { id: number },
   numeroCarteirinha: string,
   crmMedico: string,
 ): Promise<void> {
   const carteirinha = decidirCarteirinha(
     numeroCarteirinha,
-    await situacaoDaCarteirinha(tx, paciente),
+    await situacaoDaCarteirinha(tx, paciente.id),
   );
 
   if (!carteirinha.ok) {

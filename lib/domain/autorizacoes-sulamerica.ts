@@ -5,7 +5,7 @@ import { normalizarCarteirinha, validarCarteirinha, validarCrm } from "./carteir
 import { ErroDeNegocio, gravarCarteirinhaECrmNaTransacao } from "./carteirinha-crm-gravacao";
 import type { StatusEncaminhamento } from "./encaminhamentos";
 import { normalizarNomeMedico, validarNomeMedico } from "./nome-medico";
-import { obterOuCriarPaciente } from "./pacientes";
+import { exigirPacienteDoConvenio } from "./pacientes";
 import {
   ERRO_AUTORIZACAO_INEXISTENTE, ERRO_DATA_INVALIDA, ERRO_ID_INVALIDO,
   ERRO_PACIENTE_OBRIGATORIO, ERRO_PRAZO_INVALIDO,
@@ -53,7 +53,6 @@ export type ResultadoGravacao = Falha | {
   ok: true;
   id: number;
   pacienteNome: string;
-  pacienteCriado: boolean;
   dataInicio: string;
   prazoMeses: number;
   dataVencimento: string;
@@ -90,21 +89,25 @@ export function validarEntrada(entrada: EntradaAutorizacao): { ok: true } | Falh
 }
 
 /**
- * Paciente, carteirinha/CRM e autorização nascem juntos, na mesma ordem de
- * lock do encaminhamento da Klini: get-or-create do paciente → paciente
- * travado (`FOR NO KEY UPDATE`, em `gravarCarteirinhaECrmNaTransacao`) →
- * autorização anterior travada → upsert. Este e o da Klini são os únicos
- * lugares que criam paciente (regra 21). Recusa é `throw`, para desfazer o
- * paciente recém-criado. Entrada já validada por `validarEntrada` (nome do
- * médico inclusive); aqui ele só é normalizado. O vencimento só é lido do
- * RETURNING.
+ * Carteirinha/CRM e autorização gravados juntos, na mesma ordem de lock do
+ * encaminhamento da Klini: paciente achado e travado (`FOR NO KEY UPDATE`, em
+ * `exigirPacienteDoConvenio`) → carteirinha/CRM → autorização anterior
+ * travada → upsert. **Não cria paciente** desde 29/10/2026 (regra 24): só
+ * paciente cadastrado na aba Cadastro da SulAmérica passa. Recusa é `throw`,
+ * para desfazer o que já foi gravado. Entrada já validada por `validarEntrada`
+ * (nome do médico inclusive); aqui ele só é normalizado. O vencimento só é
+ * lido do RETURNING.
  */
 async function gravarNaTransacao(
   tx: Prisma.TransactionClient,
   entrada: EntradaAutorizacao,
 ): Promise<Extract<ResultadoGravacao, { ok: true }>> {
-  const paciente = await obterOuCriarPaciente(tx, entrada.pacienteNome.trim());
-  await gravarCarteirinhaECrmNaTransacao(tx, paciente, entrada.numeroCarteirinha, entrada.crmMedico);
+  const encontrado = await exigirPacienteDoConvenio(tx, entrada.pacienteNome.trim(), "sulamerica");
+  if (!encontrado.ok) throw new ErroDeNegocio(encontrado.erro);
+  const { paciente } = encontrado;
+  await gravarCarteirinhaECrmNaTransacao(
+    tx, paciente, entrada.numeroCarteirinha, entrada.crmMedico,
+  );
 
   // O lock do paciente (acima) já serializa dois envios do mesmo paciente,
   // inclusive o primeiro; o FOR UPDATE trava a linha existente, como na Klini.
@@ -132,7 +135,7 @@ async function gravarNaTransacao(
     );
   }
   return {
-    ok: true, ...linha, pacienteNome: paciente.nome, pacienteCriado: paciente.criado,
+    ok: true, ...linha, pacienteNome: paciente.nome,
     substituiuAnterior: anteriores.length > 0,
   };
 }

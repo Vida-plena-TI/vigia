@@ -1,15 +1,18 @@
 /**
  * Paciente só nasce pelo cadastro de paciente com plano de terapias
- * (`plano-terapias.ts`, desde 29/10/2026) e, **até o P2**, pelos dois
- * cadastros de encaminhamento: o da Klini (`encaminhamentos.ts`) e o da
- * SulAmérica (`autorizacoes-sulamerica.ts`, aba `/sulamerica/encaminhamentos`).
+ * (`cadastrarPaciente` em `plano-terapias.ts`, aba Cadastro de cada convênio)
+ * — a **única** porta de entrada desde 29/10/2026 (regra 24). Os dois
+ * cadastros de encaminhamento (Klini e SulAmérica) só acham paciente que já
+ * existe.
  *
  * Varre o código de aplicação e os scripts atrás de quem chama o
  * get-or-create ou insere em `paciente` direto. A lista permitida é curta e
  * escrita aqui de propósito, **sem exceção temporária**: um caminho novo que
  * crie paciente tem de passar por este teste, e com ele pela conversa sobre a
  * regra. O seed de desenvolvimento (`prisma/seed.ts`, nomes fictícios) cria
- * pacientes pelo Prisma e fica de fora da varredura.
+ * pacientes pelo Prisma e fica de fora da varredura, como o preparo dos testes
+ * de integração (`test/paciente-cadastrado.ts`, que passa pelo próprio
+ * `cadastrarPacienteNaTransacao`).
  */
 import { readdirSync, readFileSync } from "node:fs";
 import { join, relative } from "node:path";
@@ -50,33 +53,45 @@ function quemContem(padrao: RegExp): string[] {
 }
 
 describe("origem do paciente", () => {
-  it("só o cadastro de paciente e os dois de encaminhamento (até o P2) chamam o get-or-create", () => {
-    // `pacientes.ts` é a definição, não um chamador.
+  it("só o cadastro de paciente chama o get-or-create", () => {
+    // `pacientes.ts` é a definição, não um chamador. Até 29/10/2026 a lista
+    // tinha também `encaminhamentos.ts` e `autorizacoes-sulamerica.ts`.
     expect(quemContem(/\bobterOuCriarPaciente\(/)).toEqual([
-      join("lib", "domain", "autorizacoes-sulamerica.ts"),
-      join("lib", "domain", "encaminhamentos.ts"),
       join("lib", "domain", "pacientes.ts"),
       join("lib", "domain", "plano-terapias.ts"),
     ]);
   });
 
-  it("o cadastro de paciente só é chamado pela própria action", () => {
+  it("dentro de plano-terapias.ts, o get-or-create só é chamado uma vez (pelo cadastro)", () => {
+    const fonte = readFileSync(join(raiz, "lib", "domain", "plano-terapias.ts"), "utf8");
+
+    expect(fonte.match(/\bobterOuCriarPaciente\(/g)).toHaveLength(1);
+    // A chamada mora na transação do cadastro, e só as duas portas
+    // (`cadastrarPaciente` e a variante de teste) abrem essa transação.
+    expect(fonte.match(/\bcadastrarNaTransacao\(/g)).toHaveLength(3);
+  });
+
+  it("o único chamador autorizado de criação de paciente é cadastrarPaciente, pela própria action", () => {
     expect(quemContem(/\bcadastrarPaciente\(/)).toEqual([
       join("lib", "domain", "plano-terapias-actions.ts"),
       join("lib", "domain", "plano-terapias.ts"), // a definição
     ]);
+    // A variante de teste não tem chamador no código de aplicação.
+    expect(quemContem(/\bcadastrarPacienteNaTransacao\(/)).toEqual([
+      join("lib", "domain", "plano-terapias.ts"), // a definição
+    ]);
+    // E a action só é usada pela tela Cadastro.
+    expect(quemContem(/\bcadastrarPacienteAction\b/)).toEqual([
+      join("components", "cadastro-de-paciente", "tela-de-cadastro.tsx"),
+      join("lib", "domain", "plano-terapias-actions.ts"),
+    ]);
   });
 
-  it("na SulAmérica, só o cadastro de encaminhamento chega ao get-or-create", () => {
-    // A função do domínio que cria paciente é chamada só pela action da aba
-    // Encaminhamentos — o painel não tem mais formulário de cadastro.
-    expect(quemContem(/\bregistrarAutorizacao\(/)).toEqual([
-      join("lib", "domain", "autorizacoes-sulamerica-actions.ts"),
-      join("lib", "domain", "autorizacoes-sulamerica.ts"), // a definição
-    ]);
-    expect(quemContem(/\bcriarEncaminhamentoSulamericaAction\b/)).toEqual([
-      join("app", "(app)", "sulamerica", "encaminhamentos", "formulario-de-encaminhamento-sulamerica.tsx"),
-      join("lib", "domain", "autorizacoes-sulamerica-actions.ts"),
+  it("os dois encaminhamentos só procuram o paciente, sem criar", () => {
+    expect(quemContem(/\bexigirPacienteDoConvenio\(/)).toEqual([
+      join("lib", "domain", "autorizacoes-sulamerica.ts"),
+      join("lib", "domain", "encaminhamentos.ts"),
+      join("lib", "domain", "pacientes.ts"), // a definição
     ]);
   });
 

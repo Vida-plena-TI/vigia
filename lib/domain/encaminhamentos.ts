@@ -43,6 +43,11 @@
  * mensagem de erro nem para URL** — inclusive em erro inesperado do banco, que
  * é saneado antes de escapar (ver `gravarCarteirinhaECrm` em
  * `carteirinha-crm-gravacao.ts`).
+ *
+ * **Desde 29/10/2026 este cadastro não cria paciente** (regra 24): o nome tem
+ * de ser de um paciente já cadastrado na aba Cadastro da Klini
+ * (`exigirPacienteDoConvenio`). Nome de ninguém, paciente da SulAmérica ou
+ * paciente sem convênio são recusados e nada é gravado.
  */
 import { getPrismaClient } from "@/lib/db";
 import { OPCOES_DE_TRANSACAO } from "@/lib/db/transacao";
@@ -62,7 +67,7 @@ import {
   ERRO_DATA_OBRIGATORIA,
   ERRO_PACIENTE_OBRIGATORIO,
 } from "./encaminhamentos-mensagens";
-import { obterOuCriarPaciente } from "./pacientes";
+import { exigirPacienteDoConvenio } from "./pacientes";
 
 /**
  * Reexportadas para quem consome o domínio não precisar saber que as mensagens
@@ -151,8 +156,6 @@ export type ResultadoGravacao =
       dataEncaminhamento: string;
       /** Vem do `RETURNING` da coluna gerada — nunca de cálculo em TypeScript. */
       dataVencimento: string;
-      /** `false` quando o encaminhamento foi pendurado num paciente já existente. */
-      pacienteCriado: boolean;
       /**
        * `true` quando o paciente já tinha um encaminhamento e este o substituiu.
        *
@@ -235,10 +238,9 @@ type LinhaGravada = {
  * de `criarRequisicaoNaTransacao` e `excluirGuiaNaTransacao`: é o que deixa o
  * teste de integração gravar de verdade e desfazer tudo no fim.
  *
- * O paciente e o encaminhamento precisam nascer juntos — daí a transação. Um
- * `INSERT` que falhasse depois do get-or-create deixaria um paciente órfão, do
- * mesmo jeito que a criação de requisição evita. A carteirinha de outro
- * paciente é recusada com `throw` pelo mesmo motivo.
+ * Carteirinha/CRM e encaminhamento precisam ser gravados juntos — daí a
+ * transação. Recusa é `throw`, para desfazer o que já foi gravado (a
+ * carteirinha, quando a recusa vem depois dela).
  */
 async function gravarNaTransacao(
   tx: Prisma.TransactionClient,
@@ -247,12 +249,19 @@ async function gravarNaTransacao(
   const pacienteNome = entrada.pacienteNome.trim();
   const dataEncaminhamento = entrada.dataEncaminhamento.trim();
 
-  const paciente = await obterOuCriarPaciente(tx, pacienteNome);
+  // Busca sem criar, com a linha do paciente travada (o lock que a
+  // carteirinha já tomava). Só paciente cadastrado na Klini passa.
+  const encontrado = await exigirPacienteDoConvenio(tx, pacienteNome, "klini");
+
+  if (!encontrado.ok) {
+    throw new ErroDeNegocio(encontrado.erro);
+  }
+
+  const { paciente } = encontrado;
 
   // Antes do encaminhamento, por ordem de lock — ver
   // `carteirinha-crm-gravacao.ts`. A obrigatoriedade da carteirinha é decidida
-  // lá, e não em `validarEntrada`, porque depende do que o paciente já tem. O
-  // `throw` desfaz o paciente recém-criado, como na recusa por dono.
+  // lá, e não em `validarEntrada`, porque depende do que o paciente já tem.
   await gravarCarteirinhaECrmNaTransacao(
     tx,
     paciente,
@@ -303,7 +312,6 @@ async function gravarNaTransacao(
     pacienteNome: paciente.nome,
     dataEncaminhamento: linha.dataEncaminhamento,
     dataVencimento: linha.dataVencimento,
-    pacienteCriado: paciente.criado,
     substituiuAnterior: anteriores.length > 0,
   };
 }
@@ -345,8 +353,7 @@ export async function registrarEncaminhamento(
  *
  * Existe para o teste de integração, que precisa gravar de verdade e desfazer
  * tudo no fim. Aqui o erro de negócio vira `{ ok: false }` **sem desfazer
- * nada** — um paciente recém-criado pelo get-or-create continua na transação,
- * e quem controla o rollback é o chamador. Em produção use
+ * nada** — quem controla o rollback é o chamador. Em produção use
  * {@link registrarEncaminhamento}: é ela que garante a atomicidade.
  */
 export async function registrarEncaminhamentoNaTransacao(
