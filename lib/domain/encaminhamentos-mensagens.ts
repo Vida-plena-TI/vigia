@@ -36,3 +36,25 @@ export function mensagemDeCadastro(
     ? `Encaminhamento atualizado para ${pacienteNome}.`
     : `Encaminhamento cadastrado para ${pacienteNome}.`;
 }
+
+// ---------------------------------------------------------------------------
+// Remover encaminhamento (30/10/2026)
+// ---------------------------------------------------------------------------
+
+export const ERRO_ID_ENCAMINHAMENTO_INVALIDO =
+  "Identificador de encaminhamento inválido.";
+
+export const ERRO_ENCAMINHAMENTO_INEXISTENTE =
+  "Encaminhamento não encontrado. A lista pode estar desatualizada — recarregue a página.";
+
+/**
+ * O aviso do diálogo "Remover encaminhamento". Diz o que **fica** (o paciente
+ * e tudo o que é dele) e a consequência que a regra 15 tira disso.
+ */
+export const AVISO_REMOCAO_DE_ENCAMINHAMENTO =
+  "O paciente continua cadastrado, mas não poderá receber nova requisição até ter um novo encaminhamento (regra 15).";
+
+/** Confirmação da remoção. */
+export function mensagemDeRemocao(pacienteNome: string): string {
+  return `Encaminhamento de ${pacienteNome} removido.`;
+}

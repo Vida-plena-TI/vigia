@@ -28,7 +28,13 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { getPrismaClient } from "@/lib/db";
 
 import { cadastrarPacienteDeTeste } from "@/test/paciente-cadastrado";
-import { registrarEncaminhamentoNaTransacao } from "./encaminhamentos";
+import {
+  ERRO_ENCAMINHAMENTO_INEXISTENTE,
+  registrarEncaminhamentoNaTransacao,
+  removerEncaminhamentoNaTransacao,
+} from "./encaminhamentos";
+import { ERRO_SEM_ENCAMINHAMENTO } from "./requisicoes-mensagens";
+import { criarRequisicaoNaTransacao } from "./requisicoes";
 import {
   contarParaExclusao,
   excluirPacienteNaTransacao,
@@ -488,6 +494,136 @@ describe.skipIf(!temBanco)("exclusao permanente de paciente", () => {
     expect(await excluirPacientePeloId(inexistente)).toEqual({
       ok: false,
       erro: ERRO_PACIENTE_INEXISTENTE,
+    });
+  });
+});
+
+/**
+ * "Remover encaminhamento" (30/10/2026): a ação que ficou na aba
+ * Encaminhamentos da Klini quando a exclusão do paciente foi para o Cadastro.
+ * Apaga só a linha de `encaminhamento`; o resto do prontuário fica, e a regra
+ * 15 passa a recusar requisição nova para o paciente.
+ */
+describe.skipIf(!temBanco)("remover encaminhamento", () => {
+  beforeAll(async () => {
+    await getPrismaClient().$connect();
+  });
+
+  afterAll(async () => {
+    await getPrismaClient().$disconnect();
+  });
+
+  /** O id da linha de encaminhamento do paciente. */
+  async function idDoEncaminhamento(
+    tx: ClienteDaTransacao,
+    pacienteId: number,
+  ): Promise<number> {
+    const [linha] = await tx.$queryRaw<{ id: number }[]>`
+      SELECT "id" FROM "encaminhamento" WHERE "paciente_id" = ${pacienteId}
+    `;
+    return linha.id;
+  }
+
+  it("apaga só o encaminhamento: paciente, requisição, guias e atendimentos ficam", async () => {
+    const nome = `Remocao Encaminhamento ${SUFIXO}`;
+
+    const resultado = await comRollback(async (tx) => {
+      const cenario = await montarCenario(tx, nome, "remocao");
+      const encaminhamentoId = await idDoEncaminhamento(tx, cenario.pacienteId);
+
+      const antes = await contarLinhas(tx, cenario.pacienteId);
+      const remocao = await removerEncaminhamentoNaTransacao(tx, encaminhamentoId);
+      const depois = await contarLinhas(tx, cenario.pacienteId);
+      const [plano] = await tx.$queryRaw<{ n: number }[]>`
+        SELECT count(*)::int AS "n" FROM "plano_terapia"
+        WHERE "paciente_id" = ${cenario.pacienteId}
+      `;
+
+      // Regra 15: sem encaminhamento, requisição nova é recusada.
+      const requisicao = await criarRequisicaoNaTransacao(tx, {
+        pacienteNome: nome,
+        numeroRequisicao: `REQ-REM-${SUFIXO}`,
+        linhas: [
+          { terapiaId: cenario.terapiaIds[0], qtdAutorizada: 8, validade: null },
+        ],
+      });
+
+      // Segunda remoção da mesma linha: a lista estava velha.
+      const repetida = await removerEncaminhamentoNaTransacao(tx, encaminhamentoId);
+
+      return { antes, remocao, depois, plano: plano.n, requisicao, repetida };
+    });
+
+    expect(resultado.antes).toEqual({
+      paciente: 1,
+      encaminhamento: 1,
+      requisicoes: 1,
+      guias: 2,
+      atendimentos: 3,
+    });
+    expect(resultado.remocao).toEqual({ ok: true, pacienteNome: nome });
+    expect(resultado.depois).toEqual({
+      paciente: 1,
+      encaminhamento: 0,
+      requisicoes: 1,
+      guias: 2,
+      atendimentos: 3,
+    });
+    expect(resultado.plano).toBe(1);
+    expect(resultado.requisicao).toMatchObject({
+      ok: false,
+      erro: ERRO_SEM_ENCAMINHAMENTO,
+    });
+    expect(resultado.repetida).toEqual({
+      ok: false,
+      erro: ERRO_ENCAMINHAMENTO_INEXISTENTE,
+    });
+  });
+
+  it("depois da remoção, a exclusão pelo Cadastro continua apagando tudo", async () => {
+    // O caso que só a aba Cadastro alcança: paciente sem encaminhamento não
+    // aparecia na lista de Encaminhamentos, de onde a exclusão saiu.
+    const nome = `Remocao Depois Exclusao ${SUFIXO}`;
+
+    const resultado = await comRollback(async (tx) => {
+      const cenario = await montarCenario(tx, nome, "remexc");
+      await removerEncaminhamentoNaTransacao(
+        tx,
+        await idDoEncaminhamento(tx, cenario.pacienteId),
+      );
+
+      const exclusao = await excluirPacienteNaTransacao(tx, cenario.pacienteId);
+      const depois = await contarLinhas(tx, cenario.pacienteId);
+
+      return { exclusao, depois };
+    });
+
+    expect(resultado.exclusao).toEqual({
+      ok: true,
+      pacienteNome: nome,
+      requisicoes: 1,
+      guias: 2,
+      atendimentos: 3,
+    });
+    expect(resultado.depois).toEqual({
+      paciente: 0,
+      encaminhamento: 0,
+      requisicoes: 0,
+      guias: 0,
+      atendimentos: 0,
+    });
+  });
+
+  it("recusa id inválido e encaminhamento inexistente sem apagar nada", async () => {
+    const resultado = await comRollback(async (tx) => ({
+      invalido: await removerEncaminhamentoNaTransacao(tx, 0),
+      inexistente: await removerEncaminhamentoNaTransacao(tx, 2_000_000_000),
+    }));
+
+    expect(resultado.invalido).toMatchObject({ ok: false });
+    expect(resultado.inexistente).toEqual({
+      ok: false,
+      erro: ERRO_ENCAMINHAMENTO_INEXISTENTE,
     });
   });
 });

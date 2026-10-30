@@ -65,6 +65,8 @@ import {
 import {
   ERRO_DATA_INVALIDA,
   ERRO_DATA_OBRIGATORIA,
+  ERRO_ENCAMINHAMENTO_INEXISTENTE,
+  ERRO_ID_ENCAMINHAMENTO_INVALIDO,
   ERRO_PACIENTE_OBRIGATORIO,
 } from "./encaminhamentos-mensagens";
 import { exigirPacienteDoConvenio } from "./pacientes";
@@ -101,12 +103,9 @@ export type EncaminhamentoNaLista = {
   /**
    * O paciente, não o encaminhamento.
    *
-   * Está aqui porque a exclusão desta tela é **do paciente inteiro**, não da
-   * linha de encaminhamento (ver `excluirPacienteNaTransacao` em
-   * `lib/domain/pacientes.ts`). Mandar o `id` do encaminhamento e resolver o
-   * paciente a partir dele no servidor daria o mesmo resultado por um caminho
-   * mais longo, e um caminho que deixa de existir exatamente no momento em que
-   * a linha some.
+   * Desde 30/10/2026 esta tela não exclui mais o paciente (a exclusão
+   * permanente mora no "Excluir" da aba Cadastro); o "Remover encaminhamento"
+   * daqui apaga só a linha, pelo `id` dela.
    */
   pacienteId: number;
   pacienteNome: string;
@@ -541,4 +540,78 @@ export function contarPorStatusDeEncaminhamento(
   }
 
   return resumo;
+}
+
+/** Resultado de {@link removerEncaminhamento}. */
+export type ResultadoRemocao =
+  | { ok: true; pacienteNome: string }
+  | { ok: false; erro: string };
+
+/**
+ * Apaga **só** a linha de `encaminhamento`, numa transação já aberta.
+ *
+ * O paciente, as requisições, as guias, os atendimentos, o plano e a
+ * autorização SulAmérica ficam. A consequência é a regra 15: o paciente
+ * continua cadastrado, mas `criarRequisicao` o recusa até ele ter um novo
+ * encaminhamento. As requisições que já existem continuam válidas — a regra
+ * barra o nascimento de requisição, não a vida das que nasceram antes.
+ *
+ * O `FOR UPDATE` é no **paciente**, antes do DELETE, pelo mesmo motivo da
+ * exclusão de paciente: `criarRequisicao` toma `FOR KEY SHARE` no paciente
+ * antes de conferir o encaminhamento, e os dois locks conflitam. Uma
+ * requisição concorrente ou termina antes (e nasceu com encaminhamento) ou
+ * espera a remoção e é recusada — nunca escorrega entre a checagem e o
+ * INSERT. A ordem paciente → encaminhamento é a mesma do cadastro de
+ * encaminhamento, o que evita deadlock entre os dois.
+ */
+export async function removerEncaminhamentoNaTransacao(
+  tx: Prisma.TransactionClient,
+  encaminhamentoId: number,
+): Promise<ResultadoRemocao> {
+  if (!Number.isInteger(encaminhamentoId) || encaminhamentoId <= 0) {
+    return { ok: false, erro: ERRO_ID_ENCAMINHAMENTO_INVALIDO };
+  }
+
+  const travados = await tx.$queryRaw<{ id: number; nome: string }[]>`
+    SELECT p."id", p."nome"
+    FROM "paciente" p
+    JOIN "encaminhamento" e ON e."paciente_id" = p."id"
+    WHERE e."id" = ${encaminhamentoId}
+    FOR UPDATE OF p
+  `;
+
+  const paciente = travados[0];
+
+  if (!paciente) {
+    return { ok: false, erro: ERRO_ENCAMINHAMENTO_INEXISTENTE };
+  }
+
+  // Zero linha: outra remoção do mesmo encaminhamento chegou antes e o lock no
+  // paciente só a deixou terminar.
+  const apagadas = await tx.$executeRaw`
+    DELETE FROM "encaminhamento" WHERE "id" = ${encaminhamentoId}
+  `;
+
+  if (apagadas === 0) {
+    return { ok: false, erro: ERRO_ENCAMINHAMENTO_INEXISTENTE };
+  }
+
+  return { ok: true, pacienteNome: paciente.nome };
+}
+
+/**
+ * {@link removerEncaminhamentoNaTransacao} abrindo a própria transação. É esta
+ * que a Server Action chama.
+ */
+export async function removerEncaminhamento(
+  encaminhamentoId: number,
+): Promise<ResultadoRemocao> {
+  if (!Number.isInteger(encaminhamentoId) || encaminhamentoId <= 0) {
+    return { ok: false, erro: ERRO_ID_ENCAMINHAMENTO_INVALIDO };
+  }
+
+  return getPrismaClient().$transaction(
+    (tx) => removerEncaminhamentoNaTransacao(tx, encaminhamentoId),
+    OPCOES_DE_TRANSACAO,
+  );
 }

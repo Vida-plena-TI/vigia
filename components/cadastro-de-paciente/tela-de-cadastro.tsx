@@ -184,6 +184,17 @@ export function TelaDeCadastro({
     requestAnimationFrame(() => campoNomeRef.current?.focus());
   }
 
+  /**
+   * "Excluir" da lista concluído: se o formulário estava editando esse
+   * paciente, sai da edição — o envio recriaria o paciente que acabou de ser
+   * apagado.
+   */
+  function excluido(paciente: PacienteDoConvenio) {
+    if (emEdicao && nome === paciente.pacienteNome) {
+      cancelarEdicao();
+    }
+  }
+
   /** Na ordem dos campos; `preventDefault` cancela a submissão. */
   function validarNoCliente(evento: React.FormEvent<HTMLFormElement>) {
     setMensagemDeSucesso(null);
@@ -329,7 +340,12 @@ export function TelaDeCadastro({
           </span>
         </h2>
 
-        <ListaDePacientesDoConvenio pacientes={pacientes} aoEditar={editar} />
+        <ListaDePacientesDoConvenio
+          convenio={convenio}
+          pacientes={pacientes}
+          aoEditar={editar}
+          aoExcluir={excluido}
+        />
       </section>
     </>
   );

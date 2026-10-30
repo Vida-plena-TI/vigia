@@ -1,6 +1,7 @@
 /**
  * As duas abas Cadastro (`/klini/pacientes` e `/sulamerica/pacientes`) são só
- * do admin — página e action.
+ * do admin — página e actions (o cadastro e, desde 30/10/2026, a exclusão
+ * permanente do paciente, que saiu de Encaminhamentos para cá).
  *
  * Mesmo desenho dos testes de acesso das abas de Encaminhamentos: só o cookie
  * e o Postgres são dublês; a página e a action rodam de verdade e decidem pelo
@@ -21,6 +22,8 @@ const mocks = vi.hoisted(() => ({
   listarPacientesDoConvenio: vi.fn(),
   listarTerapias: vi.fn(),
   cadastrarPaciente: vi.fn(),
+  contarParaExclusao: vi.fn(),
+  excluirPacientePeloId: vi.fn(),
 }));
 
 vi.mock("@/lib/db", () => ({
@@ -35,6 +38,10 @@ vi.mock("@/lib/domain/plano-terapias", () => ({
   listarPacientesDoConvenio: mocks.listarPacientesDoConvenio,
   listarTerapias: mocks.listarTerapias,
   cadastrarPaciente: mocks.cadastrarPaciente,
+}));
+vi.mock("@/lib/domain/pacientes", () => ({
+  contarParaExclusao: mocks.contarParaExclusao,
+  excluirPacientePeloId: mocks.excluirPacientePeloId,
 }));
 
 function logado(papelNoBanco: PapelUsuario) {
@@ -114,6 +121,9 @@ describe.each(PAGINAS)("página Cadastro (%s)", (convenio, carregar) => {
     expect(saida).toContain("Plano não cadastrado");
     expect(saida).toContain("Editar");
     expect(saida).toContain("Trocar convênio");
+    // O "Excluir" (exclusão permanente) de cada paciente, ao lado do "Editar".
+    expect(saida).toContain('aria-label="Excluir cadastro de Fulano de Tal"');
+    expect(saida).toContain('aria-label="Excluir cadastro de Legado Sem Plano"');
   });
 });
 
@@ -156,4 +166,47 @@ describe("action do Cadastro chamada direto pela recepção", () => {
       expect.objectContaining({ convenio: "sulamerica" }),
     );
   });
+});
+
+describe("exclusão permanente pelo Cadastro chamada direto pela recepção", () => {
+  it.each(["klini", "sulamerica"] as const)(
+    "convênio %s: contar e excluir são recusados sem ler nem apagar nada",
+    async (convenio) => {
+      logado("recepcao");
+      const { contarParaExcluirPaciente, excluirPaciente } = await import(
+        "@/lib/domain/pacientes-actions"
+      );
+
+      expect(await contarParaExcluirPaciente(1, convenio)).toEqual({
+        ok: false,
+        erro: MENSAGEM_SEM_PERMISSAO,
+      });
+      expect(await excluirPaciente(1, convenio)).toEqual({
+        ok: false,
+        erro: MENSAGEM_SEM_PERMISSAO,
+      });
+      expect(mocks.contarParaExclusao).not.toHaveBeenCalled();
+      expect(mocks.excluirPacientePeloId).not.toHaveBeenCalled();
+      expect(mocks.refresh).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["klini", "sulamerica"] as const)(
+    "controle: o admin (convênio %s) chega à função de domínio de sempre",
+    async (convenio) => {
+      logado("admin");
+      mocks.excluirPacientePeloId.mockResolvedValue({
+        ok: true,
+        pacienteNome: "Fulano de Tal",
+        requisicoes: 1,
+        guias: 2,
+        atendimentos: 3,
+      });
+      const { excluirPaciente } = await import("@/lib/domain/pacientes-actions");
+
+      expect(await excluirPaciente(1, convenio)).toMatchObject({ ok: true });
+      expect(mocks.excluirPacientePeloId).toHaveBeenCalledExactlyOnceWith(1);
+      expect(mocks.refresh).toHaveBeenCalledOnce();
+    },
+  );
 });

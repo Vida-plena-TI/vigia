@@ -45,7 +45,7 @@ export const metadata: Metadata = {
  * (Fase C). `requireAcessoARota` relê o papel no banco: o desvio que o
  * `proxy.ts` faz pelo cookie é otimista, e o cookie pode estar velho — ou o
  * proxy pode nem ter rodado. Vale para as três ações da tela (cadastrar,
- * substituir e excluir o paciente), que reconfirmam por conta própria.
+ * substituir e remover o encaminhamento), que reconfirmam por conta própria.
  */
 export default async function EncaminhamentosPage() {
   await requireAcessoARota(

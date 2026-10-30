@@ -8,10 +8,14 @@
  * aqui do que em qualquer outra action do sistema: esta é a única que apaga
  * dados sem forma de desfazer.
  *
- * Desde a Fase C a checagem é `autorizarRota()`: a exclusão só existe na tela
- * de encaminhamentos, que é restrita ao `admin`, e a contagem vai junto — ela
- * lê o prontuário inteiro de um paciente para montar a frase do diálogo, e isso
- * também não é da recepção.
+ * Desde a Fase C a checagem é `autorizarRota()`, e desde 30/10/2026 a rota é a
+ * da **aba Cadastro** do convênio (`/klini/pacientes`, `/sulamerica/pacientes`):
+ * a exclusão saiu da tela de Encaminhamentos e mora no "Excluir" da lista do
+ * Cadastro. As duas abas são só do `admin`, e a contagem vai junto — ela lê o
+ * prontuário inteiro de um paciente para montar a frase do diálogo, e isso
+ * também não é da recepção. Convênio desconhecido cai na rota da Klini, como na
+ * action do cadastro (`plano-terapias-actions.ts`): as duas são restritas da
+ * mesma forma.
  *
  * A fricção do diálogo (ver o que será apagado, digitar a palavra de
  * confirmação) é do cliente, e o cliente pode ser contornado. O que **não** é
@@ -30,9 +34,12 @@ import { refresh } from "next/cache";
 
 import {
   MENSAGEM_SEM_PERMISSAO,
-  ROTA_ENCAMINHAMENTOS,
+  ROTA_KLINI_PACIENTES,
+  ROTA_SULAMERICA_PACIENTES,
 } from "@/lib/auth/acesso";
 import { autorizarRota } from "@/lib/auth/current-user";
+
+import type { Convenio } from "./convenio";
 
 import {
   contarParaExclusao,
@@ -49,8 +56,9 @@ import {
  */
 export async function contarParaExcluirPaciente(
   pacienteId: number,
+  convenio: Convenio,
 ): Promise<ResultadoDaContagem> {
-  if (!(await autorizarRota(ROTA_ENCAMINHAMENTOS))) {
+  if (!(await autorizarRota(rotaDoCadastro(convenio)))) {
     return { ok: false, erro: MENSAGEM_SEM_PERMISSAO };
   }
 
@@ -66,8 +74,9 @@ export async function contarParaExcluirPaciente(
  */
 export async function excluirPaciente(
   pacienteId: number,
+  convenio: Convenio,
 ): Promise<ResultadoDaExclusao> {
-  if (!(await autorizarRota(ROTA_ENCAMINHAMENTOS))) {
+  if (!(await autorizarRota(rotaDoCadastro(convenio)))) {
     return { ok: false, erro: MENSAGEM_SEM_PERMISSAO };
   }
 
@@ -80,4 +89,11 @@ export async function excluirPaciente(
   }
 
   return resultado;
+}
+
+/** A aba Cadastro de onde a exclusão foi pedida. */
+function rotaDoCadastro(convenio: unknown): string {
+  return convenio === "sulamerica"
+    ? ROTA_SULAMERICA_PACIENTES
+    : ROTA_KLINI_PACIENTES;
 }

@@ -34,7 +34,9 @@ import { autorizarRota } from "@/lib/auth/current-user";
 
 import {
   registrarEncaminhamento,
+  removerEncaminhamento,
   type EntradaNovoEncaminhamento,
+  type ResultadoRemocao,
 } from "./encaminhamentos";
 
 /** Estado que o formulário lê de volta via `useActionState`. */
@@ -95,4 +97,27 @@ export async function criarEncaminhamentoAction(
       token: crypto.randomUUID(),
     },
   };
+}
+
+/**
+ * "Remover encaminhamento" da lista: apaga só a linha de `encaminhamento` (o
+ * paciente e o prontuário ficam). Só admin, pela mesma rota da tela.
+ *
+ * Devolve o erro em vez de lançar, como `excluirPaciente`: a falha esperada
+ * (a linha já sumiu, lista velha) é mensagem para o usuário.
+ */
+export async function removerEncaminhamentoAction(
+  encaminhamentoId: number,
+): Promise<ResultadoRemocao> {
+  if (!(await autorizarRota(ROTA_ENCAMINHAMENTOS))) {
+    return { ok: false, erro: MENSAGEM_SEM_PERMISSAO };
+  }
+
+  const resultado = await removerEncaminhamento(encaminhamentoId);
+
+  if (resultado.ok) {
+    refresh();
+  }
+
+  return resultado;
 }

@@ -7,13 +7,16 @@ import { normalizarParaBusca } from "@/app/(app)/klini/dashboard/formato";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import type { Convenio } from "@/lib/domain/convenio";
 import type { PacienteDoConvenio } from "@/lib/domain/plano-terapias";
 
+import { ExcluirPaciente } from "./excluir-paciente";
 import { SEM_PLANO, resumirPlano } from "./resumo-do-plano";
 
 /**
  * Os pacientes do convênio da aba, em ordem de nome (vem pronta do banco), com
- * o plano em uma linha e o "Editar".
+ * o plano em uma linha, o "Editar" e o "Excluir" (exclusão permanente do
+ * paciente, com a confirmação digitada — ver `excluir-paciente.tsx`).
  *
  * A busca é a das listas de encaminhamento: client-side, com
  * `normalizarParaBusca` (sem acento nem caixa). Duas colunas de dado e uma de
@@ -23,11 +26,15 @@ import { SEM_PLANO, resumirPlano } from "./resumo-do-plano";
  * Só nome e plano: nenhuma carteirinha nem CRM chega a esta tela.
  */
 export function ListaDePacientesDoConvenio({
+  convenio,
   pacientes,
   aoEditar,
+  aoExcluir,
 }: {
+  convenio: Convenio;
   pacientes: PacienteDoConvenio[];
   aoEditar: (paciente: PacienteDoConvenio) => void;
+  aoExcluir: (paciente: PacienteDoConvenio) => void;
 }) {
   const [busca, setBusca] = useState("");
   const termo = normalizarParaBusca(busca);
@@ -97,7 +104,7 @@ export function ListaDePacientesDoConvenio({
                   <th scope="col" className={CLASSE_CABECALHO}>
                     Plano por semana
                   </th>
-                  <th scope="col" className={`${CLASSE_CABECALHO} w-28 text-right`}>
+                  <th scope="col" className={`${CLASSE_CABECALHO} w-44 text-right`}>
                     Ações
                   </th>
                 </tr>
@@ -113,7 +120,12 @@ export function ListaDePacientesDoConvenio({
                       <ResumoDoPlano paciente={paciente} />
                     </td>
                     <td className="px-3 py-2 text-right">
-                      <BotaoEditar paciente={paciente} aoEditar={aoEditar} />
+                      <AcoesDoPaciente
+                        convenio={convenio}
+                        paciente={paciente}
+                        aoEditar={aoEditar}
+                        aoExcluir={aoExcluir}
+                      />
                     </td>
                   </tr>
                 ))}
@@ -128,7 +140,12 @@ export function ListaDePacientesDoConvenio({
                   <p className="min-w-0 text-sm font-medium break-words">
                     {paciente.pacienteNome}
                   </p>
-                  <BotaoEditar paciente={paciente} aoEditar={aoEditar} />
+                  <AcoesDoPaciente
+                    convenio={convenio}
+                    paciente={paciente}
+                    aoEditar={aoEditar}
+                    aoExcluir={aoExcluir}
+                  />
                 </div>
                 <p className="text-xs break-words">
                   <ResumoDoPlano paciente={paciente} />
@@ -152,23 +169,35 @@ function ResumoDoPlano({ paciente }: { paciente: PacienteDoConvenio }) {
   );
 }
 
-function BotaoEditar({
+function AcoesDoPaciente({
+  convenio,
   paciente,
   aoEditar,
+  aoExcluir,
 }: {
+  convenio: Convenio;
   paciente: PacienteDoConvenio;
   aoEditar: (paciente: PacienteDoConvenio) => void;
+  aoExcluir: (paciente: PacienteDoConvenio) => void;
 }) {
   return (
-    <Button
-      type="button"
-      variant="outline"
-      size="sm"
-      aria-label={`Editar o plano de ${paciente.pacienteNome}`}
-      onClick={() => aoEditar(paciente)}
-    >
-      Editar
-    </Button>
+    <div className="inline-flex flex-wrap justify-end gap-2">
+      <Button
+        type="button"
+        variant="outline"
+        size="sm"
+        aria-label={`Editar o plano de ${paciente.pacienteNome}`}
+        onClick={() => aoEditar(paciente)}
+      >
+        Editar
+      </Button>
+      <ExcluirPaciente
+        pacienteId={paciente.pacienteId}
+        pacienteNome={paciente.pacienteNome}
+        convenio={convenio}
+        aoExcluir={() => aoExcluir(paciente)}
+      />
+    </div>
   );
 }
 

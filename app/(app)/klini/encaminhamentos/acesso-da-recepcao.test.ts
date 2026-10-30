@@ -29,8 +29,7 @@ const mocks = vi.hoisted(() => ({
   listarEncaminhamentos: vi.fn(),
   registrarEncaminhamento: vi.fn(),
   listarPacientesParaEncaminhamento: vi.fn(),
-  contarParaExclusao: vi.fn(),
-  excluirPacientePeloId: vi.fn(),
+  removerEncaminhamento: vi.fn(),
   dataDeHoje: vi.fn(),
 }));
 
@@ -46,6 +45,7 @@ vi.mock("next/headers", () => ({
 vi.mock("@/lib/domain/encaminhamentos", () => ({
   listarEncaminhamentos: mocks.listarEncaminhamentos,
   registrarEncaminhamento: mocks.registrarEncaminhamento,
+  removerEncaminhamento: mocks.removerEncaminhamento,
   contarPorStatusDeEncaminhamento: () => ({
     Vencido: 0,
     "Vence este mês": 0,
@@ -54,8 +54,6 @@ vi.mock("@/lib/domain/encaminhamentos", () => ({
 }));
 vi.mock("@/lib/domain/pacientes", () => ({
   listarPacientesParaEncaminhamento: mocks.listarPacientesParaEncaminhamento,
-  contarParaExclusao: mocks.contarParaExclusao,
-  excluirPacientePeloId: mocks.excluirPacientePeloId,
 }));
 vi.mock("@/lib/domain/atendimentos", () => ({ dataDeHoje: mocks.dataDeHoje }));
 
@@ -153,17 +151,16 @@ describe("actions de Encaminhamentos chamadas direto pela recepção", () => {
     semSentinela(estado);
   });
 
-  it("contar e excluir paciente são recusados sem ler o prontuário", async () => {
-    const { contarParaExcluirPaciente, excluirPaciente } =
-      await import("@/lib/domain/pacientes-actions");
+  it("remover encaminhamento é recusado e nada é apagado", async () => {
+    const { removerEncaminhamentoAction } =
+      await import("@/lib/domain/encaminhamentos-actions");
 
-    const contagem = await contarParaExcluirPaciente(1);
-    const exclusao = await excluirPaciente(1);
-
-    expect(contagem).toEqual({ ok: false, erro: MENSAGEM_SEM_PERMISSAO });
-    expect(exclusao).toEqual({ ok: false, erro: MENSAGEM_SEM_PERMISSAO });
-    expect(mocks.contarParaExclusao).not.toHaveBeenCalled();
-    expect(mocks.excluirPacientePeloId).not.toHaveBeenCalled();
+    expect(await removerEncaminhamentoAction(1)).toEqual({
+      ok: false,
+      erro: MENSAGEM_SEM_PERMISSAO,
+    });
+    expect(mocks.removerEncaminhamento).not.toHaveBeenCalled();
+    expect(mocks.refresh).not.toHaveBeenCalled();
   });
 });
 

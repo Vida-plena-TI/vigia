@@ -13,10 +13,9 @@ import { describe, expect, it, vi } from "vitest";
 
 import type { EncaminhamentoNaLista } from "@/lib/domain/encaminhamentos";
 
-// A exclusão puxaria sessão e banco; a renderização não a chama.
-vi.mock("@/lib/domain/pacientes-actions", () => ({
-  contarParaExcluirPaciente: vi.fn(),
-  excluirPaciente: vi.fn(),
+// A remoção puxaria sessão e banco; a renderização não a chama.
+vi.mock("@/lib/domain/encaminhamentos-actions", () => ({
+  removerEncaminhamentoAction: vi.fn(),
 }));
 
 import { ListaDeEncaminhamentos } from "./lista-de-encaminhamentos";
@@ -140,5 +139,17 @@ describe("lista de encaminhamentos — carteirinha e CRM", () => {
     for (const tag of botoes(saida, "Copiar CRM de Meio Termo")) {
       expect(tag).not.toContain('disabled=""');
     }
+  });
+});
+
+describe("lista de encaminhamentos — ação da linha", () => {
+  it("oferece 'Remover encaminhamento', e não mais a exclusão do paciente", () => {
+    const saida = html([linha(1, "Fulano", "ABC12345", "123456")]);
+
+    // Tabela + bloco do celular.
+    expect(botoes(saida, "Remover encaminhamento de Fulano")).toHaveLength(2);
+    expect(saida).toContain(">Remover encaminhamento</button>");
+    expect(saida).not.toContain("Excluir cadastro de");
+    expect(saida).not.toMatch(/>Excluir<\/button>/);
   });
 });

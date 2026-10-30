@@ -9,12 +9,12 @@ import { cn } from "@/lib/utils";
 import type { EncaminhamentoNaLista } from "@/lib/domain/encaminhamentos";
 
 import { formatarData, normalizarParaBusca } from "../dashboard/formato";
-import { ExcluirPaciente } from "./excluir-paciente";
 import {
   MARCADOR_POR_VENCIMENTO,
   MARCADOR_SEM_VENCIMENTO,
   SeloDeVencimento,
 } from "./selo-de-vencimento";
+import { RemoverEncaminhamento } from "./remover-encaminhamento";
 import { ValorCopiavel } from "./valor-copiavel";
 
 /**
@@ -31,9 +31,9 @@ import { ValorCopiavel } from "./valor-copiavel";
  * máximo um encaminhamento, então a lista é plana e cada linha é um paciente.
  * É a mesma regra de unicidade do banco aparecendo na forma da tela.
  *
- * É por isso, aliás, que a coluna "Ações" exclui o **paciente** e não a linha
- * de encaminhamento: uma linha aqui *é* um paciente. O que esse botão dispara
- * não tem volta — a fricção que o cerca está em `excluir-paciente.tsx`.
+ * A coluna "Ações" tem o "Remover encaminhamento" (desde 30/10/2026): apaga
+ * só a linha de encaminhamento, e o paciente continua cadastrado. A exclusão
+ * permanente do paciente mora no "Excluir" da aba Cadastro.
  *
  * Carteirinha e CRM (regra 20) têm coluna própria, cada um com o seu botão de
  * copiar (`valor-copiavel.tsx`). Com sete colunas a tabela só aparece a partir
@@ -156,7 +156,7 @@ export function ListaDeEncaminhamentos({
                   </th>
                   <th
                     scope="col"
-                    className={`${CLASSE_CABECALHO} w-28 text-right`}
+                    className={`${CLASSE_CABECALHO} w-48 text-right`}
                   >
                     Ações
                   </th>
@@ -209,8 +209,8 @@ export function ListaDeEncaminhamentos({
                       />
                     </td>
                     <td className="px-3 py-2 text-right">
-                      <ExcluirPaciente
-                        pacienteId={encaminhamento.pacienteId}
+                      <RemoverEncaminhamento
+                        encaminhamentoId={encaminhamento.id}
                         pacienteNome={encaminhamento.pacienteNome}
                       />
                     </td>
@@ -264,8 +264,8 @@ export function ListaDeEncaminhamentos({
                   />
                 </div>
                 <div className="mt-1 flex justify-end">
-                  <ExcluirPaciente
-                    pacienteId={encaminhamento.pacienteId}
+                  <RemoverEncaminhamento
+                    encaminhamentoId={encaminhamento.id}
                     pacienteNome={encaminhamento.pacienteNome}
                   />
                 </div>

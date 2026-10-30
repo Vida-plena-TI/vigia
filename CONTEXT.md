@@ -285,8 +285,9 @@ teste passar hoje e mentir no mês que vem.
       pelo encaminhamento da SulAmérica) → a recusa de sempre, "Paciente sem encaminhamento cadastrado.
       Cadastre o encaminhamento antes de criar uma requisição.".
     O lock é o mesmo `FOR KEY SHARE` que o INSERT da requisição já pediria na linha do
-    paciente, só que tomado antes das checagens: ele conflita com o `FOR UPDATE` da
-    exclusão de paciente, que é o único caminho que apaga um encaminhamento — então
+    paciente, só que tomado antes das checagens: ele conflita com o `FOR UPDATE` no
+    paciente que os **dois** caminhos que apagam um encaminhamento tomam — a exclusão de
+    paciente e, desde 30/10/2026, o "Remover encaminhamento" (regra 25) — então
     paciente e encaminhamento não somem entre a checagem e o INSERT. Não conflita com o
     `FOR NO KEY UPDATE` do cadastro de encaminhamento. A recusa continua **lançada**
     (`ErroDeNegocio`), para desfazer qualquer escrita anterior da transação.
@@ -297,9 +298,11 @@ teste passar hoje e mentir no mês que vem.
     regra 21). O campo `pacienteCriado` do resultado de `criarRequisicao`, que sob esta
     regra nunca era `true` num sucesso, **saiu** em 28/10/2026: a requisição não cria
     paciente, então ele não teria mais o que dizer.
-16. **Exclusão de paciente é permanente, completa e sem desfazer.** A partir da listagem
-    de encaminhamentos, excluir apaga o paciente inteiro — encaminhamento, requisições,
-    guias e atendimentos — em `DELETE` real, numa única transação. Não há soft-delete,
+16. **Exclusão de paciente é permanente, completa e sem desfazer.** A partir do "Excluir"
+    da lista da **aba Cadastro** de cada convênio (desde 30/10/2026; antes era a listagem
+    de Encaminhamentos da Klini — ver regra 25), excluir apaga o paciente inteiro —
+    encaminhamento, requisições, guias, atendimentos, plano e autorização SulAmérica — em
+    `DELETE` real, numa única transação. Não há soft-delete,
     arquivamento nem lixeira. Ver "Exclusão permanente de paciente" nas decisões de
     implementação, inclusive a ressalva sobre guarda de prontuário.
 
@@ -308,8 +311,9 @@ teste passar hoje e mentir no mês que vem.
     `recepcao` alcança **somente** `/klini/dashboard`, `/klini/atendimentos/novo`,
     `/klini/atendimentos/hoje` e a raiz `/`; qualquer outro caminho a manda para
     `/klini/dashboard`. Na prática, o que fica de fora é "Nova requisição",
-    "Encaminhamentos" (inclusive a exclusão permanente de paciente, que só existe lá) e,
-    desde 29/10/2026, as duas abas "Cadastro" (`/klini/pacientes`, `/sulamerica/pacientes`). A
+    "Encaminhamentos" (inclusive o "Remover encaminhamento") e, desde 29/10/2026, as duas
+    abas "Cadastro" (`/klini/pacientes`, `/sulamerica/pacientes` — inclusive a exclusão
+    permanente de paciente, que desde 30/10/2026 só existe lá). A
     raiz `/` ramifica: admin vê a tela de escolha de convênio, recepção é redirecionada
     direto para `/klini/dashboard`, sem ver escolha nenhuma. Quem não tem permissão vai
     para `/klini/dashboard`, **não** para `/login`: a pessoa está autenticada: falta
@@ -337,8 +341,9 @@ teste passar hoje e mentir no mês que vem.
     cabeçalho da seção "Registradas", leva à aba nova). A view
     classifica os mesmos quatro casos mensais de Encaminhamentos; a lista ordena por
     urgência e depois lower(nome). Excluir na SulAmérica remove só a autorização.
-    A exclusão completa de paciente no Klini continua completa: inclui sua autorização
-    SulAmérica, caso exista, e a confirmação informa isso antes de exigir EXCLUIR.
+    A exclusão completa de paciente (desde 30/10/2026 pelo "Excluir" da aba Cadastro, nos
+    dois convênios) continua completa: inclui sua autorização SulAmérica, caso exista, e a
+    confirmação informa isso antes de exigir EXCLUIR.
 
 19. **Situação da requisição (26/10/2026).** Toda requisição está `solicitada` (enviada
     ao convênio, em análise) ou `aprovada`. A situação é da **requisição** (a pasta
@@ -525,7 +530,8 @@ teste passar hoje e mentir no mês que vem.
     - **O resto dos encaminhamentos não mudou**: carteirinha opcional quando o paciente já
       tem uma (`decidirCarteirinha`), CRM sempre obrigatório, prazo e nome do médico na
       SulAmérica, unicidade da carteirinha, botões de copiar, upsert (substituição) do
-      encaminhamento, "Excluir" (paciente inteiro) da Klini. "Nova requisição" continua
+      encaminhamento. (O "Excluir" (paciente inteiro) da Klini saiu desta tela em
+      30/10/2026 — regra 25.) "Nova requisição" continua
       exigindo paciente com encaminhamento (regra 15), sem criar.
     - **Legado sem carteirinha/CRM não é bloqueado** na requisição (decisão da regra 21,
       mantida). O seed de desenvolvimento (`prisma/seed.ts`) continua criando pacientes
@@ -534,6 +540,36 @@ teste passar hoje e mentir no mês que vem.
       `plano-terapias.ts` (uma vez, na transação do cadastro); `cadastrarPaciente` só pela
       action; a action só pela tela Cadastro; os dois encaminhamentos só chamam
       `exigirPacienteDoConvenio`. Sem exceção temporária.
+
+25. **Exclusão do paciente no Cadastro; "Remover encaminhamento" em Encaminhamentos
+    (30/10/2026).**
+    - **Excluir paciente** (permanente, regra 16) mora no **"Editar / Excluir"** da lista
+      da aba Cadastro de cada convênio (`/klini/pacientes`, `/sulamerica/pacientes`), ao
+      lado do "Editar". Mesma função de domínio (`excluirPacientePeloId` →
+      `excluirPacienteNaTransacao`, sem DELETE novo), mesma fricção (contagem lida no
+      clique, frase com os números reais e o aviso da autorização SulAmérica, palavra
+      `EXCLUIR` digitada, diálogo que não fecha no erro). As actions
+      (`contarParaExcluirPaciente`, `excluirPaciente` em `pacientes-actions.ts`) recebem o
+      convênio da aba e autorizam pela **rota do Cadastro** daquele convênio
+      (`autorizarRota`, papel lido do banco) — só admin. Excluir o paciente que está em
+      edição no formulário cancela a edição.
+    - **Na aba Encaminhamentos da Klini** a ação da linha é **"Remover encaminhamento"**:
+      apaga **somente** a linha de `encaminhamento` (`removerEncaminhamento` em
+      `encaminhamentos.ts`, pelo `id` da linha). Paciente, requisições, guias,
+      atendimentos, plano e autorização ficam. Confirmação **simples** (um clique no
+      diálogo), com o aviso: "O paciente continua cadastrado, mas não poderá receber nova
+      requisição até ter um novo encaminhamento (regra 15)." As requisições que já existem
+      continuam funcionando (lançar atendimento não consulta encaminhamento); cadastrar um
+      encaminhamento novo libera a requisição de novo. Trava o paciente com `FOR UPDATE`
+      antes do DELETE (ver regra 15). Só admin (`removerEncaminhamentoAction`, rota de
+      Encaminhamentos).
+    - **SulAmérica**: já existia o equivalente — "Excluir" no painel `/sulamerica/dashboard`
+      remove só a autorização (`excluirAutorizacaoAction`, confirmação simples, "O cadastro
+      do paciente, suas requisições e seus atendimentos serão mantidos."). Mantido como
+      estava. A lista de `/sulamerica/encaminhamentos` não tem ação de exclusão.
+    - Paciente com `convenio` NULL não aparece em nenhuma lista do Cadastro, então **não
+      tem botão de exclusão** em lugar nenhum até ser cadastrado num convênio (antes, se
+      tivesse encaminhamento, aparecia na lista de Encaminhamentos da Klini).
 
 ## Decisões assumidas (perguntas em aberto no relatório de auditoria original)
 
@@ -2020,8 +2056,17 @@ UPDATE` dentro de transação Prisma continua serializando corretamente no Supav
 
 ### Exclusão permanente de paciente — e a ressalva sobre guarda de prontuário
 
-**O que o sistema faz:** na aba Encaminhamentos, o botão "Excluir" de uma linha apaga o
-**paciente inteiro** — a linha de `encaminhamento`, todas as `requisicao`, todas as
+> **Desde 30/10/2026 (regra 25)** o botão mora no "Excluir" da lista da **aba Cadastro**
+> de cada convênio, e a aba Encaminhamentos da Klini tem só o "Remover encaminhamento",
+> que apaga a linha de encaminhamento e mais nada. A função de domínio, a ordem dos
+> DELETE, o lock e a fricção descritos abaixo são os mesmos; só mudou a tela de onde se
+> pede e a rota pela qual a action autoriza. O argumento "Por que a exclusão é do
+> paciente e não do encaminhamento" logo abaixo é **histórico**: o usuário decidiu ter
+> as duas ações, cada uma na sua aba, aceitando o estado que ele descreve (requisições
+> antigas de um paciente sem encaminhamento) — a regra 15 barra só requisição nova.
+
+**O que o sistema faz:** o botão "Excluir" (antes na aba Encaminhamentos, hoje na aba
+Cadastro) apaga o **paciente inteiro** — a linha de `encaminhamento`, todas as `requisicao`, todas as
 `requisicao_terapia` e todos os `atendimento` que pendem delas. São `DELETE` de verdade,
 numa transação só, sem soft-delete, sem coluna `apagado_em`, sem tabela de arquivo morto e
 sem nenhuma forma de desfazer pela aplicação. Depois do commit, a única recuperação
@@ -2179,6 +2224,8 @@ parecer íntegro na tela.
   acrescentar lixeira, arquivo morto ou coluna `apagado_em` por conta própria. A exclusão
   física é decisão registrada do usuário, tomada com a exigência de guarda de prontuário
   já na mesa — mudá-la é conversa com ele, não refatoração.
+- Não pôr a exclusão permanente de paciente de volta em Encaminhamentos, nem fazer o
+  "Remover encaminhamento" apagar mais que a linha de `encaminhamento` (regra 25).
 - Não afrouxar a confirmação da exclusão (habilitar o botão sem o campo digitado, estimar
   as contagens em vez de consultá-las, fechar o diálogo no erro). A fricção é o produto
   daquela tela, não um obstáculo a ser polido.
@@ -2747,6 +2794,18 @@ parecer íntegro na tela.
     arquivos**, `next build` concluído.
   - **Interação manual no navegador pendente** — roteiro em pendências.
 
+- [x] **Excluir paciente no Cadastro; "Remover encaminhamento" na Klini** (30/10/2026,
+      branch `feat/excluir-paciente-no-cadastro`, a partir de `feat/painel-plano-semanal`
+      em `469aa14`; **sem commit, sem merge e sem push**). Regra 25. Nenhuma migration.
+      `ExcluirPaciente` foi movido para `components/cadastro-de-paciente/`; novo
+      `remover-encaminhamento.tsx` na Klini. Testes de integração novos em
+      `pacientes.integration.test.ts` (remover não apaga paciente/requisição/guias/
+      atendimentos/plano e a requisição nova é recusada; exclusão depois da remoção
+      continua levando tudo) e de acesso (recepção recusada em contar/excluir pelos dois
+      Cadastros e em remover encaminhamento). `tsc --noEmit` limpo, eslint só com o erro
+      antigo de `acoes-da-guia.tsx`, **739 testes em 46 arquivos**, `next build`
+      concluído. **Interação manual no navegador pendente** — roteiro em pendências.
+
 ### Plano de papéis e convênios — 4 fases
 
 Registrado aqui inteiro de propósito: a Fase A sozinha não explica por que existe, e as
@@ -2797,6 +2856,36 @@ sessões seguintes precisam do plano completo para não implementar a fase errad
   aba (convênio NULL). O preenchimento é manual: "Editar" na lista, ou digitar o nome no
   formulário do Cadastro do convênio certo. Nada bloqueia o paciente sem plano — o plano é
   informativo.
+- **Excluir no Cadastro / Remover encaminhamento: roteiro manual de navegador** (nada
+  disto foi feito; sem navegador nesta sessão). Pré-requisito: um paciente da Klini com
+  encaminhamento, uma requisição e dois ou três atendimentos; um paciente da SulAmérica
+  com autorização.
+  1. **Remover encaminhamento (admin)**: `/klini/encaminhamentos` → a coluna "Ações" mostra
+     "Remover encaminhamento" (não mais "Excluir"). Clicar → diálogo com o aviso "O
+     paciente continua cadastrado, mas não poderá receber nova requisição até ter um novo
+     encaminhamento (regra 15).", **sem** campo para digitar. "Cancelar" e Esc não apagam
+     nada. Confirmar → a linha some, toast "Encaminhamento de X removido.".
+  2. **O que ficou**: no painel `/klini/dashboard` o paciente continua com as guias e os
+     atendimentos; lançar um atendimento numa guia dele passa. Em `/klini/pacientes` ele
+     continua na lista com o plano.
+  3. **Regra 15**: "Nova requisição" para esse paciente → "Paciente sem encaminhamento
+     cadastrado…". Cadastrar um novo encaminhamento para ele e repetir: passa.
+  4. **Excluir pelo Cadastro (Klini)**: em `/klini/pacientes`, a linha do paciente tem
+     "Editar" e "Excluir". "Excluir" → "Verificando..." e o diálogo com a contagem exata de
+     requisições e atendimentos; "Excluir tudo" desabilitado até digitar `EXCLUIR`
+     (aceita `excluir` e espaço nas pontas). Confirmar → some da lista do Cadastro, do
+     painel, de Encaminhamentos e do datalist de "Nova requisição".
+  5. **Em edição**: clicar "Editar" num paciente e, com o formulário aberto, "Excluir" o
+     mesmo paciente → o formulário volta para "Novo paciente", vazio.
+  6. **SulAmérica**: em `/sulamerica/pacientes`, "Excluir" o paciente com autorização → a
+     frase diz "A autorização SulAmérica também será apagada."; confirmar → some também
+     do painel `/sulamerica/dashboard`. O "Excluir" do painel SulAmérica continua
+     removendo só a autorização.
+  7. **Celular** (~360px): no Cadastro, "Editar" e "Excluir" cabem ao lado do nome (ou
+     quebram para a linha de baixo) sem rolar de lado; em Encaminhamentos o botão
+     "Remover encaminhamento" fica no rodapé do bloco.
+  8. **Recepção**: sem acesso às duas abas (menu e URL levam ao painel).
+
 - **Plano semanal no painel: roteiro manual de navegador** (nada disto foi feito; sem
   navegador nesta sessão). Pré-requisito: um paciente com guias e plano (ex.: Fono 2,5 h e
   TO 0,75 h, cadastrado pela aba Cadastro) e outro com guias e sem plano (legado).
@@ -3102,7 +3191,8 @@ sessões seguintes precisam do plano completo para não implementar a fase errad
   3. Cadastrar o encaminhamento desse paciente e repetir a requisição: agora passa.
   4. Lançar dois ou três atendimentos nas guias criadas, para o cenário ter contagem que
      não seja zero.
-  5. Na aba Encaminhamentos, clicar em "Excluir" na linha desse paciente. Conferir que o
+  5. (Desde 30/10/2026 a exclusão mora na aba Cadastro — ver o roteiro "Excluir no
+     Cadastro".) Na aba Encaminhamentos, clicar em "Excluir" na linha desse paciente. Conferir que o
      botão mostra "Verificando..." por um instante (é a consulta ao banco) e que a frase
      do diálogo traz a contagem **exata** de requisições e atendimentos que foram
      lançados — não um número redondo, não "todos os dados".

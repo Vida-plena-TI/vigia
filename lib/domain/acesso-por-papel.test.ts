@@ -26,6 +26,7 @@ const mocks = vi.hoisted(() => ({
   criarRequisicao: vi.fn(),
   previsaoDeSubstituicao: vi.fn(),
   registrarEncaminhamento: vi.fn(),
+  removerEncaminhamento: vi.fn(),
   contarParaExclusao: vi.fn(),
   excluirPacientePeloId: vi.fn(),
   cadastrarPaciente: vi.fn(),
@@ -48,6 +49,7 @@ vi.mock("./requisicoes", () => ({
 
 vi.mock("./encaminhamentos", () => ({
   registrarEncaminhamento: mocks.registrarEncaminhamento,
+  removerEncaminhamento: mocks.removerEncaminhamento,
 }));
 
 vi.mock("./pacientes", () => ({
@@ -65,7 +67,10 @@ vi.mock("./autorizacoes-sulamerica", () => ({
 }));
 import { criarEncaminhamentoSulamericaAction, excluirAutorizacaoAction } from "./autorizacoes-sulamerica-actions";
 
-import { criarEncaminhamentoAction } from "./encaminhamentos-actions";
+import {
+  criarEncaminhamentoAction,
+  removerEncaminhamentoAction,
+} from "./encaminhamentos-actions";
 import {
   contarParaExcluirPaciente,
   excluirPaciente,
@@ -260,18 +265,31 @@ describe("recepcao chamando as actions restritas direto", () => {
     expect(mocks.registrarEncaminhamento).not.toHaveBeenCalled();
   });
 
-  it("excluir paciente e recusado, e a transacao nem comeca", async () => {
-    const resultado = await excluirPaciente(3);
+  it.each(["klini", "sulamerica"] as const)(
+    "excluir paciente (Cadastro %s) e recusado, e a transacao nem comeca",
+    async (convenio) => {
+      const resultado = await excluirPaciente(3, convenio);
+
+      expect(resultado).toEqual({ ok: false, erro: MENSAGEM_SEM_PERMISSAO });
+      expect(mocks.excluirPacientePeloId).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["klini", "sulamerica"] as const)(
+    "contar para excluir (Cadastro %s) e recusado — a contagem tambem le o prontuario",
+    async (convenio) => {
+      const resultado = await contarParaExcluirPaciente(3, convenio);
+
+      expect(resultado).toEqual({ ok: false, erro: MENSAGEM_SEM_PERMISSAO });
+      expect(mocks.contarParaExclusao).not.toHaveBeenCalled();
+    },
+  );
+
+  it("remover encaminhamento e recusado, e nada e apagado", async () => {
+    const resultado = await removerEncaminhamentoAction(3);
 
     expect(resultado).toEqual({ ok: false, erro: MENSAGEM_SEM_PERMISSAO });
-    expect(mocks.excluirPacientePeloId).not.toHaveBeenCalled();
-  });
-
-  it("contar para excluir e recusado — a contagem tambem le o prontuario", async () => {
-    const resultado = await contarParaExcluirPaciente(3);
-
-    expect(resultado).toEqual({ ok: false, erro: MENSAGEM_SEM_PERMISSAO });
-    expect(mocks.contarParaExclusao).not.toHaveBeenCalled();
+    expect(mocks.removerEncaminhamento).not.toHaveBeenCalled();
   });
 });
 
@@ -377,9 +395,21 @@ describe("admin chamando as mesmas actions", () => {
       atendimentos: 3,
     });
 
-    const resultado = await excluirPaciente(3);
+    const resultado = await excluirPaciente(3, "klini");
 
     expect(resultado).toMatchObject({ ok: true });
     expect(mocks.excluirPacientePeloId).toHaveBeenCalledWith(3);
+  });
+
+  it("remover encaminhamento chega no dominio", async () => {
+    mocks.removerEncaminhamento.mockResolvedValue({
+      ok: true,
+      pacienteNome: "Fulano de Tal",
+    });
+
+    const resultado = await removerEncaminhamentoAction(3);
+
+    expect(resultado).toEqual({ ok: true, pacienteNome: "Fulano de Tal" });
+    expect(mocks.removerEncaminhamento).toHaveBeenCalledWith(3);
   });
 });

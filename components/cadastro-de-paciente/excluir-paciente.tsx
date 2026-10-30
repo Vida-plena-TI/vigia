@@ -1,7 +1,12 @@
 "use client";
 
 /**
- * O botão "Excluir" da listagem de encaminhamentos — e a fricção que o segue.
+ * O botão "Excluir" da lista da aba Cadastro — e a fricção que o segue.
+ *
+ * Mora no Cadastro desde 30/10/2026: antes estava na lista de Encaminhamentos
+ * da Klini, onde agora existe só o "Remover encaminhamento" (apaga a linha de
+ * encaminhamento e mais nada). Excluir o paciente é desfazer o cadastro, e o
+ * cadastro é desta aba (regra 24).
  *
  * Este componente é o único do sistema que dispara uma ação **sem volta**: a
  * Server Action que ele chama apaga o paciente, as requisições, as guias, os
@@ -44,7 +49,8 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 // Só o tipo: `import type` some na compilação, então o Prisma que
 // `lib/domain/pacientes.ts` importa não vai junto para o bundle do navegador.
-// Mesma forma que `lista-de-encaminhamentos.tsx` usa para `EncaminhamentoNaLista`.
+// Mesma forma que `lista-de-pacientes.tsx` usa para `PacienteDoConvenio`.
+import type { Convenio } from "@/lib/domain/convenio";
 import type { ContagemParaExclusao } from "@/lib/domain/pacientes";
 import {
   contarParaExcluirPaciente,
@@ -65,9 +71,15 @@ const ERRO_AO_EXCLUIR = "Não foi possível excluir o cadastro.";
 export function ExcluirPaciente({
   pacienteId,
   pacienteNome,
+  convenio,
+  aoExcluir,
 }: {
   pacienteId: number;
   pacienteNome: string;
+  /** A aba de onde a exclusão é pedida: é por ela que a action autoriza. */
+  convenio: Convenio;
+  /** Avisado depois do sucesso (o formulário sai da edição deste paciente). */
+  aoExcluir?: () => void;
 }) {
   /**
    * A contagem lida do banco. `null` enquanto o diálogo não deve aparecer — é
@@ -85,7 +97,7 @@ export function ExcluirPaciente({
 
     iniciarContagem(async () => {
       try {
-        const resultado = await contarParaExcluirPaciente(pacienteId);
+        const resultado = await contarParaExcluirPaciente(pacienteId, convenio);
 
         if (!resultado.ok) {
           // Ex.: o paciente sumiu desde que a página foi renderizada. Vira
@@ -117,7 +129,7 @@ export function ExcluirPaciente({
 
     iniciarExclusao(async () => {
       try {
-        const resultado = await excluirPaciente(pacienteId);
+        const resultado = await excluirPaciente(pacienteId, convenio);
 
         if (!resultado.ok) {
           setErro(resultado.erro);
@@ -126,6 +138,7 @@ export function ExcluirPaciente({
 
         setContagem(null);
         setDigitado("");
+        aoExcluir?.();
 
         toast.success(mensagemDeExclusao(resultado.pacienteNome), {
           // O que a transação de fato apagou, não o que o diálogo previu —
