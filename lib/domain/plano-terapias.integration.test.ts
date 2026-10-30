@@ -27,6 +27,7 @@ import {
   cadastrarPacienteNaTransacao,
   listarPacientesDoConvenioComCliente,
   planoDoPacienteComCliente,
+  planosDosPacientesComCliente,
   type EntradaCadastroDePaciente,
 } from "./plano-terapias";
 
@@ -500,6 +501,115 @@ describe.skipIf(!temBanco)("cadastro de paciente com plano de terapias", () => {
     expect(r.plano).toEqual([terapiaA, terapiaB]);
     expect(r.planoVazio).toEqual([]);
     expect(r.idInvalido).toEqual([]);
+  });
+
+  it("planosDosPacientes agrupa por paciente, em ordem estável, com [] para quem não tem plano", async () => {
+    const r = await comRollback(async (tx) => {
+      const [a, b, c] = await terapiasDeTeste(tx, "lt");
+      const cadastrar = async (nome: string, terapias: EntradaCadastroDePaciente["terapias"]) => {
+        const cadastro = await cadastrarPacienteNaTransacao(tx, {
+          nome: `${nome} ${SUFIXO}`,
+          convenio: "klini",
+          terapias,
+        });
+        if (!cadastro.ok) throw new Error("cadastro deveria passar");
+        return cadastro.pacienteId;
+      };
+
+      // Fora de ordem de propósito: a ordem de saída é a do nome da terapia.
+      const ana = await cadastrar("Lote Ana", [
+        { terapiaId: c, horas: "0,5" },
+        { terapiaId: a, horas: "2,5" },
+        { terapiaId: b, horas: "1" },
+      ]);
+      const bruno = await cadastrar("Lote Bruno", [{ terapiaId: b, horas: "0,75" }]);
+      const semPlano = await inserirPacienteCru(tx, `Lote Sem ${SUFIXO}`, "klini");
+      const deFora = await cadastrar("Lote Fora", [{ terapiaId: a, horas: "3" }]);
+
+      const comandos: string[] = [];
+      const contador = {
+        $queryRaw: ((sql: TemplateStringsArray, ...valores: unknown[]) => {
+          comandos.push(sql.join("?"));
+          return tx.$queryRaw(sql, ...valores);
+        }) as ClienteDaTransacao["$queryRaw"],
+      };
+
+      return {
+        ana,
+        bruno,
+        semPlano,
+        deFora,
+        a,
+        b,
+        c,
+        // Ids repetidos, inválidos e em ordem qualquer.
+        lote: await planosDosPacientesComCliente(contador, [semPlano, bruno, ana, bruno, 0, -1, 1.5]),
+        consultas: comandos.length,
+        deNovo: await planosDosPacientesComCliente(tx, [ana, bruno, semPlano]),
+        vazio: await planosDosPacientesComCliente(contador, []),
+        consultasDepoisDoVazio: comandos.length,
+        individual: await planoDoPacienteComCliente(tx, ana),
+      };
+    });
+
+    const terapia = (id: number, letra: string, minutosSemanais: number) => ({
+      terapiaId: id,
+      terapiaNome: `Plano ${letra} lt ${SUFIXO}`,
+      minutosSemanais,
+    });
+
+    expect(r.lote).toEqual({
+      [r.ana]: [terapia(r.a, "A", 150), terapia(r.b, "B", 60), terapia(r.c, "C", 30)],
+      [r.bruno]: [terapia(r.b, "B", 45)],
+      [r.semPlano]: [],
+    });
+    // Só os pedidos: o paciente de fora não entra, nem os ids inválidos.
+    expect(Object.keys(r.lote).map(Number).sort()).toEqual(
+      [r.ana, r.bruno, r.semPlano].sort(),
+    );
+    expect(r.lote[r.deFora]).toBeUndefined();
+    // Uma consulta para o lote inteiro; nenhuma para a lista vazia.
+    expect(r.consultas).toBe(1);
+    expect(r.vazio).toEqual({});
+    expect(r.consultasDepoisDoVazio).toBe(1);
+    // Estável: outra ordem de entrada, mesmo resultado.
+    expect(r.deNovo).toEqual(r.lote);
+    // planoDoPaciente é a mesma consulta para um id só.
+    expect(r.individual).toEqual(r.lote[r.ana]);
+  });
+
+  it("planosDosPacientes não devolve carteirinha, CRM nem nome do médico", async () => {
+    const CARTEIRINHA = "SENTINELA55501";
+    const CRM = "5550199";
+    const MEDICO = "Dra. Sentinela Plano";
+
+    const r = await comRollback(async (tx) => {
+      const [a] = await terapiasDeTeste(tx, "sn");
+      const cadastro = await cadastrarPacienteNaTransacao(tx, {
+        nome: `Lote Sentinela ${SUFIXO}`,
+        convenio: "sulamerica",
+        terapias: [{ terapiaId: a, horas: "1" }],
+      });
+      if (!cadastro.ok) throw new Error("cadastro deveria passar");
+
+      await tx.$executeRaw`
+        UPDATE "paciente" SET "numero_carteirinha" = ${CARTEIRINHA}, "crm_medico" = ${CRM}
+        WHERE "id" = ${cadastro.pacienteId}
+      `;
+      await tx.$executeRaw`
+        INSERT INTO "autorizacao_sulamerica" ("paciente_id", "data_inicio", "prazo_meses", "nome_medico")
+        VALUES (${cadastro.pacienteId}, CURRENT_DATE, 6, ${MEDICO})
+      `;
+
+      return planosDosPacientesComCliente(tx, [cadastro.pacienteId]);
+    });
+
+    const texto = JSON.stringify(r);
+    expect(Object.values(r)[0]).toHaveLength(1);
+    expect(texto).not.toContain(CARTEIRINHA);
+    expect(texto).not.toContain(CRM);
+    expect(texto).not.toContain(MEDICO);
+    expect(texto).not.toMatch(/carteirinha|crm|medico/i);
   });
 
   it("o preenchimento da migration dá klini, sulamerica, NULL e NULL (e não sobrescreve)", async () => {

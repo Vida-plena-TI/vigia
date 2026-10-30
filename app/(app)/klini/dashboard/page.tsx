@@ -3,6 +3,7 @@ import Link from "next/link";
 
 import { Button } from "@/components/ui/button";
 import {
+  ROTA_KLINI_PACIENTES,
   ROTA_NOVA_REQUISICAO,
   podeAcessarRota,
   podeAlterarSituacaoDeRequisicao,
@@ -13,6 +14,7 @@ import {
   contarPorStatus,
   listarGuiasDoDashboard,
 } from "@/lib/domain/guias";
+import { planosDosPacientes } from "@/lib/domain/plano-terapias";
 
 import { ListaDeGuias } from "./lista-de-guias";
 import { ResumoDeStatus } from "./resumo-de-status";
@@ -37,6 +39,12 @@ export const metadata: Metadata = {
  * que troca a situação da requisição em cada guia: só o admin o vê, e a
  * Server Action reconfirma o papel no banco.
  *
+ * O plano semanal de cada paciente (regra 23) vem junto, numa consulta só para
+ * a lista inteira, depois das guias (é delas que saem os ids). A consulta lê só
+ * `plano_terapia` e `terapia` — nada de carteirinha, CRM ou médico — e por isso
+ * vai para os dois papéis. O que muda por papel é só o link "Cadastrar plano",
+ * pela mesma regra do botão "Nova requisição": a aba Cadastro é do admin.
+ *
  * Esta é uma tela densa: ocupa a largura toda disponível, alinhada à mesma
  * borda esquerda do cabeçalho. As telas de formulário fazem o contrário
  * (medida estreita) — a diferença de largura é o que diz, antes de qualquer
@@ -47,6 +55,11 @@ export default async function DashboardPage() {
     listarGuiasDoDashboard(),
     requireUsuario(),
   ]);
+
+  const pacientes = agruparPorPaciente(guias);
+  const planos = await planosDosPacientes(
+    pacientes.map((paciente) => paciente.id),
+  );
 
   const podeCriarRequisicao = podeAcessarRota(
     usuario.papel,
@@ -79,7 +92,13 @@ export default async function DashboardPage() {
       <ResumoDeStatus resumo={contarPorStatus(guias)} />
 
       <ListaDeGuias
-        pacientes={agruparPorPaciente(guias)}
+        pacientes={pacientes}
+        planos={planos}
+        rotaDoCadastro={
+          podeAcessarRota(usuario.papel, ROTA_KLINI_PACIENTES)
+            ? ROTA_KLINI_PACIENTES
+            : null
+        }
         podeAlterarSituacao={podeAlterarSituacaoDeRequisicao(usuario.papel)}
       />
     </div>

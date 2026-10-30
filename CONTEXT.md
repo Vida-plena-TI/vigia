@@ -551,6 +551,41 @@ teste passar hoje e mentir no mês que vem.
 
 ## Decisões tomadas durante a implementação (não estavam no relatório original)
 
+- **Plano semanal no painel da Klini (30/10/2026, branch `feat/painel-plano-semanal`, a
+  partir de `feat/cadastro-plano-ui` em `2eccd38`; sem commit, sem merge, sem push).**
+  Nenhuma migration. Só leitura do plano (regra 23).
+  - **Onde**: ao abrir um paciente em `/klini/dashboard` (o acordeão que já existia), abaixo
+    das guias, a seção "Plano semanal" (`app/(app)/klini/dashboard/plano-semanal.tsx`):
+    uma linha por terapia, "Fono — 2 h 30 min por semana" (`textoDaTerapiaDoPlano`, sobre
+    `formatarMinutosSemanais`), na ordem de nome da terapia. Sem total, sem soma, sem
+    cruzar com autorizado/saldo. Sem plano: "Plano semanal não cadastrado." e, só para quem
+    acessa `/klini/pacientes` (admin, por `podeAcessarRota`), o link "Cadastrar plano".
+    Colunas, cabeçalho do paciente e o resto do painel não mudaram; o painel da SulAmérica
+    não foi tocado.
+  - **Carregado com a página, numa consulta só**: `planosDosPacientes(ids)` em
+    `plano-terapias.ts` (`WHERE paciente_id = ANY(...)`, ordem `paciente_id, lower(nome
+    da terapia), id`), chamada depois das guias com os ids da lista. Devolve um objeto
+    por id com `[]` para quem não tem plano; ids inválidos/repetidos são ignorados; lista
+    vazia não vai ao banco. `planoDoPaciente` passou a delegar para ela (mesmo SELECT).
+    Escolhido no lugar de "sob demanda" porque não cria Server Action nova (que precisaria
+    de autorização própria e seria mais uma porta), e o plano é pequeno.
+  - **Sem dado sensível**: a consulta lê só `plano_terapia` e `terapia`. Vai aos dois
+    papéis.
+  - **Testes** (725 em 45 arquivos; eram 710 em 43): `plano-no-painel.test.ts` (página
+    de verdade com `$queryRaw` dublê: recepção recebe o plano e `rotaDoCadastro` null,
+    admin recebe a rota; duas consultas só, uma do plano com os ids sem repetir; nenhum SQL
+    nem o payload cita `numero_carteirinha`/`crm_medico`/`nome_medico` ou os campos camel;
+    **varredura**: a página só importa `guias` e `plano-terapias` do domínio, e nem esses
+    módulos, nem `tempo-semanal.ts`, nem os arquivos do painel citam as colunas);
+    `plano-semanal.test.ts` (texto da linha, ordem, sem total, título rotulando a seção,
+    link só com rota); dois testes novos em `plano-terapias.integration.test.ts`
+    (agrupamento, ordem estável, `[]`, ids inválidos, uma consulta, nada para lista vazia,
+    `planoDoPaciente` igual; e paciente com carteirinha, CRM e nome do médico gravados sem
+    nenhum deles no resultado); `lista-de-guias.test.ts` confere que o recolhido não mostra
+    o plano. Mutação conferida: dando o link à recepção, o teste cai.
+  - **Não testado**: navegador (abrir/fechar com Tab/Enter, foco no link, layout no
+    celular) — roteiro em pendências.
+
 - **Aba Cadastro e encaminhamento só de paciente existente (29/10/2026, branch
   `feat/cadastro-plano-ui`, a partir de `feat/cadastro-plano-dominio` em `92ec032`; sem
   commit, sem merge, sem push).** Regra 24. Nenhuma migration.
@@ -2699,6 +2734,12 @@ parecer íntegro na tela.
       `/sulamerica/pacientes`). **Interação manual no navegador pendente** — roteiro em
       pendências.
 
+- [x] **Plano semanal no painel da Klini** (30/10/2026, branch `feat/painel-plano-semanal`,
+      a partir de `feat/cadastro-plano-ui` em `2eccd38`; **sem commit, sem merge e sem
+      push**). Nenhuma migration. `tsc --noEmit` limpo, eslint limpo nos arquivos tocados
+      (segue só o erro antigo de `acoes-da-guia.tsx`), **725 testes em 45 arquivos**, `next
+      build` concluído. **Interação manual no navegador pendente** — roteiro em pendências.
+
 - [x] Substituir guias da mesma terapia (29/10/2026, branch `feat/substituir-requisicao`,
       **sem commit, sem merge e sem push**). Ver regra 22 e a decisão correspondente.
       Nenhuma migration.
@@ -2756,6 +2797,25 @@ sessões seguintes precisam do plano completo para não implementar a fase errad
   aba (convênio NULL). O preenchimento é manual: "Editar" na lista, ou digitar o nome no
   formulário do Cadastro do convênio certo. Nada bloqueia o paciente sem plano — o plano é
   informativo.
+- **Plano semanal no painel: roteiro manual de navegador** (nada disto foi feito; sem
+  navegador nesta sessão). Pré-requisito: um paciente com guias e plano (ex.: Fono 2,5 h e
+  TO 0,75 h, cadastrado pela aba Cadastro) e outro com guias e sem plano (legado).
+  1. **Admin, com plano**: `/klini/dashboard`, clicar no paciente → tabela de guias como
+     antes e, abaixo, "Plano semanal" com "Fono — 2 h 30 min por semana" e "TO — 45 min por
+     semana". Nenhum total. Fechar e abrir de novo.
+  2. **Admin, sem plano**: abrir o legado → "Plano semanal não cadastrado. Cadastrar
+     plano"; o link leva a `/klini/pacientes`.
+  3. **Recepção**: logar como recepção, abrir os mesmos dois pacientes → o mesmo plano; no
+     legado só o texto, **sem** link. Ver o código-fonte da página / a aba de rede: nenhum
+     número de carteirinha, CRM ou nome de médico.
+  4. **Teclado**: Tab até o nome do paciente, Enter abre (o plano aparece), Enter fecha; no
+     admin sem plano, Tab a partir do botão do paciente chega ao "Cadastrar plano" depois
+     das ações das guias, com anel de foco visível.
+  5. **Celular** (~360px): o plano fica abaixo dos blocos das guias, linhas longas quebram,
+     nada rola de lado; nenhuma cor nova (texto na tinta normal, título cinza).
+  6. **Busca**: digitar parte do nome → o paciente abre sozinho, com o plano.
+  7. **SulAmérica**: `/sulamerica/dashboard` igual a antes.
+
 - **Aba Cadastro: roteiro manual de navegador** (nada disto foi feito; sem navegador nesta
   sessão). Como admin:
   1. **Cadastrar na Klini com 2 terapias**: menu Klini → "Cadastro" (`/klini/pacientes`).

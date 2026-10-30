@@ -357,20 +357,9 @@ export async function planoDoPacienteComCliente(
   cliente: Pick<Prisma.TransactionClient, "$queryRaw">,
   pacienteId: number,
 ): Promise<TerapiaDoPlano[]> {
-  if (!Number.isInteger(pacienteId) || pacienteId <= 0) {
-    return [];
-  }
+  const planos = await planosDosPacientesComCliente(cliente, [pacienteId]);
 
-  return cliente.$queryRaw<TerapiaDoPlano[]>`
-    SELECT
-      t."id"                AS "terapiaId",
-      t."nome"              AS "terapiaNome",
-      pt."minutos_semanais" AS "minutosSemanais"
-    FROM "plano_terapia" pt
-    JOIN "terapia" t ON t."id" = pt."terapia_id"
-    WHERE pt."paciente_id" = ${pacienteId}
-    ORDER BY lower(t."nome"), t."id"
-  `;
+  return planos[pacienteId] ?? [];
 }
 
 /** As terapias do plano de um paciente, com os minutos por semana. */
@@ -378,4 +367,67 @@ export async function planoDoPaciente(
   pacienteId: number,
 ): Promise<TerapiaDoPlano[]> {
   return planoDoPacienteComCliente(getPrismaClient(), pacienteId);
+}
+
+/** Os planos de vários pacientes, por id de paciente. */
+export type PlanosPorPaciente = Record<number, TerapiaDoPlano[]>;
+
+/**
+ * {@link planosDosPacientes} num cliente dado — o teste passa a transação.
+ *
+ * É a mesma consulta de {@link planoDoPaciente} (que delega para cá), com
+ * `ANY` no lugar de `=`: uma ida ao banco para a lista inteira do painel, em
+ * vez de uma por paciente.
+ *
+ * Lê **só** `plano_terapia` e `terapia`: nenhuma coluna do paciente entra no
+ * SELECT, então carteirinha, CRM e nome do médico não têm por onde chegar ao
+ * painel (o teste de varredura de `app/(app)/klini/dashboard` afirma isso).
+ */
+export async function planosDosPacientesComCliente(
+  cliente: Pick<Prisma.TransactionClient, "$queryRaw">,
+  pacienteIds: readonly number[],
+): Promise<PlanosPorPaciente> {
+  const ids = [
+    ...new Set(pacienteIds.filter((id) => Number.isInteger(id) && id > 0)),
+  ];
+
+  // Todo id pedido tem entrada: `[]` é "sem plano", não "não perguntado".
+  const planos: PlanosPorPaciente = {};
+  for (const id of ids) {
+    planos[id] = [];
+  }
+
+  if (ids.length === 0) {
+    return planos;
+  }
+
+  const linhas = await cliente.$queryRaw<
+    (TerapiaDoPlano & { pacienteId: number })[]
+  >`
+    SELECT
+      pt."paciente_id"      AS "pacienteId",
+      t."id"                AS "terapiaId",
+      t."nome"              AS "terapiaNome",
+      pt."minutos_semanais" AS "minutosSemanais"
+    FROM "plano_terapia" pt
+    JOIN "terapia" t ON t."id" = pt."terapia_id"
+    WHERE pt."paciente_id" = ANY(${ids}::int[])
+    ORDER BY pt."paciente_id", lower(t."nome"), t."id"
+  `;
+
+  for (const { pacienteId, ...terapia } of linhas) {
+    planos[pacienteId].push(terapia);
+  }
+
+  return planos;
+}
+
+/**
+ * Os planos dos pacientes dados, numa consulta só. Paciente sem plano vem com
+ * `[]`; ids inválidos ou repetidos são ignorados.
+ */
+export async function planosDosPacientes(
+  pacienteIds: readonly number[],
+): Promise<PlanosPorPaciente> {
+  return planosDosPacientesComCliente(getPrismaClient(), pacienteIds);
 }

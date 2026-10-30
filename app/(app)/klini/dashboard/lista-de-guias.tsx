@@ -13,6 +13,10 @@ import {
   textoDeCopia,
 } from "@/lib/domain/guias-apresentacao";
 import type { GuiaDoDashboard, PacienteComGuias } from "@/lib/domain/guias";
+import type {
+  PlanosPorPaciente,
+  TerapiaDoPlano,
+} from "@/lib/domain/plano-terapias";
 
 import { AcoesDaGuia } from "./acoes-da-guia";
 import { BarraDeSelecao } from "./barra-de-selecao";
@@ -21,6 +25,7 @@ import {
   formatarData,
   normalizarParaBusca,
 } from "./formato";
+import { PlanoSemanal } from "./plano-semanal";
 import {
   SeloDeSituacao,
   SituacaoDaRequisicao,
@@ -54,12 +59,20 @@ import { StatusBadge } from "./status-badge";
  * `podeAlterarSituacao` decide só se o botão de trocar a situação da
  * requisição aparece em cada guia (conveniência visual — quem recusa é a
  * Server Action). O selo da situação aparece para todos.
+ *
+ * `planos` traz o plano semanal de cada paciente (vazio = sem plano), mostrado
+ * dentro do painel aberto, abaixo das guias. `rotaDoCadastro` é o destino do
+ * link "Cadastrar plano" — `null` para quem não acessa a aba Cadastro.
  */
 export function ListaDeGuias({
   pacientes,
+  planos,
+  rotaDoCadastro,
   podeAlterarSituacao,
 }: {
   pacientes: PacienteComGuias[];
+  planos: PlanosPorPaciente;
+  rotaDoCadastro: string | null;
   podeAlterarSituacao: boolean;
 }) {
   const [busca, setBusca] = useState("");
@@ -207,6 +220,8 @@ export function ListaDeGuias({
                 alternarSelecao(paciente.id, marcado)
               }
               podeAlterarSituacao={podeAlterarSituacao}
+              plano={planos[paciente.id] ?? []}
+              rotaDoCadastro={rotaDoCadastro}
             />
           ))}
         </div>
@@ -237,6 +252,8 @@ function PacienteRecolhivel({
   selecionado,
   aoAlternarSelecao,
   podeAlterarSituacao,
+  plano,
+  rotaDoCadastro,
 }: {
   paciente: PacienteComGuias;
   aberto: boolean;
@@ -244,6 +261,8 @@ function PacienteRecolhivel({
   selecionado: boolean;
   aoAlternarSelecao: (marcado: boolean) => void;
   podeAlterarSituacao: boolean;
+  plano: readonly TerapiaDoPlano[];
+  rotaDoCadastro: string | null;
 }) {
   const idPainel = useId();
   const pior = piorStatus(paciente.guias);
@@ -374,6 +393,8 @@ function PacienteRecolhivel({
                 </li>
               ))}
             </ul>
+
+            <PlanoSemanal plano={plano} rotaDoCadastro={rotaDoCadastro} />
           </>
         ) : null}
       </div>

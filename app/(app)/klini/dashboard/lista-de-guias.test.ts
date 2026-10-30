@@ -58,6 +58,8 @@ function cabecalho(guias: GuiaDoDashboard[]): string {
   return renderToStaticMarkup(
     createElement(ListaDeGuias, {
       pacientes: [paciente],
+      planos: { 1: [{ terapiaId: 1, terapiaNome: "Fono", minutosSemanais: 150 }] },
+      rotaDoCadastro: "/klini/pacientes",
       podeAlterarSituacao: true,
     }),
   );
@@ -71,8 +73,10 @@ describe("cabeçalho do paciente recolhido", () => {
     expect(html).toContain("lucide-clock");
     // Sem contagem: um indicador só, mesmo com mais de uma solicitada.
     expect(html.match(/data-status="Solicitada"/g)).toHaveLength(1);
-    // Painel recolhido: nenhuma linha de guia, nenhum botão de aprovar.
+    // Painel recolhido: nenhuma linha de guia, nenhum botão de aprovar,
+    // nenhum plano semanal.
     expect(html).not.toContain(">Aprovar<");
+    expect(html).not.toContain("Plano semanal");
   });
 
   it("não mostra nada quando todas as requisições estão aprovadas", () => {
