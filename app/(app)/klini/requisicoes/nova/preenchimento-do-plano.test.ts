@@ -46,33 +46,49 @@ function preenchidas(
 }
 
 describe("linhasDoPlano", () => {
-  it("cria uma linha por terapia, com a terapia escolhida e os padrões de sempre", () => {
+  it("cria uma linha por terapia, com a terapia escolhida, a quantidade sugerida e a validade padrão", () => {
     const linhas = preenchidas();
 
     expect(linhas.map((linha) => linha.terapiaId)).toEqual(["1", "2"]);
+    // Fono 2 h 30 min → 2 por semana → 8; TO 1 h → 1 por semana → 4.
+    expect(linhas.map((linha) => linha.qtdAutorizada)).toEqual(["8", "4"]);
     for (const linha of linhas) {
-      expect(linha.qtdAutorizada).toBe(QTD_AUTORIZADA_PADRAO);
-      expect(linha.qtdAutorizada).toBe("4");
       expect(linha.validade).toBe(VALIDADE);
+      expect(linha.doPlano?.qtdAutorizada).toBe(linha.qtdAutorizada);
     }
   });
 
-  it("não calcula nada a partir do tempo semanal", () => {
-    const [curta] = linhasDoPlano(
-      [{ terapiaId: 1, nome: "Fono", minutosSemanais: 15 }],
-      VALIDADE,
-      [],
-      contador(),
-    );
-    const [longa] = linhasDoPlano(
-      [{ terapiaId: 1, nome: "Fono", minutosSemanais: 10_080 }],
+  it.each([
+    [30, "4"],
+    [60, "4"],
+    [120, "8"],
+    [180, "12"],
+    [240, "16"],
+  ])("plano com %i min sugere %s no mês", (minutosSemanais, quantidade) => {
+    const [linha] = linhasDoPlano(
+      [{ terapiaId: 1, nome: "Fono", minutosSemanais }],
       VALIDADE,
       [],
       contador(),
     );
 
-    expect(curta.qtdAutorizada).toBe(longa.qtdAutorizada);
-    expect(curta.validade).toBe(longa.validade);
+    expect(linha.qtdAutorizada).toBe(quantidade);
+    expect(linha.validade).toBe(VALIDADE);
+  });
+
+  it("tempo inválido no plano (payload adulterado) cai no padrão 4", () => {
+    const [linha] = linhasDoPlano(
+      [{ terapiaId: 1, nome: "Fono", minutosSemanais: Number.NaN }],
+      VALIDADE,
+      [],
+      contador(),
+    );
+
+    expect(linha.qtdAutorizada).toBe(QTD_AUTORIZADA_PADRAO);
+  });
+
+  it("linha adicionada à mão continua nascendo com 4", () => {
+    expect(linhaNova(0, VALIDADE).qtdAutorizada).toBe("4");
   });
 
   it("reaproveita as chaves atuais na ordem (o foco não se perde) e cria as que faltam", () => {
@@ -118,10 +134,47 @@ describe("situacaoDaLinha", () => {
     expect(situacaoDaLinha({ ...linha, terapiaId: "2" }, VALIDADE)).toBe(
       "editada",
     );
-    // Trocar para "Escolha uma terapia" com os padrões intactos é vazia.
+    // Sem terapia, mas com a quantidade sugerida (8) no lugar do 4: editada.
     expect(situacaoDaLinha({ ...linha, terapiaId: "" }, VALIDADE)).toBe(
-      "vazia",
+      "editada",
     );
+    // Sem terapia e com os padrões de linha nova: vazia.
+    expect(
+      situacaoDaLinha(
+        { ...linha, terapiaId: "", qtdAutorizada: QTD_AUTORIZADA_PADRAO },
+        VALIDADE,
+      ),
+    ).toBe("vazia");
+  });
+
+  it("a quantidade é comparada com a SUGERIDA da linha, não com 4", () => {
+    const [fono, to] = preenchidas();
+
+    // Fono sugerida 8: continua 8 → intocada; voltar para 4 é edição.
+    expect(fono.qtdAutorizada).toBe("8");
+    expect(situacaoDaLinha(fono, VALIDADE)).toBe("do-plano");
+    expect(situacaoDaLinha({ ...fono, qtdAutorizada: "4" }, VALIDADE)).toBe(
+      "editada",
+    );
+    // TO sugerida 4: continua 4 → intocada.
+    expect(situacaoDaLinha(to, VALIDADE)).toBe("do-plano");
+    expect(situacaoDaLinha({ ...to, qtdAutorizada: "8" }, VALIDADE)).toBe(
+      "editada",
+    );
+  });
+
+  it("linha com a quantidade sugerida intocada é recarregada ao trocar de paciente", () => {
+    expect(decidirPreenchimento(preenchidas(), VALIDADE, PLANO_BRUNO)).toBe(
+      "preencher",
+    );
+    const [fono, to] = preenchidas();
+    expect(
+      decidirPreenchimento(
+        [{ ...fono, qtdAutorizada: "4" }, to],
+        VALIDADE,
+        PLANO_BRUNO,
+      ),
+    ).toBe("oferecer");
   });
 
   it("linha à mão igual a uma do plano continua sendo à mão (editada)", () => {
@@ -251,13 +304,23 @@ describe("quando consultar", () => {
 
 describe("textos", () => {
   it("referência da linha usa formatarMinutosSemanais", () => {
-    expect(textoDoPlanoNaLinha(150)).toBe("Plano: 2 h 30 min por semana");
-    expect(textoDoPlanoNaLinha(45)).toBe("Plano: 45 min por semana");
-    expect(textoDoPlanoNaLinha(120)).toBe("Plano: 2 h por semana");
+    expect(textoDoPlanoNaLinha(120)).toBe(
+      "Plano: 2 h por semana · sugestão 2 por semana, 8 no mês",
+    );
+    expect(textoDoPlanoNaLinha(150)).toBe(
+      "Plano: 2 h 30 min por semana · sugestão 2 por semana, 8 no mês",
+    );
+    expect(textoDoPlanoNaLinha(45)).toBe(
+      "Plano: 45 min por semana · sugestão 1 por semana, 4 no mês",
+    );
   });
 
   it("anúncio diz quantas terapias entraram", () => {
-    expect(anuncioDePlanoCarregado(2)).toBe("Plano carregado: 2 terapias.");
-    expect(anuncioDePlanoCarregado(1)).toBe("Plano carregado: 1 terapia.");
+    expect(anuncioDePlanoCarregado(2)).toBe(
+      "Plano carregado: 2 terapias, com quantidades sugeridas pelo plano.",
+    );
+    expect(anuncioDePlanoCarregado(1)).toBe(
+      "Plano carregado: 1 terapia, com quantidades sugeridas pelo plano.",
+    );
   });
 });

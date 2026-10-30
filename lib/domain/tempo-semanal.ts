@@ -128,3 +128,52 @@ export function minutosParaHorasDigitadas(minutos: number): string {
 
   return `${horas},${String(centesimos).padStart(2, "0").replace(/0+$/, "")}`;
 }
+
+/**
+ * Semanas que um mês conta para a sugestão de quantidade (regra 27): sempre 4,
+ * sem olhar o calendário.
+ */
+export const SEMANAS_POR_MES = 4;
+
+/**
+ * Quantidade de uma guia quando não há tempo semanal que sirva: a mesma das
+ * linhas de "Nova requisição" adicionadas à mão.
+ */
+export const QUANTIDADE_PADRAO_NO_MES = 4;
+
+/** Um minuto inteiro positivo; o resto é entrada que não dá para usar. */
+function ehMinutosValidos(minutos: number): boolean {
+  return Number.isSafeInteger(minutos) && minutos >= 1;
+}
+
+/**
+ * Autorizações por semana sugeridas pelo tempo do plano (regra 27): uma por
+ * **hora cheia**, no mínimo uma. 30 min, 1 h e 1 h 30 min dão 1; 2 h e
+ * 2 h 30 min dão 2; 3 h dá 3. A fração de hora não arredonda para cima.
+ *
+ * Entrada inválida (não inteira, zero, negativa, `NaN`) devolve 1, o mínimo:
+ * nunca zero, negativo nem `NaN`.
+ *
+ * É **sugestão** de valor inicial no formulário, nada mais: não é gravada, não
+ * entra em view nem em guia.
+ */
+export function autorizacoesPorSemana(minutos: number): number {
+  if (!ehMinutosValidos(minutos)) {
+    return 1;
+  }
+
+  return Math.max(1, Math.floor(minutos / 60));
+}
+
+/**
+ * Quantidade autorizada sugerida para o mês: {@link autorizacoesPorSemana} ×
+ * {@link SEMANAS_POR_MES}. Entrada inválida devolve
+ * {@link QUANTIDADE_PADRAO_NO_MES} (4).
+ */
+export function quantidadeSugeridaNoMes(minutos: number): number {
+  if (!ehMinutosValidos(minutos)) {
+    return QUANTIDADE_PADRAO_NO_MES;
+  }
+
+  return autorizacoesPorSemana(minutos) * SEMANAS_POR_MES;
+}

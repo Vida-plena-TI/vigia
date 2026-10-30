@@ -697,8 +697,10 @@ export function FormularioDeRequisicao({
             <p className="max-w-prose text-xs text-muted-foreground">
               Uma linha por terapia. Ao escolher o paciente, as terapias do
               plano dele entram aqui: remova as que não foram autorizadas. A
-              quantidade e a validade (um mês a partir de hoje) são sugestões
-              editáveis, e apagar a validade deixa a guia sem prazo.
+              quantidade vem sugerida pelo plano (uma autorização por hora
+              cheia na semana, no mínimo uma, vezes 4 semanas) e a validade,
+              para um mês a partir de hoje. As duas são editáveis, e apagar a
+              validade deixa a guia sem prazo.
             </p>
             {consultaDoNome?.estado === "buscando" ? (
               <p className="text-xs text-muted-foreground">
@@ -951,7 +953,8 @@ const CLASSES_DO_SELECT =
  * A linha com erro ganha o mesmo filete de margem carmim das guias esgotadas
  * do painel: é o canal que faz o erro ser achado pela borda, sem leitura.
  *
- * `referenciaDoPlano` ("Plano: 2 h 30 min por semana") é só leitura: aparece
+ * `referenciaDoPlano` ("Plano: 2 h por semana · sugestão 2 por semana, 8 no
+ * mês") é só leitura: aparece
  * quando a terapia escolhida está no plano do paciente digitado, e não entra
  * no formulário enviado.
  */
@@ -1031,6 +1034,7 @@ function LinhaDeTerapiaDoFormulario({
             className="h-9 text-right"
             value={linha.qtdAutorizada}
             aria-invalid={temErro ? true : undefined}
+            aria-describedby={referenciaDoPlano ? idReferencia : undefined}
             onChange={(evento) =>
               aoAlterar(linha.chave, "qtdAutorizada", evento.target.value)
             }
@@ -1074,7 +1078,10 @@ function LinhaDeTerapiaDoFormulario({
       </div>
 
       {referenciaDoPlano ? (
-        <p id={idReferencia} className="text-xs text-muted-foreground">
+        <p
+          id={idReferencia}
+          className="text-xs break-words text-muted-foreground"
+        >
           {referenciaDoPlano}
         </p>
       ) : null}

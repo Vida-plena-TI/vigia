@@ -5,25 +5,33 @@
  * Módulo puro, sem React e sem banco: o formulário importa daqui e o teste
  * exercita os casos sem DOM.
  *
- * O plano só diz **quais** terapias. Quantidade e validade de uma linha
- * preenchida pelo plano são as mesmas de uma linha nova (4 e hoje + 1 mês);
- * nada é calculado a partir do tempo semanal.
+ * O plano diz **quais** terapias e, desde a regra 27, sugere a quantidade
+ * inicial de cada uma pelo tempo semanal (`quantidadeSugeridaNoMes`: uma
+ * autorização por hora cheia, no mínimo uma, × 4 semanas). A validade é a de
+ * uma linha nova (hoje + 1 mês). Tudo editável, e nada disso é gravado além do
+ * que o usuário enviar.
  *
  * A regra que organiza o resto: **o preenchimento nunca apaga trabalho do
  * usuário.** Ele só troca as linhas quando todas estão vazias ou são linhas que
  * o próprio preenchimento criou e que ninguém editou. Remover uma linha
  * preenchida não conta como edição — as que sobraram continuam intocadas.
  */
-import { formatarMinutosSemanais } from "@/lib/domain/tempo-semanal";
+import {
+  autorizacoesPorSemana,
+  formatarMinutosSemanais,
+  QUANTIDADE_PADRAO_NO_MES,
+  quantidadeSugeridaNoMes,
+} from "@/lib/domain/tempo-semanal";
 
 /**
- * Quantidade que uma linha de terapia já nasce preenchida, até o usuário mudar.
+ * Quantidade que uma linha **adicionada à mão** já nasce preenchida, até o
+ * usuário mudar. (A linha do plano nasce com a sugestão do tempo semanal.)
  *
  * É só um valor inicial, não um piso nem um limite: o campo continua livre para
  * ser apagado e redigitado, e a validação de "inteiro > 0" (no formulário e na
  * Server Action) não sabe deste número.
  */
-export const QTD_AUTORIZADA_PADRAO = "4";
+export const QTD_AUTORIZADA_PADRAO = String(QUANTIDADE_PADRAO_NO_MES);
 
 /** Os três campos editáveis de uma linha, como texto (é o que um `input` produz). */
 export type CamposDaLinha = {
@@ -44,7 +52,8 @@ export type CamposDaLinha = {
  * do meio, e o texto digitado escorregaria para a linha de baixo.
  *
  * `doPlano` guarda os valores com que o preenchimento criou a linha (`null`
- * para linha criada à mão). Comparar com ele é o que diz se o usuário mexeu.
+ * para linha criada à mão), inclusive a quantidade **sugerida** daquela linha.
+ * Comparar com ele é o que diz se o usuário mexeu.
  */
 export type LinhaDoFormulario = CamposDaLinha & {
   chave: number;
@@ -81,8 +90,8 @@ export function linhaNova(
 }
 
 /**
- * Uma linha por terapia do plano, com a terapia escolhida e os mesmos padrões
- * de uma linha nova.
+ * Uma linha por terapia do plano, com a terapia escolhida, a quantidade
+ * sugerida pelo tempo semanal dela e a validade de uma linha nova.
  *
  * `chavesAtuais` são reaproveitadas na ordem: a linha que já estava na tela
  * continua sendo o mesmo elemento do DOM com outro valor, então quem estava
@@ -97,7 +106,7 @@ export function linhasDoPlano(
   return terapias.map((terapia, indice) => {
     const campos: CamposDaLinha = {
       terapiaId: String(terapia.terapiaId),
-      qtdAutorizada: QTD_AUTORIZADA_PADRAO,
+      qtdAutorizada: String(quantidadeSugeridaNoMes(terapia.minutosSemanais)),
       validade: validadePadrao,
     };
 
@@ -113,7 +122,8 @@ export type SituacaoDaLinha = "vazia" | "do-plano" | "editada";
 
 /**
  * - `vazia`: nenhuma terapia escolhida e os dois padrões intactos;
- * - `do-plano`: criada pelo preenchimento e com os valores dele;
+ * - `do-plano`: criada pelo preenchimento e com os valores dele — a
+ *   quantidade comparada é a **sugerida** daquela linha, não o 4;
  * - `editada`: qualquer outra coisa — linha à mão com algo escolhido ou
  *   mudado, ou linha do plano em que o usuário mexeu.
  */
@@ -221,14 +231,17 @@ export function nomeEstaNaLista(
 /** Espera depois da última tecla antes de consultar o plano. */
 export const ESPERA_DA_CONSULTA_MS = 350;
 
-/** Referência somente leitura na linha: "Plano: 2 h 30 min por semana". */
+/**
+ * Referência somente leitura na linha:
+ * "Plano: 2 h por semana · sugestão 2 por semana, 8 no mês".
+ */
 export function textoDoPlanoNaLinha(minutosSemanais: number): string {
-  return `Plano: ${formatarMinutosSemanais(minutosSemanais)} por semana`;
+  return `Plano: ${formatarMinutosSemanais(minutosSemanais)} por semana · sugestão ${autorizacoesPorSemana(minutosSemanais)} por semana, ${quantidadeSugeridaNoMes(minutosSemanais)} no mês`;
 }
 
 /** Anúncio para leitor de tela depois de preencher. */
 export function anuncioDePlanoCarregado(quantidade: number): string {
-  return `Plano carregado: ${quantidade} ${quantidade === 1 ? "terapia" : "terapias"}.`;
+  return `Plano carregado: ${quantidade} ${quantidade === 1 ? "terapia" : "terapias"}, com quantidades sugeridas pelo plano.`;
 }
 
 export const ANUNCIO_SEM_PLANO = "Paciente sem plano cadastrado.";

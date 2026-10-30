@@ -272,7 +272,7 @@ describe.skipIf(!temBanco)("Nova requisição puxa o plano do paciente", () => {
     }
   });
 
-  it("fluxo: Cadastro com plano → Encaminhamento → plano → remover uma linha → requisição com as que sobraram", async () => {
+  it("fluxo: Cadastro (Fono 2 h, TO 1 h) → Encaminhamento → plano → linhas Fono 8 e TO 4 → requisição com essas quantidades", async () => {
     const resultado = await comRollback(async (tx) => {
       const { fono, to } = await criarFonoETo(tx);
       const nome = `Paciente Fluxo Plano ${SUFIXO}`;
@@ -280,7 +280,7 @@ describe.skipIf(!temBanco)("Nova requisição puxa o plano do paciente", () => {
 
       await cadastrar(tx, nome, [
         { terapiaId: fono, horas: "2" },
-        { terapiaId: to, horas: "1,5" },
+        { terapiaId: to, horas: "1" },
       ]);
 
       // Antes do encaminhamento: nada a preencher, e a criação recusa como sempre.
@@ -298,10 +298,8 @@ describe.skipIf(!temBanco)("Nova requisição puxa o plano do paciente", () => {
         throw new Error("o plano deveria ter sido encontrado");
       }
 
-      // Linhas como a tela as preenche; o usuário tira a TO.
-      const linhas = linhasPreenchidas(plano.terapias, validadePadrao).filter(
-        (linha) => linha.terapiaId !== String(to),
-      );
+      // Linhas como a tela as preenche, enviadas sem mexer.
+      const linhas = linhasPreenchidas(plano.terapias, validadePadrao);
 
       const criada = await criarRequisicaoNaTransacao(tx, {
         pacienteNome: nome,
@@ -318,6 +316,7 @@ describe.skipIf(!temBanco)("Nova requisição puxa o plano do paciente", () => {
         JOIN "requisicao" r ON r."id" = rt."requisicao_id"
         JOIN "paciente" p ON p."id" = r."paciente_id"
         WHERE lower(p."nome") = lower(${nome})
+        ORDER BY rt."terapia_id"
       `;
 
       return { antes, recusa, plano, linhas, criada, guias, fono, to, validadePadrao };
@@ -326,19 +325,28 @@ describe.skipIf(!temBanco)("Nova requisição puxa o plano do paciente", () => {
     expect(resultado.antes).toEqual({ encontrado: false });
     expect(resultado.recusa).toEqual({ ok: false, erro: ERRO_SEM_ENCAMINHAMENTO });
     expect(resultado.plano.encontrado).toBe(true);
-    expect(resultado.linhas.map((linha) => linha.terapiaId)).toEqual([
-      String(resultado.fono),
+    expect(
+      resultado.linhas.map((linha) => [linha.terapiaId, linha.qtdAutorizada]),
+    ).toEqual([
+      [String(resultado.fono), "8"],
+      [String(resultado.to), "4"],
     ]);
     expect(resultado.criada).toMatchObject({
       ok: true,
       requisicaoCriada: true,
-      terapiasAdicionadas: 1,
+      terapiasAdicionadas: 2,
     });
-    // Quantidade e validade são os padrões de sempre: nada saiu do tempo semanal.
+    // A quantidade gravada é a que o formulário enviou (a sugerida); a
+    // validade é a padrão. Nada do plano é gravado além disso.
     expect(resultado.guias).toEqual([
       {
         terapiaId: resultado.fono,
-        qtdAutorizada: Number(QTD_AUTORIZADA_PADRAO),
+        qtdAutorizada: 8,
+        validade: resultado.validadePadrao,
+      },
+      {
+        terapiaId: resultado.to,
+        qtdAutorizada: 4,
         validade: resultado.validadePadrao,
       },
     ]);
@@ -415,9 +423,10 @@ describe.skipIf(!temBanco)("Nova requisição puxa o plano do paciente", () => {
       });
 
       const depois = await tx.$queryRaw<
-        { numero: string; terapiaId: number; atendimentos: number }[]
+        { numero: string; terapiaId: number; qtd: number; atendimentos: number }[]
       >`
         SELECT r."numero_requisicao" AS "numero", rt."terapia_id" AS "terapiaId",
+               rt."qtd_autorizada" AS "qtd",
                (SELECT count(*)::int FROM "atendimento" a
                 WHERE a."requisicao_terapia_id" = rt."id") AS "atendimentos"
         FROM "requisicao_terapia" rt
@@ -449,12 +458,13 @@ describe.skipIf(!temBanco)("Nova requisição puxa o plano do paciente", () => {
     }
     // 333 fica só com a TO (e os atendimentos dela); 444 nasce com a Fono.
     expect(resultado.depois).toEqual([
-      { numero: `333-${SUFIXO}`, terapiaId: resultado.to, atendimentos: 2 },
-      { numero: `444-${SUFIXO}`, terapiaId: resultado.fono, atendimentos: 0 },
+      { numero: `333-${SUFIXO}`, terapiaId: resultado.to, qtd: 8, atendimentos: 2 },
+      // Fono 2 h no plano → a linha sugerida 8, enviada sem edição.
+      { numero: `444-${SUFIXO}`, terapiaId: resultado.fono, qtd: 8, atendimentos: 0 },
     ]);
   });
 
-  it("linha nova do formulário e linha do plano nascem com os mesmos padrões", async () => {
+  it("linha nova do formulário e linha do plano nascem com a mesma validade; só a quantidade difere", async () => {
     const validadePadrao = await validadePadraoDeGuia();
     const [doPlano] = linhasPreenchidas(
       [{ terapiaId: 7, nome: "Fono", minutosSemanais: 9_000 }],
@@ -462,8 +472,10 @@ describe.skipIf(!temBanco)("Nova requisição puxa o plano do paciente", () => {
     );
     const nova = linhaNova(5, validadePadrao);
 
-    expect(doPlano.qtdAutorizada).toBe(nova.qtdAutorizada);
     expect(doPlano.validade).toBe(nova.validade);
+    // 9000 min = 150 h cheias → 150 por semana → 600 no mês; a linha à mão fica em 4.
+    expect(doPlano.qtdAutorizada).toBe("600");
+    expect(nova.qtdAutorizada).toBe(QTD_AUTORIZADA_PADRAO);
   });
 
   it("nome inexistente continua recusado pela criação, com a mensagem de sempre", async () => {

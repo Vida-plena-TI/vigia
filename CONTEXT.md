@@ -482,8 +482,9 @@ teste passar hoje e mentir no mês que vem.
       converte para minutos inteiros (`lib/domain/tempo-semanal.ts`): maior que zero, até
       168 h, passo de 15 min. **Sem cálculo**: nenhum campo derivado, nenhuma soma, e nada
       no sistema lê o plano para decidir saldo, guia ou atendimento. (Desde 30/10/2026
-      "Nova requisição" lê o plano para **sugerir** as linhas de terapia — regra 26. É
-      sugestão de tela e não decide nada.)
+      "Nova requisição" lê o plano para **sugerir** as linhas de terapia — regra 26 — e,
+      desde a regra 27, a quantidade inicial de cada linha pelo tempo semanal. É sugestão
+      de tela, editável, e não decide nada.)
     - **Cadastro de paciente** (`cadastrarPaciente` em `lib/domain/plano-terapias.ts`):
       nome + convênio + ao menos uma terapia (sem repetir terapia na mesma entrada), numa
       transação. Paciente novo → nasce com o convênio e o plano. Existe com o **mesmo**
@@ -577,12 +578,12 @@ teste passar hoje e mentir no mês que vem.
     nome que casa com um paciente **com encaminhamento**, o formulário preenche as linhas de
     terapia com as terapias do plano dele (regra 23), para o usuário só **remover** as que
     não foram autorizadas.
-    - **O plano só diz quais terapias.** Cada linha preenchida nasce com a terapia escolhida
-      e os **mesmos padrões de sempre**: quantidade `4` e validade hoje + 1 mês, editáveis.
-      Nada é calculado a partir do tempo semanal, e nada do plano é gravado na requisição.
-      A linha mostra, só como referência e só leitura, "Plano: 2 h 30 min por semana"
-      (`formatarMinutosSemanais`) quando a terapia dela está no plano. Sem total, sem
-      comparar com o autorizado.
+    - **O plano diz quais terapias.** Cada linha preenchida nasce com a terapia escolhida e a
+      validade de sempre (hoje + 1 mês). ~~Quantidade `4`, nada calculado a partir do tempo
+      semanal~~: **desde a regra 27 (30/10/2026)** a quantidade inicial é sugerida pelo tempo
+      semanal. Nada do plano é gravado na requisição. A linha mostra, só como referência e
+      só leitura, "Plano: 2 h por semana · sugestão 2 por semana, 8 no mês" quando a terapia
+      dela está no plano. Sem total, sem comparar com o autorizado.
     - **Não sobrescreve trabalho do usuário.** O preenchimento automático só troca as linhas
       se todas estiverem vazias ou forem as que ele mesmo criou e ninguém editou. Remover
       linhas preenchidas **não** conta como edição. Com linha editada ou acrescentada à mão,
@@ -605,6 +606,31 @@ teste passar hoje e mentir no mês que vem.
       quantidade, validade, regra 15, regra 22). A caixinha "Substituir" e a prévia
       funcionam igual com as linhas preenchidas.
 
+27. **Tempo semanal sugere a quantidade inicial (30/10/2026, regra definida pelo usuário).**
+    Nas linhas que o plano preenche em "Nova requisição" (regra 26), a quantidade autorizada
+    inicial deixa de ser o `4` fixo:
+    - **Autorizações por semana** = `max(1, parteInteira(minutosSemanais / 60))`: **uma por
+      hora cheia, no mínimo uma**. 15, 30, 45 min, 1 h e 1 h 30 min → 1; 2 h e 2 h 30 min →
+      2; 3 h → 3; 4 h → 4.
+    - **Quantidade sugerida no mês** = autorizações por semana × `SEMANAS_POR_MES` (**4**,
+      sempre, sem olhar o calendário): 1 h → 4; 2 h → 8; 3 h → 12; 4 h → 16.
+    - Funções puras `autorizacoesPorSemana` e `quantidadeSugeridaNoMes` em
+      `lib/domain/tempo-semanal.ts` (sem banco: o formulário as usa no navegador). Entrada
+      inválida (não inteira, < 1, `NaN`) → 1 por semana e 4 no mês; nunca zero, negativo nem
+      `NaN`.
+    - **Só sugestão**: o campo continua editável, o servidor valida a quantidade como
+      sempre (inteiro > 0) e grava o que vier do formulário. Nada é gravado do plano, nenhuma
+      coluna, nenhum campo calculado no banco, e a guia não fica ligada ao plano.
+    - Linha **adicionada à mão** (inclusive de terapia fora do plano) continua com `4`.
+    - Uma linha do plano só conta como **editada** (regra 26) se a terapia, a validade ou a
+      quantidade mudou em relação à **sugerida daquela linha** — não em relação a 4.
+    - **Isto substitui o "plano sem cálculo" (regras 23 e 26) em um ponto só**: o tempo
+      semanal sugere o valor inicial da quantidade. Continua sem soma, sem total, sem saldo
+      ou status ligados ao plano.
+    - **Ponto em aberto**: 2 h 30 min e 3 h 30 min contam a hora cheia (2 e 3), **sem
+      arredondar para cima**. Se a clínica preferir arredondar meia hora para cima, é uma
+      linha em `autorizacoesPorSemana` e a tabela do teste.
+
 ## Decisões assumidas (perguntas em aberto no relatório de auditoria original)
 
 - `paciente.nome`: único case-insensitive no banco.
@@ -620,6 +646,39 @@ teste passar hoje e mentir no mês que vem.
 - Edição de atendimento para 0 créditos continua permitida.
 
 ## Decisões tomadas durante a implementação (não estavam no relatório original)
+
+- **Quantidade sugerida pelo plano (30/10/2026, branch `feat/requisicao-qtd-pelo-plano`, a
+  partir de `feat/requisicao-puxa-plano` em `c53572d`; sem commit, sem merge, sem push).**
+  Regra 27. Nenhuma migration; servidor inalterado.
+  - **Onde**: `SEMANAS_POR_MES`, `QUANTIDADE_PADRAO_NO_MES`, `autorizacoesPorSemana` e
+    `quantidadeSugeridaNoMes` em `lib/domain/tempo-semanal.ts`, ao lado de
+    `formatarMinutosSemanais` (o pedido citava `plano-semanal.ts` "ou onde já estiver").
+    `QTD_AUTORIZADA_PADRAO` do formulário passou a ser `String(QUANTIDADE_PADRAO_NO_MES)`,
+    para o "4" morar num lugar só.
+  - **Entrada inválida**: `autorizacoesPorSemana` devolve 1 (o mínimo da regra) e
+    `quantidadeSugeridaNoMes` devolve 4. Usa `Number.isSafeInteger`, então `NaN`,
+    `Infinity`, fração e texto caem no padrão.
+  - **Intocada × editada**: `linhasDoPlano` grava a quantidade sugerida também em
+    `doPlano`, então `situacaoDaLinha` já compara com a sugerida. Consequência: linha do
+    plano com a terapia trocada para "Escolha uma terapia" só volta a ser `vazia` se a
+    quantidade for 4. Uma Fono sugerida 8 sem terapia agora conta como editada (antes,
+    com 4, era vazia).
+  - **Texto**: "Plano: 2 h por semana · sugestão 2 por semana, 8 no mês", com
+    `break-words` e ligado por `aria-describedby` ao `select` e, agora, também ao campo de
+    quantidade. Anúncio: "Plano carregado: N terapias, com quantidades sugeridas pelo
+    plano.". O texto de apoio da seção 2 explica a regra.
+  - **Testes** (803 em 49 arquivos; eram 775 em 48): `sugestao-de-quantidade.test.ts` (a
+    tabela 15…240 nas duas funções, 3 h 30 min → 3, 168 h, inválidos); em
+    `preenchimento-do-plano.test.ts` mudaram "padrões de sempre" (agora 8 e 4), "não
+    calcula nada a partir do tempo semanal" (virou a tabela 30/60/120/180/240 → 4/4/8/12/16
+    na linha) e "terapia trocada para vazio é vazia" (agora editada com 8; vazia só com 4).
+    Também mudaram o texto e o anúncio, e entraram a comparação com a sugerida, a troca de
+    paciente com a sugerida intocada × editada para 4, o tempo inválido e a linha à mão com 4.
+    Em `requisicao-puxa-plano.integration.test.ts`, o fluxo virou Fono 2 h + TO 1 h →
+    linhas 8 e 4 → guias 8 e 4 (antes: remover TO e conferir 4). "Substituir" passou a
+    conferir a quantidade 8 da Fono nova, e "linha nova e do plano com os mesmos padrões"
+    passou a conferir só a validade igual (600 × 4).
+  - **Não testado**: navegador. Roteiro nas pendências.
 
 - **Nova requisição puxa o plano (30/10/2026, branch `feat/requisicao-puxa-plano`, a partir
   de `feat/excluir-paciente-no-cadastro` em `8ddd298`; sem commit, sem merge, sem push).**
@@ -2415,9 +2474,10 @@ parecer íntegro na tela.
 - Não mandar carteirinha nem CRM para a tela Cadastro (`listarPacientesDoConvenio` traz só
   nome e plano).
 
-- Não calcular quantidade, validade nem nada a partir do tempo semanal do plano em "Nova
-  requisição": o plano só diz **quais** terapias (regra 26). Não gravar nada do plano na
-  requisição.
+- Não calcular a partir do tempo semanal do plano nada além da **sugestão de quantidade
+  inicial** da regra 27 (`quantidadeSugeridaNoMes`), nem a validade. Não gravar nada do
+  plano na requisição, não ligar guia a plano e não transformar a sugestão em piso, limite
+  ou valor recalculado no servidor. A regra da sugestão mora só em `tempo-semanal.ts`.
 - Não fazer o preenchimento automático apagar linha editada ou acrescentada à mão: com
   trabalho do usuário, só o botão "Carregar plano do paciente" troca as linhas, e com
   confirmação.
@@ -2921,6 +2981,12 @@ parecer íntegro na tela.
       arquivos**, `next build` concluído. **Interação manual no navegador pendente**:
       roteiro em pendências.
 
+- [x] **Quantidade sugerida pelo plano** (30/10/2026, branch `feat/requisicao-qtd-pelo-plano`,
+      a partir de `feat/requisicao-puxa-plano` em `c53572d`; **sem commit, sem merge e sem
+      push**). Regra 27. Nenhuma migration. `tsc --noEmit` limpo, eslint limpo nos arquivos tocados,
+      **803 testes em 49 arquivos**, `next build` concluído.
+      **Interação manual no navegador pendente**: roteiro em pendências.
+
 ### Plano de papéis e convênios — 4 fases
 
 Registrado aqui inteiro de propósito: a Fase A sozinha não explica por que existe, e as
@@ -2944,6 +3010,29 @@ sessões seguintes precisam do plano completo para não implementar a fase errad
       interativa do usuário antes de merge e publicação.
 
 ## Pendências conhecidas (não bloqueiam o próximo passo, mas não esquecer)
+
+- **Ponto em aberto da regra 27**: 2 h 30 min e 3 h 30 min contam só a hora cheia (2 e 3
+  por semana, 8 e 12 no mês), sem arredondar para cima. Confirmar com a clínica.
+- **Quantidade sugerida pelo plano: roteiro manual de navegador** (nada disto foi feito;
+  sem navegador nesta sessão). Pré-requisito: paciente A da Klini com encaminhamento e
+  plano com quatro terapias, 30 min, 1 h, 2 h e 3 h (aba Cadastro: "0,5", "1", "2", "3");
+  paciente B com encaminhamento e plano de uma terapia de 1 h 30 min. Como admin, em
+  `/klini/requisicoes/nova`:
+  1. **Sugestões**: escolher A → quatro linhas com qtd **4, 4, 8 e 12**, validade hoje + 1
+     mês, e embaixo de cada uma "Plano: 30 min por semana · sugestão 1 por semana, 4 no
+     mês", "… 1 h … 1 … 4", "… 2 h … 2 … 8", "… 3 h … 3 … 12". Leitor de tela: "Plano
+     carregado: 4 terapias, com quantidades sugeridas pelo plano.".
+  2. **Editar a quantidade**: mudar o 8 para 10 e enviar → a guia é gravada com 10 (painel).
+  3. **Trocar de paciente sem edição**: carregar A, trocar o nome para B → uma linha com 4
+     (1 h 30 min conta 1 hora cheia). Voltar para A → 4, 4, 8, 12 de novo.
+  4. **Trocar de paciente com edição**: carregar A, mudar o 12 para 11, trocar para B →
+     nada some, aparece o aviso e o botão "Carregar plano do paciente". Mudar o 8 para 4
+     (o antigo padrão) também conta como edição.
+  5. **Linha à mão**: "Adicionar outra terapia" → linha nova com **4**, mesmo escolhendo
+     uma terapia que está no plano (nesse caso a referência aparece embaixo, mas a qtd
+     fica 4).
+  6. **Celular (~360px)**: o texto "Plano: 2 h 30 min por semana · sugestão 2 por semana, 8
+     no mês" quebra dentro do bloco da linha, sem rolagem lateral; nenhuma cor nova.
 
 - **Nova requisição puxa o plano: roteiro manual de navegador** (nada disto foi feito; sem
   navegador nesta sessão). Pré-requisito: paciente A da Klini com encaminhamento e plano
