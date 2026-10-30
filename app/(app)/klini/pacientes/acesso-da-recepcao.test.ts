@@ -110,10 +110,11 @@ describe.each(PAGINAS)("página Cadastro (%s)", (convenio, carregar) => {
 
     expect(mocks.listarPacientesDoConvenio).toHaveBeenCalledExactlyOnceWith(convenio);
     expect(saida).toContain(`name="convenio" value="${convenio}"`);
-    // Rótulos visíveis e o texto de apoio das horas.
+    // Rótulos visíveis e a caixa do tempo, já em 30 minutos (regra 28).
     expect(saida).toContain("Nome do paciente");
-    expect(saida).toContain("Tempo por semana (horas)");
-    expect(saida).toContain("Digite em horas, por exemplo 2 ou 2,5.");
+    expect(saida).toContain(">Tempo por semana<");
+    expect(saida).toContain('<option value="30" selected="">30 minutos</option>');
+    expect(saida).toContain('<input type="hidden" name="horas" value="0,5"/>');
     expect(saida).toContain("Adicionar terapia");
     expect(saida).toContain("Cadastrar paciente");
     // O plano resumido e o legado sem plano.

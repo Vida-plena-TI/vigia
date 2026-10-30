@@ -478,9 +478,11 @@ teste passar hoje e mentir no mês que vem.
     - **Convênio por paciente**: `paciente.convenio` é `klini`, `sulamerica` ou NULL ("ainda
       não decidido"). Um paciente pertence a um convênio só.
     - **Plano de terapias informativo**: por paciente, minutos por semana de cada terapia
-      (`plano_terapia`). O formulário recebe horas ("2", "2,5", "2.5", "0,25") e o domínio
-      converte para minutos inteiros (`lib/domain/tempo-semanal.ts`): maior que zero, até
-      168 h, passo de 15 min. **Sem cálculo**: nenhum campo derivado, nenhuma soma, e nada
+      (`plano_terapia`). O servidor recebe horas como texto ("2", "2,5", "2.5", "0,25") e o
+      domínio converte para minutos inteiros (`lib/domain/tempo-semanal.ts`): maior que
+      zero, até 168 h, passo de 15 min. (Desde 30/10/2026 a tela não pede mais esse texto:
+      tem a caixa "Tempo por semana" com padrão de 30 minutos e gera o texto a partir dos
+      minutos — regra 28.) **Sem cálculo**: nenhum campo derivado, nenhuma soma, e nada
       no sistema lê o plano para decidir saldo, guia ou atendimento. (Desde 30/10/2026
       "Nova requisição" lê o plano para **sugerir** as linhas de terapia — regra 26 — e,
       desde a regra 27, a quantidade inicial de cada linha pelo tempo semanal. É sugestão
@@ -507,9 +509,10 @@ teste passar hoje e mentir no mês que vem.
       "Cadastro" no menu do convênio, antes de "Encaminhamentos"). Só admin: proxy,
       `requireAcessoARota` na página, `autorizarRota` na action, menu. O convênio da
       página é o convênio gravado.
-    - **Formulário**: nome do paciente + linhas "terapia + tempo por semana (horas)"
-      (catálogo de `listarTerapias`; "Adicionar terapia", "Remover"; texto de apoio
-      "Digite em horas, por exemplo 2 ou 2,5."). Na tela a terapia já escolhida em outra
+    - **Formulário**: nome do paciente + linhas "terapia + tempo por semana"
+      (catálogo de `listarTerapias`; "Adicionar terapia", "Remover"). ~~Tempo digitado em
+      horas, "Digite em horas, por exemplo 2 ou 2,5."~~ — desde 30/10/2026 é uma caixa de
+      seleção com padrão de 30 minutos (regra 28). Na tela a terapia já escolhida em outra
       linha fica desabilitada; o servidor continua recusando a repetida. "Cadastrar
       paciente" → sucesso limpa, volta o foco ao nome e mostra "Paciente cadastrado." ou
       "Plano atualizado." (paciente que já existia no convênio, ou que adotou o convênio).
@@ -631,6 +634,28 @@ teste passar hoje e mentir no mês que vem.
       arredondar para cima**. Se a clínica preferir arredondar meia hora para cima, é uma
       linha em `autorizacoesPorSemana` e a tabela do teste.
 
+28. **Tempo por semana na aba Cadastro é caixa de seleção, com padrão de 30 minutos
+    (30/10/2026, decidido com o usuário).** Vale para Klini e SulAmérica (o mesmo
+    componente, `components/cadastro-de-paciente/`).
+    - **Padrão**: toda linha **nova** (a primeira do formulário e cada "Adicionar
+      terapia") nasce com **30 minutos** escolhidos; a caixa nunca fica sem valor. O padrão
+      **não** vale para linha que vem de plano gravado.
+    - **Opções**, nesta ordem: "30 minutos", "1 hora", "1 hora e meia", "2 horas", "2 horas
+      e meia" (30, 60, 90, 120, 150 min) e "Outro (digitar)".
+    - **"Outro (digitar)"** abre, na mesma linha, "Horas" (inteiro de 0 a 168, sem vírgula
+      nem decimal; começa vazio e recebe o foco) e "Minutos" (0, 15, 30, 45; começa em 0),
+      com o total por extenso ao lado ("3 h 30 min por semana", `formatarMinutosSemanais`).
+      Total maior que zero e até 168 h. Horas vazias são recusadas ("Informe as horas por
+      semana.") — não contam como zero.
+    - **Editar**: cada linha abre com o tempo gravado. Igual a uma opção pronta → a opção;
+      senão (ex.: 3 h 15 min) → "Outro" com horas e minutos preenchidos. Abrir e salvar sem
+      mexer regrava exatamente os mesmos minutos.
+    - **O servidor continua a autoridade e não mudou**: a linha envia no campo `horas` o
+      texto em horas que a action sempre recebeu, gerado dos minutos por
+      `minutosParaHorasDigitadas` (exato, em inteiros: 90 → "1,5", 195 → "3,25"), e
+      `lerHorasSemanais`/`validarEntrada` validam como antes (> 0, múltiplo de 15, até 168 h,
+      mesmas mensagens). Action, banco, leitura, "Nova requisição" e painel intocados.
+
 ## Decisões assumidas (perguntas em aberto no relatório de auditoria original)
 
 - `paciente.nome`: único case-insensitive no banco.
@@ -646,6 +671,52 @@ teste passar hoje e mentir no mês que vem.
 - Edição de atendimento para 0 créditos continua permitida.
 
 ## Decisões tomadas durante a implementação (não estavam no relatório original)
+
+- **Tempo por semana como caixa de seleção (30/10/2026, branch `fix/cadastro-tempo-padrao`,
+  a partir da `main` em `8206875`; sem commit, sem merge, sem push).** Regra 28. Nenhuma
+  migration; action e validação do servidor intocadas.
+  - **Envio**: escolhido o caminho de menor risco — a action continua lendo `horas` como
+    texto. A caixa e os campos do "Outro" não têm `name`; cada linha tem um `<input
+    type="hidden" name="horas">` com `horasParaEnvio(estado)`, que é
+    `minutosParaHorasDigitadas(minutos)` (o inverso exato de `lerHorasSemanais`, já testado
+    para todo múltiplo de 15 até 168 h). Estado inválido envia vazio (o servidor recusa; a
+    tela já barrou antes). Mandar minutos crus exigiria mudar a action e o domínio.
+  - **Funções puras** em `lib/domain/tempo-semanal.ts`: `MINUTOS_PADRAO_DA_LINHA_NOVA`
+    (30), `OPCOES_DE_TEMPO_PRONTAS`, `ROTULO_OUTRO_TEMPO`, `MINUTOS_DO_OUTRO`, o tipo
+    `EstadoDoTempo` (`{ tipo: "pronta", minutos }` | `{ tipo: "outro", horas, minutos }`),
+    `opcaoDoTempo(minutos)`, `minutosDoEstado(estado)` (mesmas mensagens do servidor),
+    `horasParaEnvio`, `estadoDoTempoPadrao`, `estadoDoOutroVazio`. As linhas do formulário
+    (`novaLinha`, `linhasDoPlanoGravado`, `validarFormulario`) saíram de
+    `tela-de-cadastro.tsx` para `components/cadastro-de-paciente/linhas-do-plano.ts`, para
+    o teste em `node` alcançá-las.
+  - **Decisões próprias**: (1) horas vazias no "Outro" são erro, não zero (o pedido manda
+    começar vazio, e "0" precisa ser digitado de propósito para 0 h 45 min); (2) horas com
+    zeros à esquerda ("007") valem 7; (3) a mensagem de horas com vírgula no "Outro" é a
+    `ERRO_TEMPO_INVALIDO` existente ("Use um número, como 2 ou 2,5."), cujo exemplo é do
+    campo antigo — as mensagens do servidor não foram mexidas, como pedido; (4) o nome da
+    terapia chega ao leitor de tela por `aria-describedby` (span `sr-only` "Terapia 1:
+    Fono." / "ainda não escolhida."), mantendo o rótulo visível "Tempo por semana" como
+    nome acessível; o total por extenso fica num `aria-live="polite"`; (5) caixa, "Horas" e
+    "Minutos" têm 40px abaixo de `sm` (`h-10 sm:h-9`); a caixa da terapia e o "Remover"
+    ficaram como estavam; (6) o "Outro" ocupa uma segunda faixa dentro da linha (com
+    `flex-wrap`), em vez de espremer quatro campos numa fila só.
+  - **Testes**: `lib/domain/tempo-semanal-caixa.test.ts` (opções e padrão; `opcaoDoTempo`
+    nas cinco prontas, 15, 45, 3 h, 3 h 15, 3 h 30, 4 h, 168 h; ida e volta caixa → minutos
+    → texto → `lerHorasSemanais` para todo múltiplo de 15 até 168 h; recusas: 0 h 0 min,
+    168 h 15 min, horas vazias, vírgula, ponto, sinal, texto, minuto fora do passo; e o
+    servidor recusando "", "0", "0,1", "3,2", "168,25", "200" mesmo se a tela mandasse);
+    `components/cadastro-de-paciente/linhas-do-plano.test.ts` (linha nova com 30 min, a
+    primeira linha da tela renderizada com "30 minutos" marcada e "0,5" enviado, rótulo e
+    `aria-describedby`, ordem das opções, envio de cada opção pronta e do "Outro",
+    só `terapiaId` e `horas` com `name`, Editar com 2 h e 3 h 15 sem o padrão, plano
+    antigo de 30 min e de 3 h 15, salvar sem mexer regrava os mesmos minutos). Um teste
+    antigo mudou: em `app/(app)/klini/pacientes/acesso-da-recepcao.test.ts` ("admin lê só os
+    pacientes do convênio da página…"), o rótulo "Tempo por semana (horas)" e o apoio
+    "Digite em horas…" viraram "Tempo por semana", a opção "30 minutos" marcada e o campo
+    escondido `horas` com "0,5". Mutações conferidas: Editar
+    aplicando o padrão derruba 8 testes; aceitar vírgula nas horas do "Outro" derruba 3.
+  - **Não testado**: navegador (troca de opção, foco no "Horas", teclado, leitor de tela,
+    celular). Roteiro nas pendências.
 
 - **Quantidade sugerida pelo plano (30/10/2026, branch `feat/requisicao-qtd-pelo-plano`, a
   partir de `feat/requisicao-puxa-plano` em `c53572d`; sem commit, sem merge, sem push).**
@@ -2462,6 +2533,10 @@ parecer íntegro na tela.
 - Não mudar os limites do tempo semanal só no CHECK `plano_terapia_minutos_semanais_validos`
   ou só em `lib/domain/tempo-semanal.ts`, nem os convênios só no CHECK
   `paciente_convenio_valido` ou só em `CONVENIOS` (`lib/domain/convenio.ts`): mudam juntos.
+- Não aplicar o padrão de 30 minutos a linha que vem de plano gravado ("Editar"), nem
+  arredondar o tempo gravado para a opção pronta mais próxima: fora das cinco prontas, a
+  linha abre em "Outro" com o valor exato (regra 28). Não afrouxar nem mover para a tela a
+  validação do tempo: a caixa é conveniência, `lerHorasSemanais` no servidor decide.
 - Não converter horas em minutos com ponto flutuante (`Number(...) * 60`): a conta é com
   inteiros em `lerHorasSemanais`.
 - Não "escolher" convênio para paciente com encaminhamento **e** autorização: fica NULL até
@@ -2986,6 +3061,11 @@ parecer íntegro na tela.
       push**). Regra 27. Nenhuma migration. `tsc --noEmit` limpo, eslint limpo nos arquivos tocados,
       **803 testes em 49 arquivos**, `next build` concluído.
       **Interação manual no navegador pendente**: roteiro em pendências.
+- [x] **Tempo por semana em caixa de seleção na aba Cadastro** (30/10/2026, branch
+      `fix/cadastro-tempo-padrao`, a partir da `main` em `8206875`; **sem commit, sem merge
+      e sem push**). Regra 28. Nenhuma migration; servidor intocado. `tsc --noEmit` limpo,
+      eslint limpo nos arquivos tocados, **886 testes em 51 arquivos**, `next build`
+      concluído. **Interação manual no navegador pendente**: roteiro em pendências.
 
 ### Plano de papéis e convênios — 4 fases
 
@@ -3010,6 +3090,32 @@ sessões seguintes precisam do plano completo para não implementar a fase errad
       interativa do usuário antes de merge e publicação.
 
 ## Pendências conhecidas (não bloqueiam o próximo passo, mas não esquecer)
+
+- **Tempo por semana em caixa: roteiro manual de navegador** (nada disto foi feito; sem
+  navegador nesta sessão). Como admin, em `/klini/pacientes` e depois em
+  `/sulamerica/pacientes`:
+  1. **Linha nova**: a primeira linha já mostra "30 minutos". "Adicionar terapia" → a
+     linha nova também nasce com "30 minutos".
+  2. **Opções prontas**: trocar para "1 hora", "1 hora e meia", "2 horas" e "2 horas e
+     meia" em linhas diferentes; cadastrar → a lista mostra "1 h", "1 h 30 min", "2 h",
+     "2 h 30 min".
+  3. **Outro**: escolher "Outro (digitar)" → aparecem "Horas" (vazio, com o foco) e
+     "Minutos" (0) na mesma faixa. Digitar 3 e escolher 30 → "3 h 30 min por semana".
+     Noutra linha, 4 e 0 → "4 h por semana". Salvar → lista com "3 h 30 min" e "4 h".
+     Testar também Horas vazio (recusa "Informe as horas por semana."), 0 h 0 min (recusa)
+     e 168 h 15 min (recusa), cada uma com a linha marcada.
+  4. **Editar**: abrir o paciente salvo → cada linha mostra a opção certa ("1 hora e meia",
+     "Outro" com 3/30 etc.). Salvar sem mexer → a lista não muda.
+  5. **Plano antigo**: paciente cadastrado antes desta mudança com 3 h 15 min ("3,25") →
+     em Editar aparece "Outro" com 3 e 15; um com 30 min ("0,5") → aparece "30 minutos".
+  6. **Teclado**: Tab até a caixa, setas trocam a opção, "Outro" leva o foco a "Horas",
+     Tab para "Minutos" e para "Remover". Leitor de tela: a caixa anuncia "Tempo por
+     semana" e "Terapia 1: Fono.".
+  7. **Celular (~360px)**: a caixa usa o seletor nativo, os campos têm 40px, "Horas" e
+     "Minutos" ficam lado a lado e o texto por extenso quebra sem rolagem lateral; o
+     "Remover" continua em cada linha. Nenhuma cor nova.
+  8. **Recepção sem acesso**: logada como recepção, `/klini/pacientes` e
+     `/sulamerica/pacientes` levam ao painel (nada mudou no acesso).
 
 - **Ponto em aberto da regra 27**: 2 h 30 min e 3 h 30 min contam só a hora cheia (2 e 3
   por semana, 8 e 12 no mês), sem arredondar para cima. Confirmar com a clínica.

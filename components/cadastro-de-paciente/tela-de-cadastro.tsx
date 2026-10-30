@@ -15,34 +15,30 @@ import {
 import type { PacienteDoConvenio } from "@/lib/domain/plano-terapias";
 import {
   ERRO_PACIENTE_OBRIGATORIO,
-  ERRO_SEM_TERAPIA,
-  ERRO_TERAPIA_OBRIGATORIA,
-  ERRO_TERAPIA_REPETIDA,
   mensagemDeCadastro,
 } from "@/lib/domain/plano-terapias-mensagens";
 import type { TerapiaParaEscolha } from "@/lib/domain/requisicoes";
 import {
-  lerHorasSemanais,
-  minutosParaHorasDigitadas,
+  estadoDoOutroVazio,
+  type EstadoDoTempo,
+  formatarMinutosSemanais,
+  horasParaEnvio,
+  MINUTOS_DO_OUTRO,
+  minutosDoEstado,
+  OPCOES_DE_TEMPO_PRONTAS,
+  ROTULO_OUTRO_TEMPO,
 } from "@/lib/domain/tempo-semanal";
 
+import {
+  type Erro,
+  type LinhaDoFormulario,
+  linhasDoPlanoGravado,
+  novaLinha,
+  validarFormulario,
+} from "./linhas-do-plano";
 import { ListaDePacientesDoConvenio } from "./lista-de-pacientes";
 
 const ESTADO_INICIAL: EstadoCadastroDePaciente = {};
-
-/** Uma linha do formulário: os valores como estão nos campos. */
-type LinhaDoFormulario = { chave: number; terapiaId: string; horas: string };
-
-/** O erro exibido: a frase e, quando é de uma linha, o índice dela. */
-type Erro = { erro: string; linha?: number };
-
-/** Chave estável de cada linha (só para o React), única na página. */
-let ultimaChave = 0;
-
-function novaLinha(terapiaId = "", horas = ""): LinhaDoFormulario {
-  ultimaChave += 1;
-  return { chave: ultimaChave, terapiaId, horas };
-}
 
 export const MENSAGEM_PACIENTE_CADASTRADO = "Paciente cadastrado.";
 export const MENSAGEM_PLANO_ATUALIZADO = "Plano atualizado.";
@@ -128,13 +124,12 @@ export function TelaDeCadastro({
 
   function alterarLinha(
     chave: number,
-    campo: "terapiaId" | "horas",
-    valor: string,
+    mudanca: { terapiaId: string } | { tempo: EstadoDoTempo },
   ) {
     mudou();
     setLinhas((atuais) =>
       atuais.map((linha) =>
-        linha.chave === chave ? { ...linha, [campo]: valor } : linha,
+        linha.chave === chave ? { ...linha, ...mudanca } : linha,
       ),
     );
   }
@@ -153,16 +148,8 @@ export function TelaDeCadastro({
   /** "Editar" da lista: o paciente vai para o formulário, com o nome travado. */
   function editar(paciente: PacienteDoConvenio) {
     setNome(paciente.pacienteNome);
-    setLinhas(
-      paciente.plano.length > 0
-        ? paciente.plano.map((terapia) =>
-            novaLinha(
-              String(terapia.terapiaId),
-              minutosParaHorasDigitadas(terapia.minutosSemanais),
-            ),
-          )
-        : [novaLinha()],
-    );
+    // Cada linha abre com o tempo gravado; o padrão é só de linha nova.
+    setLinhas(linhasDoPlanoGravado(paciente.plano));
     setEmEdicao(true);
     setErroLocal(null);
     setMensagemDeSucesso(null);
@@ -290,8 +277,9 @@ export function TelaDeCadastro({
               ))}
             </div>
 
-            <p id="horas-apoio" className="text-xs text-muted-foreground">
-              Digite em horas, por exemplo 2 ou 2,5.
+            <p id="tempo-apoio" className="text-xs text-muted-foreground">
+              Escolha o tempo por semana. Para outro valor, use “
+              {ROTULO_OUTRO_TEMPO}” e informe horas e minutos.
             </p>
 
             <div>
@@ -351,61 +339,35 @@ export function TelaDeCadastro({
   );
 }
 
-/**
- * A validação do cliente, na ordem dos campos — as mesmas regras de
- * `validarEntrada` em `lib/domain/plano-terapias.ts`, que é a que vale.
- */
-function validarFormulario(
-  nome: string,
-  linhas: readonly LinhaDoFormulario[],
-): Erro | null {
-  if (!nome.trim()) {
-    return { erro: ERRO_PACIENTE_OBRIGATORIO };
-  }
-
-  if (linhas.length === 0) {
-    return { erro: ERRO_SEM_TERAPIA };
-  }
-
-  const vistas = new Set<string>();
-
-  for (const [indice, linha] of linhas.entries()) {
-    if (!linha.terapiaId) {
-      return { erro: ERRO_TERAPIA_OBRIGATORIA, linha: indice };
-    }
-
-    if (vistas.has(linha.terapiaId)) {
-      return { erro: ERRO_TERAPIA_REPETIDA, linha: indice };
-    }
-
-    vistas.add(linha.terapiaId);
-
-    const tempo = lerHorasSemanais(linha.horas);
-
-    if (!tempo.ok) {
-      return { erro: tempo.erro, linha: indice };
-    }
-  }
-
-  return null;
-}
-
 /** Classes do `Input`, para o `select` nativo não destoar (o de "Nova requisição"). */
-const CLASSES_DO_SELECT =
-  "h-9 w-full min-w-0 rounded-lg border border-input bg-transparent px-2.5 py-1 text-base transition-colors outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-50 aria-invalid:border-destructive aria-invalid:ring-3 aria-invalid:ring-destructive/20 md:text-sm dark:bg-input/30";
+const CLASSES_DO_SELECT_SEM_ALTURA =
+  "w-full min-w-0 rounded-lg border border-input bg-transparent px-2.5 py-1 text-base transition-colors outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-50 aria-invalid:border-destructive aria-invalid:ring-3 aria-invalid:ring-destructive/20 md:text-sm dark:bg-input/30";
+
+const CLASSES_DO_SELECT = `h-9 ${CLASSES_DO_SELECT_SEM_ALTURA}`;
+
+/** Os campos do tempo: 40px de toque no celular, 36px a partir de `sm`. */
+const ALTURA_DE_TOQUE = "h-10 sm:h-9";
+
+/** O `value` da opção "Outro" na caixa (as prontas usam os minutos). */
+const VALOR_OUTRO = "outro";
 
 /**
- * Uma linha "terapia + horas por semana".
+ * Uma linha "terapia + tempo por semana".
  *
- * Os dois campos têm o mesmo `name` em todas as linhas (`terapiaId`,
+ * Os campos enviados têm o mesmo `name` em todas as linhas (`terapiaId`,
  * `horas`); a action lê com `getAll` e costura por índice, na ordem do DOM —
  * o desenho de "Nova requisição", inclusive no `select` nativo e no filete
  * de margem da linha com erro.
  *
+ * O tempo é escolhido numa caixa (opções prontas ou "Outro" com horas e
+ * minutos) e viaja num campo escondido `horas`, com o texto em horas que a
+ * action sempre recebeu ({@link horasParaEnvio}): a action e a validação do
+ * servidor não mudaram.
+ *
  * A terapia já escolhida em outra linha aparece desabilitada: na tela não dá
  * para repetir. O servidor continua recusando a repetição (POST montado à mão).
  */
-function LinhaDoPlano({
+export function LinhaDoPlano({
   linha,
   indice,
   terapias,
@@ -421,80 +383,176 @@ function LinhaDoPlano({
   escolhidas: ReadonlySet<string>;
   podeRemover: boolean;
   temErro: boolean;
-  aoAlterar: (chave: number, campo: "terapiaId" | "horas", valor: string) => void;
+  aoAlterar: (
+    chave: number,
+    mudanca: { terapiaId: string } | { tempo: EstadoDoTempo },
+  ) => void;
   aoRemover: (chave: number) => void;
 }) {
+  const campoHorasRef = useRef<HTMLInputElement>(null);
+
   const idTerapia = `plano-terapia-${linha.chave}`;
+  const idTempo = `plano-tempo-${linha.chave}`;
+  const idDaTerapiaDoTempo = `plano-tempo-terapia-${linha.chave}`;
   const idHoras = `plano-horas-${linha.chave}`;
+  const idMinutos = `plano-minutos-${linha.chave}`;
+  const idTotal = `plano-total-${linha.chave}`;
+
+  const tempo = linha.tempo;
+  const nomeDaTerapia = terapias.find(
+    (terapia) => String(terapia.id) === linha.terapiaId,
+  )?.nome;
+  const total = tempo.tipo === "outro" ? minutosDoEstado(tempo) : null;
+
+  function escolherTempo(valor: string) {
+    if (valor === VALOR_OUTRO) {
+      aoAlterar(linha.chave, { tempo: estadoDoOutroVazio() });
+      // O campo "Horas" só existe depois do redesenho.
+      requestAnimationFrame(() => campoHorasRef.current?.focus());
+      return;
+    }
+
+    aoAlterar(linha.chave, { tempo: { tipo: "pronta", minutos: Number(valor) } });
+  }
 
   return (
     <div
-      className={`flex flex-col gap-3 border-l-[3px] px-3 py-3 sm:flex-row sm:items-end ${
+      className={`flex flex-col gap-3 border-l-[3px] px-3 py-3 ${
         temErro ? "border-l-esgotada bg-esgotada-fundo/50" : "border-l-transparent"
       }`}
     >
-      <div className="flex min-w-0 flex-1 flex-col gap-1.5">
-        <Label htmlFor={idTerapia} className="text-xs">
-          Terapia {indice + 1}
-        </Label>
-        <select
-          id={idTerapia}
-          name="terapiaId"
-          className={CLASSES_DO_SELECT}
-          value={linha.terapiaId}
-          aria-invalid={temErro ? true : undefined}
-          onChange={(evento) =>
-            aoAlterar(linha.chave, "terapiaId", evento.target.value)
-          }
-        >
-          <option value="">Escolha uma terapia</option>
-          {terapias.map((terapia) => {
-            const valor = String(terapia.id);
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
+        <div className="flex min-w-0 flex-1 flex-col gap-1.5">
+          <Label htmlFor={idTerapia} className="text-xs">
+            Terapia {indice + 1}
+          </Label>
+          <select
+            id={idTerapia}
+            name="terapiaId"
+            className={CLASSES_DO_SELECT}
+            value={linha.terapiaId}
+            aria-invalid={temErro ? true : undefined}
+            onChange={(evento) =>
+              aoAlterar(linha.chave, { terapiaId: evento.target.value })
+            }
+          >
+            <option value="">Escolha uma terapia</option>
+            {terapias.map((terapia) => {
+              const valor = String(terapia.id);
 
-            return (
-              <option
-                key={terapia.id}
-                value={valor}
-                disabled={valor !== linha.terapiaId && escolhidas.has(valor)}
-              >
-                {terapia.nome}
+              return (
+                <option
+                  key={terapia.id}
+                  value={valor}
+                  disabled={valor !== linha.terapiaId && escolhidas.has(valor)}
+                >
+                  {terapia.nome}
+                </option>
+              );
+            })}
+          </select>
+        </div>
+
+        <div className="flex flex-col gap-1.5 sm:w-48">
+          <Label htmlFor={idTempo} className="text-xs">
+            Tempo por semana
+          </Label>
+          {/* Para o leitor de tela saber de qual terapia é o tempo. */}
+          <span id={idDaTerapiaDoTempo} className="sr-only">
+            {nomeDaTerapia
+              ? `Terapia ${indice + 1}: ${nomeDaTerapia}.`
+              : `Terapia ${indice + 1}: ainda não escolhida.`}
+          </span>
+          <select
+            id={idTempo}
+            className={`${ALTURA_DE_TOQUE} ${CLASSES_DO_SELECT_SEM_ALTURA}`}
+            value={tempo.tipo === "outro" ? VALOR_OUTRO : String(tempo.minutos)}
+            aria-describedby={`${idDaTerapiaDoTempo} tempo-apoio`}
+            aria-invalid={temErro && tempo.tipo === "pronta" ? true : undefined}
+            onChange={(evento) => escolherTempo(evento.target.value)}
+          >
+            {OPCOES_DE_TEMPO_PRONTAS.map((opcao) => (
+              <option key={opcao.minutos} value={String(opcao.minutos)}>
+                {opcao.rotulo}
               </option>
-            );
-          })}
-        </select>
+            ))}
+            <option value={VALOR_OUTRO}>{ROTULO_OUTRO_TEMPO}</option>
+          </select>
+          <input type="hidden" name="horas" value={horasParaEnvio(tempo)} />
+        </div>
+
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          className="self-start sm:mb-0.5 sm:self-auto"
+          // A última linha não sai: o plano precisa de pelo menos uma terapia.
+          disabled={!podeRemover}
+          aria-label={`Remover terapia ${indice + 1}`}
+          onClick={() => aoRemover(linha.chave)}
+        >
+          Remover
+        </Button>
       </div>
 
-      <div className="flex flex-col gap-1.5 sm:w-44">
-        <Label htmlFor={idHoras} className="text-xs">
-          Tempo por semana (horas)
-        </Label>
-        <Input
-          id={idHoras}
-          name="horas"
-          inputMode="decimal"
-          autoComplete="off"
-          className="h-9 text-right"
-          value={linha.horas}
-          aria-describedby="horas-apoio"
-          aria-invalid={temErro ? true : undefined}
-          onChange={(evento) =>
-            aoAlterar(linha.chave, "horas", evento.target.value)
-          }
-        />
-      </div>
+      {tempo.tipo === "outro" ? (
+        <div className="flex flex-wrap items-end gap-x-3 gap-y-2">
+          <div className="flex w-24 flex-col gap-1.5">
+            <Label htmlFor={idHoras} className="text-xs">
+              Horas
+            </Label>
+            <Input
+              ref={campoHorasRef}
+              id={idHoras}
+              inputMode="numeric"
+              autoComplete="off"
+              maxLength={3}
+              className={`${ALTURA_DE_TOQUE} text-right`}
+              value={tempo.horas}
+              aria-describedby={`${idDaTerapiaDoTempo} ${idTotal}`}
+              aria-invalid={temErro ? true : undefined}
+              onChange={(evento) =>
+                aoAlterar(linha.chave, {
+                  tempo: { ...tempo, horas: evento.target.value },
+                })
+              }
+            />
+          </div>
 
-      <Button
-        type="button"
-        variant="ghost"
-        size="sm"
-        className="self-start sm:mb-0.5 sm:self-auto"
-        // A última linha não sai: o plano precisa de pelo menos uma terapia.
-        disabled={!podeRemover}
-        aria-label={`Remover terapia ${indice + 1}`}
-        onClick={() => aoRemover(linha.chave)}
-      >
-        Remover
-      </Button>
+          <div className="flex w-24 flex-col gap-1.5">
+            <Label htmlFor={idMinutos} className="text-xs">
+              Minutos
+            </Label>
+            <select
+              id={idMinutos}
+              className={`${ALTURA_DE_TOQUE} ${CLASSES_DO_SELECT_SEM_ALTURA}`}
+              value={String(tempo.minutos)}
+              aria-describedby={`${idDaTerapiaDoTempo} ${idTotal}`}
+              onChange={(evento) =>
+                aoAlterar(linha.chave, {
+                  tempo: { ...tempo, minutos: Number(evento.target.value) },
+                })
+              }
+            >
+              {MINUTOS_DO_OUTRO.map((minutos) => (
+                <option key={minutos} value={String(minutos)}>
+                  {minutos}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <p
+            id={idTotal}
+            aria-live="polite"
+            className="min-w-0 break-words pb-2 text-sm text-muted-foreground sm:pb-1.5"
+          >
+            {total?.ok
+              ? `${formatarMinutosSemanais(total.minutos)} por semana`
+              : null}
+          </p>
+        </div>
+      ) : null}
     </div>
   );
 }
