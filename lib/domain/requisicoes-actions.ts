@@ -39,6 +39,10 @@ import {
   type LinhaDeTerapia,
 } from "./requisicoes";
 import type { ItemDeSubstituicao } from "./requisicoes-mensagens";
+import {
+  planoParaRequisicao,
+  type TerapiaDoPlanoParaRequisicao,
+} from "./plano-terapias";
 
 /** Valor do checkbox "Substituir guias da mesma terapia" quando marcado. */
 const VALOR_SUBSTITUIR = "sim";
@@ -219,6 +223,50 @@ export async function previsaoDeSubstituicaoAction(entrada: {
       terapiaNome: guia.terapiaNome,
       numeroRequisicao: guia.numeroRequisicao,
       atendimentos: guia.atendimentos,
+    })),
+  };
+}
+
+export type ResultadoDoPlanoParaRequisicao =
+  | { ok: true; encontrado: false }
+  | { ok: true; encontrado: true; terapias: TerapiaDoPlanoParaRequisicao[] }
+  | { ok: false; erro: string };
+
+/**
+ * As terapias do plano do paciente digitado, para o formulário preencher as
+ * linhas (regra 26). **Só leitura**: não grava, não cria paciente, não chama
+ * `refresh()`.
+ *
+ * Só admin, como o resto da tela — `autorizarRota` passa por
+ * `requireUsuario()` e decide pelo papel lido do banco. O nome chega de um POST
+ * que pode ter sido montado à mão, então é conferido aqui em vez de confiado
+ * ao tipo.
+ *
+ * A resposta é remontada campo a campo: só `terapiaId`, `nome` e
+ * `minutosSemanais` saem daqui, mesmo que o domínio um dia devolva mais.
+ */
+export async function planoParaRequisicaoAction(
+  pacienteNome: string,
+): Promise<ResultadoDoPlanoParaRequisicao> {
+  if (!(await autorizarRota(ROTA_NOVA_REQUISICAO))) {
+    return { ok: false, erro: MENSAGEM_SEM_PERMISSAO };
+  }
+
+  const plano = await planoParaRequisicao(
+    typeof pacienteNome === "string" ? pacienteNome : "",
+  );
+
+  if (!plano.encontrado) {
+    return { ok: true, encontrado: false };
+  }
+
+  return {
+    ok: true,
+    encontrado: true,
+    terapias: plano.terapias.map((terapia) => ({
+      terapiaId: terapia.terapiaId,
+      nome: terapia.nome,
+      minutosSemanais: terapia.minutosSemanais,
     })),
   };
 }

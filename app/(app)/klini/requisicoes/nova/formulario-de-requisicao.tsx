@@ -3,6 +3,7 @@
 import {
   useActionState,
   useEffect,
+  useMemo,
   useRef,
   useState,
   useTransition,
@@ -24,8 +25,10 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { ROTA_KLINI_PACIENTES } from "@/lib/auth/acesso";
 import {
   criarRequisicaoAction,
+  planoParaRequisicaoAction,
   previsaoDeSubstituicaoAction,
   type EstadoNovaRequisicao,
 } from "@/lib/domain/requisicoes-actions";
@@ -47,6 +50,27 @@ import {
 } from "@/lib/domain/requisicoes-mensagens";
 import type { TerapiaParaEscolha } from "@/lib/domain/requisicoes";
 
+import {
+  ANUNCIO_PLANO_OFERECIDO,
+  ANUNCIO_SEM_PLANO,
+  AVISO_LINHAS_EDITADAS,
+  AVISO_SEM_PLANO,
+  ERRO_AO_CARREGAR_PLANO,
+  ESPERA_DA_CONSULTA_MS,
+  anuncioDePlanoCarregado,
+  carregarPedeConfirmacao,
+  chaveDoNome,
+  decidirPreenchimento,
+  linhaNova,
+  linhasDoPlano,
+  nomeEstaNaLista,
+  temLinhaEditada,
+  textoDoPlanoNaLinha,
+  type CamposDaLinha,
+  type LinhaDoFormulario,
+  type TerapiaDoPlanoNoFormulario,
+} from "./preenchimento-do-plano";
+
 const ESTADO_INICIAL: EstadoNovaRequisicao = {};
 
 /**
@@ -58,15 +82,6 @@ const ERROS_DO_PACIENTE = new Set([
   ERRO_PACIENTE_NAO_CADASTRADO,
   ERRO_SEM_ENCAMINHAMENTO,
 ]);
-
-/**
- * Quantidade que uma linha de terapia já nasce preenchida, até o usuário mudar.
- *
- * É só um valor inicial, não um piso nem um limite: o campo continua livre para
- * ser apagado e redigitado, e a validação de "inteiro > 0" (aqui e na Server
- * Action) não sabe deste número.
- */
-const QTD_AUTORIZADA_PADRAO = "4";
 
 /**
  * Estado inicial da caixinha "Substituir guias da mesma terapia": **desmarcada**.
@@ -81,41 +96,19 @@ const ERRO_AO_VERIFICAR_SUBSTITUICAO =
   "Não foi possível verificar o que seria substituído. Tente de novo.";
 
 /**
- * Uma linha do formulário.
- *
- * Os valores ficam como texto porque é isso que um `input` produz — converter
- * para número aqui só criaria um segundo lugar onde `"3.7"` ou `""` viram algo
- * plausível e errado. A conversão acontece de uma vez só no servidor.
- *
- * `chave` é um contador local, não o índice do array: usar o índice como
- * `key` faria o React reaproveitar o DOM da linha errada ao remover uma linha
- * do meio, e o texto digitado escorregaria para a linha de baixo.
+ * A última consulta do plano. `chave` é o nome consultado (`chaveDoNome`):
+ * o que ela diz só vale enquanto o campo de paciente tiver esse mesmo nome.
  */
-type LinhaDoFormulario = {
-  chave: number;
-  terapiaId: string;
-  qtdAutorizada: string;
-  validade: string;
-};
-
-/**
- * Uma linha em branco — exceto pelos dois campos que já nascem sugeridos.
- *
- * `validadePadrao` é "AAAA-MM-DD" a um mês do `CURRENT_DATE` do banco, e chega
- * como argumento em vez de ser calculada aqui: o navegador não tem o relógio
- * que vale (ver `validadePadraoDeGuia` em `lib/domain/requisicoes.ts`). O
- * papel dela é o mesmo de `QTD_AUTORIZADA_PADRAO` — valor inicial, não piso
- * nem limite: apagar o campo devolve a guia sem validade, e digitar outra data
- * grava a data digitada.
- */
-function linhaNova(chave: number, validadePadrao: string): LinhaDoFormulario {
-  return {
-    chave,
-    terapiaId: "",
-    qtdAutorizada: QTD_AUTORIZADA_PADRAO,
-    validade: validadePadrao,
-  };
-}
+type ConsultaDoPlano =
+  | { estado: "ociosa" }
+  | { estado: "buscando"; chave: string }
+  | { estado: "falhou"; chave: string }
+  | {
+      estado: "pronta";
+      chave: string;
+      encontrado: boolean;
+      terapias: TerapiaDoPlanoNoFormulario[];
+    };
 
 /**
  * Cadastro de nova requisição.
@@ -181,6 +174,71 @@ export function FormularioDeRequisicao({
    */
   const envioLiberado = useRef(false);
 
+  // --- Plano do paciente (regra 26) ---------------------------------------
+  const [consulta, setConsulta] = useState<ConsultaDoPlano>({
+    estado: "ociosa",
+  });
+  /** Texto da região `aria-live`; o foco não se move quando o plano chega. */
+  const [anuncio, setAnuncio] = useState("");
+  const [confirmandoCarregamento, setConfirmandoCarregamento] = useState(false);
+  const temporizadorDaConsulta = useRef<ReturnType<typeof setTimeout> | null>(
+    null,
+  );
+  /** Nome já consultado (ou em consulta), para não repetir a mesma pergunta. */
+  const chaveConsultada = useRef<string | null>(null);
+  /** Só a resposta da consulta mais recente vale; as outras são descartadas. */
+  const idDaConsulta = useRef(0);
+  /**
+   * As linhas como estão agora, para a resposta da consulta (que chega depois,
+   * fora de qualquer evento) decidir sobre o estado atual e não o de quando
+   * ela saiu.
+   */
+  const linhasAtuais = useRef(linhas);
+  const botoesDeRemover = useRef(new Map<number, HTMLButtonElement>());
+  const botaoAdicionarRef = useRef<HTMLButtonElement>(null);
+
+  const chavesDaLista = useMemo(
+    () => new Set(nomesDePacientes.map(chaveDoNome)),
+    [nomesDePacientes],
+  );
+
+  useEffect(() => {
+    linhasAtuais.current = linhas;
+  }, [linhas]);
+
+  useEffect(() => {
+    const temporizador = temporizadorDaConsulta;
+
+    return () => {
+      if (temporizador.current) {
+        clearTimeout(temporizador.current);
+      }
+    };
+  }, []);
+
+  // O que a consulta diz só vale para o nome que está no campo agora.
+  const consultaDoNome =
+    consulta.estado !== "ociosa" && consulta.chave === chaveDoNome(pacienteNome)
+      ? consulta
+      : null;
+  const planoDoPaciente =
+    consultaDoNome?.estado === "pronta" &&
+    consultaDoNome.encontrado &&
+    consultaDoNome.terapias.length > 0
+      ? consultaDoNome.terapias
+      : null;
+  const pacienteSemPlano =
+    consultaDoNome?.estado === "pronta" &&
+    consultaDoNome.encontrado &&
+    consultaDoNome.terapias.length === 0;
+  const minutosDoPlano = new Map(
+    (planoDoPaciente ?? []).map((terapia) => [
+      String(terapia.terapiaId),
+      terapia.minutosSemanais,
+    ]),
+  );
+  const linhasEditadas = temLinhaEditada(linhas, validadePadrao);
+
   // O erro do cliente só vale até a próxima submissão; depois disso quem manda
   // é a resposta do servidor.
   const erroExibido = erroLocal ?? estado;
@@ -236,6 +294,11 @@ export function FormularioDeRequisicao({
     setSubstituir(SUBSTITUIR_PADRAO);
     setLinhas([linhaNova(proximaChave.current++, validadePadrao)]);
     setErroLocal(null);
+    // O próximo paciente começa sem plano consultado.
+    idDaConsulta.current += 1;
+    chaveConsultada.current = null;
+    setConsulta({ estado: "ociosa" });
+    setAnuncio("");
 
     requestAnimationFrame(() => campoPacienteRef.current?.focus());
     // `validadePadrao` entra nas dependências porque a linha limpa nasce com
@@ -252,14 +315,174 @@ export function FormularioDeRequisicao({
     ]);
   }
 
+  /**
+   * Remove a linha e leva o foco ao "Remover" da linha que tomou o lugar dela
+   * (ou da anterior, se era a última): Enter/Espaço repetidos tiram várias
+   * linhas em sequência sem o foco cair no topo da página. Quando sobra uma
+   * linha só (o "Remover" dela fica desabilitado), o foco vai para "Adicionar
+   * outra terapia".
+   */
   function removerLinha(chave: number) {
     setMensagemDeSucesso(null);
-    setLinhas((atuais) => atuais.filter((linha) => linha.chave !== chave));
+
+    const indice = linhas.findIndex((linha) => linha.chave === chave);
+    const restantes = linhas.filter((linha) => linha.chave !== chave);
+    const vizinha = restantes[indice] ?? restantes[indice - 1];
+
+    setLinhas(restantes);
+
+    requestAnimationFrame(() => {
+      const proximo =
+        vizinha && restantes.length > 1
+          ? botoesDeRemover.current.get(vizinha.chave)
+          : null;
+
+      (proximo ?? botaoAdicionarRef.current)?.focus();
+    });
+  }
+
+  /** Troca as linhas pelas do plano e anuncia, sem mexer no foco. */
+  function aplicarPlano(terapiasDoPlano: TerapiaDoPlanoNoFormulario[]) {
+    setMensagemDeSucesso(null);
+    setLinhas(
+      linhasDoPlano(
+        terapiasDoPlano,
+        validadePadrao,
+        linhasAtuais.current.map((linha) => linha.chave),
+        () => proximaChave.current++,
+      ),
+    );
+    setAnuncio(anuncioDePlanoCarregado(terapiasDoPlano.length));
+  }
+
+  /**
+   * Pergunta ao servidor o plano do nome digitado. Uma consulta por nome: o
+   * mesmo nome não é consultado de novo enquanto continuar no campo.
+   */
+  function consultarPlano(nome: string) {
+    if (temporizadorDaConsulta.current) {
+      clearTimeout(temporizadorDaConsulta.current);
+      temporizadorDaConsulta.current = null;
+    }
+
+    const chave = chaveDoNome(nome);
+
+    if (!chave || chaveConsultada.current === chave) {
+      return;
+    }
+
+    chaveConsultada.current = chave;
+    idDaConsulta.current += 1;
+    const id = idDaConsulta.current;
+    setConsulta({ estado: "buscando", chave });
+
+    planoParaRequisicaoAction(nome)
+      .then((resultado) => {
+        if (id !== idDaConsulta.current) {
+          return;
+        }
+
+        if (!resultado.ok) {
+          throw new Error("consulta do plano recusada");
+        }
+
+        if (!resultado.encontrado) {
+          // Nome de ninguém, ou paciente sem encaminhamento: nada a preencher.
+          // A recusa, se o usuário enviar, é a de sempre — vem da criação.
+          setConsulta({ estado: "pronta", chave, encontrado: false, terapias: [] });
+          return;
+        }
+
+        setConsulta({
+          estado: "pronta",
+          chave,
+          encontrado: true,
+          terapias: resultado.terapias,
+        });
+
+        const decisao = decidirPreenchimento(
+          linhasAtuais.current,
+          validadePadrao,
+          resultado.terapias,
+        );
+
+        if (decisao === "preencher") {
+          aplicarPlano(resultado.terapias);
+        } else if (decisao === "oferecer") {
+          setAnuncio(ANUNCIO_PLANO_OFERECIDO);
+        } else {
+          if (decisao === "limpar") {
+            setLinhas([
+              linhaNova(
+                linhasAtuais.current[0]?.chave ?? proximaChave.current++,
+                validadePadrao,
+              ),
+            ]);
+          }
+          setAnuncio(ANUNCIO_SEM_PLANO);
+        }
+      })
+      .catch(() => {
+        if (id !== idDaConsulta.current) {
+          return;
+        }
+
+        // Sem preenchimento, mas o formulário continua utilizável. Sair do
+        // campo de novo tenta outra vez.
+        chaveConsultada.current = null;
+        setConsulta({ estado: "falhou", chave });
+        setAnuncio(ERRO_AO_CARREGAR_PLANO);
+      });
+  }
+
+  /**
+   * A cada tecla: descarta a consulta em curso de outro nome e, se o nome
+   * digitado é um da lista, consulta depois de uma pausa na digitação. Nome
+   * fora da lista só é consultado ao sair do campo.
+   */
+  function aoDigitarPaciente(nome: string) {
+    if (temporizadorDaConsulta.current) {
+      clearTimeout(temporizadorDaConsulta.current);
+      temporizadorDaConsulta.current = null;
+    }
+
+    if (chaveDoNome(nome) !== chaveConsultada.current) {
+      chaveConsultada.current = null;
+      idDaConsulta.current += 1;
+    }
+
+    if (nomeEstaNaLista(nome, chavesDaLista)) {
+      temporizadorDaConsulta.current = setTimeout(
+        () => consultarPlano(nome),
+        ESPERA_DA_CONSULTA_MS,
+      );
+    }
+  }
+
+  function carregarPlanoDoPaciente() {
+    if (!planoDoPaciente) {
+      return;
+    }
+
+    if (carregarPedeConfirmacao(linhas, validadePadrao)) {
+      setConfirmandoCarregamento(true);
+      return;
+    }
+
+    aplicarPlano(planoDoPaciente);
+  }
+
+  function confirmarCarregamento() {
+    setConfirmandoCarregamento(false);
+
+    if (planoDoPaciente) {
+      aplicarPlano(planoDoPaciente);
+    }
   }
 
   function alterarLinha(
     chave: number,
-    campo: keyof Omit<LinhaDoFormulario, "chave">,
+    campo: keyof CamposDaLinha,
     valor: string,
   ) {
     setMensagemDeSucesso(null);
@@ -414,7 +637,9 @@ export function FormularioDeRequisicao({
                 onChange={(evento) => {
                   setMensagemDeSucesso(null);
                   setPacienteNome(evento.target.value);
+                  aoDigitarPaciente(evento.target.value);
                 }}
+                onBlur={(evento) => consultarPlano(evento.target.value)}
                 placeholder="Digite ou escolha um paciente"
               />
               {erroDoPaciente ? (
@@ -470,36 +695,94 @@ export function FormularioDeRequisicao({
           <div className="flex flex-col gap-1">
             <h2 className="regua-de-secao">2. Terapias autorizadas</h2>
             <p className="max-w-prose text-xs text-muted-foreground">
-              Uma linha por terapia. A validade já vem sugerida para um mês a
-              partir de hoje — continua editável, e apagá-la deixa a guia sem
-              prazo.
+              Uma linha por terapia. Ao escolher o paciente, as terapias do
+              plano dele entram aqui: remova as que não foram autorizadas. A
+              quantidade e a validade (um mês a partir de hoje) são sugestões
+              editáveis, e apagar a validade deixa a guia sem prazo.
+            </p>
+            {consultaDoNome?.estado === "buscando" ? (
+              <p className="text-xs text-muted-foreground">
+                Buscando o plano do paciente…
+              </p>
+            ) : null}
+            {consultaDoNome?.estado === "falhou" ? (
+              <p className="text-xs text-muted-foreground">
+                {ERRO_AO_CARREGAR_PLANO}
+              </p>
+            ) : null}
+            {pacienteSemPlano ? (
+              <p className="text-xs text-muted-foreground">
+                {AVISO_SEM_PLANO}{" "}
+                <Link
+                  href={ROTA_KLINI_PACIENTES}
+                  className="underline underline-offset-2 hover:text-foreground"
+                >
+                  Cadastrar plano
+                </Link>
+              </p>
+            ) : null}
+            {planoDoPaciente && linhasEditadas ? (
+              <p className="max-w-prose text-xs text-muted-foreground">
+                {AVISO_LINHAS_EDITADAS}
+              </p>
+            ) : null}
+            {/* Anúncio para leitor de tela; montado vazio, sempre presente. */}
+            <p aria-live="polite" className="sr-only">
+              {anuncio}
             </p>
           </div>
 
           <div className="folha divide-y divide-regua overflow-hidden">
-            {linhas.map((linha, indice) => (
-              <LinhaDeTerapiaDoFormulario
-                key={linha.chave}
-                linha={linha}
-                indice={indice}
-                terapias={terapias}
-                podeRemover={linhas.length > 1}
-                temErro={erroExibido.linha === indice}
-                aoAlterar={alterarLinha}
-                aoRemover={removerLinha}
-              />
-            ))}
+            {linhas.map((linha, indice) => {
+              const minutos = minutosDoPlano.get(linha.terapiaId);
+
+              return (
+                <LinhaDeTerapiaDoFormulario
+                  key={linha.chave}
+                  linha={linha}
+                  indice={indice}
+                  terapias={terapias}
+                  podeRemover={linhas.length > 1}
+                  temErro={erroExibido.linha === indice}
+                  referenciaDoPlano={
+                    minutos === undefined ? null : textoDoPlanoNaLinha(minutos)
+                  }
+                  refDoRemover={(botao) => {
+                    if (botao) {
+                      botoesDeRemover.current.set(linha.chave, botao);
+                    } else {
+                      botoesDeRemover.current.delete(linha.chave);
+                    }
+                  }}
+                  aoAlterar={alterarLinha}
+                  aoRemover={removerLinha}
+                />
+              );
+            })}
           </div>
 
-          <div>
+          <div className="flex flex-wrap gap-2">
             <Button
+              ref={botaoAdicionarRef}
               type="button"
               variant="outline"
               size="sm"
+              className="h-10 sm:h-8"
               onClick={adicionarLinha}
             >
               Adicionar outra terapia
             </Button>
+            {planoDoPaciente ? (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="h-10 sm:h-8"
+                onClick={carregarPlanoDoPaciente}
+              >
+                Carregar plano do paciente
+              </Button>
+            ) : null}
           </div>
         </section>
 
@@ -596,6 +879,41 @@ export function FormularioDeRequisicao({
           </AlertDialogContent>
         )}
       </AlertDialog>
+
+      <AlertDialog
+        open={confirmandoCarregamento && planoDoPaciente !== null}
+        onOpenChange={(aberto) => {
+          if (!aberto) {
+            setConfirmandoCarregamento(false);
+          }
+        }}
+      >
+        {planoDoPaciente === null ? null : (
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>
+                Trocar as linhas pelo plano do paciente?
+              </AlertDialogTitle>
+              <AlertDialogDescription>
+                As linhas de terapia atuais, inclusive as que você editou ou
+                acrescentou à mão, serão substituídas{" "}
+                {planoDoPaciente.length === 1
+                  ? "pela 1 terapia"
+                  : `pelas ${planoDoPaciente.length} terapias`}{" "}
+                do plano de {pacienteNome.trim()}. Nada é gravado até você
+                criar a requisição.
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+
+            <AlertDialogFooter>
+              <AlertDialogCancel>Cancelar</AlertDialogCancel>
+              <AlertDialogAction onClick={confirmarCarregamento}>
+                Carregar plano
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        )}
+      </AlertDialog>
     </>
   );
 }
@@ -632,6 +950,10 @@ const CLASSES_DO_SELECT =
  *
  * A linha com erro ganha o mesmo filete de margem carmim das guias esgotadas
  * do painel: é o canal que faz o erro ser achado pela borda, sem leitura.
+ *
+ * `referenciaDoPlano` ("Plano: 2 h 30 min por semana") é só leitura: aparece
+ * quando a terapia escolhida está no plano do paciente digitado, e não entra
+ * no formulário enviado.
  */
 function LinhaDeTerapiaDoFormulario({
   linha,
@@ -639,6 +961,8 @@ function LinhaDeTerapiaDoFormulario({
   terapias,
   podeRemover,
   temErro,
+  referenciaDoPlano,
+  refDoRemover,
   aoAlterar,
   aoRemover,
 }: {
@@ -647,96 +971,113 @@ function LinhaDeTerapiaDoFormulario({
   terapias: TerapiaParaEscolha[];
   podeRemover: boolean;
   temErro: boolean;
-  aoAlterar: (
-    chave: number,
-    campo: keyof Omit<LinhaDoFormulario, "chave">,
-    valor: string,
-  ) => void;
+  referenciaDoPlano: string | null;
+  refDoRemover: (botao: HTMLButtonElement | null) => void;
+  aoAlterar: (chave: number, campo: keyof CamposDaLinha, valor: string) => void;
   aoRemover: (chave: number) => void;
 }) {
   const idTerapia = `terapia-${linha.chave}`;
   const idQuantidade = `quantidade-${linha.chave}`;
   const idValidade = `validade-${linha.chave}`;
+  const idReferencia = `plano-${linha.chave}`;
+  const nomeDaTerapia = terapias.find(
+    (terapia) => String(terapia.id) === linha.terapiaId,
+  )?.nome;
 
   return (
     <div
-      className={`flex flex-col gap-3 border-l-[3px] px-3 py-3 sm:flex-row sm:items-end ${
+      className={`flex flex-col gap-2 border-l-[3px] px-3 py-3 ${
         temErro
           ? "border-l-esgotada bg-esgotada-fundo/50"
           : "border-l-transparent"
       }`}
     >
-      <div className="flex min-w-0 flex-1 flex-col gap-1.5">
-        <Label htmlFor={idTerapia} className="text-xs">
-          Terapia {indice + 1}
-        </Label>
-        <select
-          id={idTerapia}
-          name="terapiaId"
-          className={CLASSES_DO_SELECT}
-          value={linha.terapiaId}
-          aria-invalid={temErro ? true : undefined}
-          onChange={(evento) =>
-            aoAlterar(linha.chave, "terapiaId", evento.target.value)
-          }
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
+        <div className="flex min-w-0 flex-1 flex-col gap-1.5">
+          <Label htmlFor={idTerapia} className="text-xs">
+            Terapia {indice + 1}
+          </Label>
+          <select
+            id={idTerapia}
+            name="terapiaId"
+            className={CLASSES_DO_SELECT}
+            value={linha.terapiaId}
+            aria-invalid={temErro ? true : undefined}
+            aria-describedby={referenciaDoPlano ? idReferencia : undefined}
+            onChange={(evento) =>
+              aoAlterar(linha.chave, "terapiaId", evento.target.value)
+            }
+          >
+            <option value="">Escolha uma terapia</option>
+            {terapias.map((terapia) => (
+              <option key={terapia.id} value={terapia.id}>
+                {terapia.nome} ({terapia.codigoTiss})
+              </option>
+            ))}
+          </select>
+        </div>
+
+        <div className="flex flex-col gap-1.5 sm:w-28">
+          <Label htmlFor={idQuantidade} className="text-xs">
+            Qtd. autorizada
+          </Label>
+          <Input
+            id={idQuantidade}
+            name="qtdAutorizada"
+            type="number"
+            inputMode="numeric"
+            min={1}
+            step={1}
+            className="h-9 text-right"
+            value={linha.qtdAutorizada}
+            aria-invalid={temErro ? true : undefined}
+            onChange={(evento) =>
+              aoAlterar(linha.chave, "qtdAutorizada", evento.target.value)
+            }
+          />
+        </div>
+
+        <div className="flex flex-col gap-1.5 sm:w-40">
+          <Label htmlFor={idValidade} className="text-xs">
+            Validade (opcional)
+          </Label>
+          <Input
+            id={idValidade}
+            name="validade"
+            type="date"
+            className="h-9"
+            value={linha.validade}
+            onChange={(evento) =>
+              aoAlterar(linha.chave, "validade", evento.target.value)
+            }
+          />
+        </div>
+
+        <Button
+          ref={refDoRemover}
+          type="button"
+          variant="ghost"
+          size="sm"
+          // 40px de altura no celular: é o botão que se toca várias vezes
+          // seguidas para tirar as terapias que não foram autorizadas.
+          className="h-10 sm:mb-0.5 sm:h-8"
+          aria-label={`Remover terapia ${indice + 1}${
+            nomeDaTerapia ? ` (${nomeDaTerapia})` : ""
+          }`}
+          // A última linha não pode sair: a requisição precisa de pelo menos uma
+          // terapia, e um formulário sem nenhuma linha não teria como voltar.
+          disabled={!podeRemover}
+          onClick={() => aoRemover(linha.chave)}
         >
-          <option value="">Escolha uma terapia</option>
-          {terapias.map((terapia) => (
-            <option key={terapia.id} value={terapia.id}>
-              {terapia.nome} ({terapia.codigoTiss})
-            </option>
-          ))}
-        </select>
+          Remover
+        </Button>
       </div>
 
-      <div className="flex flex-col gap-1.5 sm:w-28">
-        <Label htmlFor={idQuantidade} className="text-xs">
-          Qtd. autorizada
-        </Label>
-        <Input
-          id={idQuantidade}
-          name="qtdAutorizada"
-          type="number"
-          inputMode="numeric"
-          min={1}
-          step={1}
-          className="h-9 text-right"
-          value={linha.qtdAutorizada}
-          aria-invalid={temErro ? true : undefined}
-          onChange={(evento) =>
-            aoAlterar(linha.chave, "qtdAutorizada", evento.target.value)
-          }
-        />
-      </div>
-
-      <div className="flex flex-col gap-1.5 sm:w-40">
-        <Label htmlFor={idValidade} className="text-xs">
-          Validade (opcional)
-        </Label>
-        <Input
-          id={idValidade}
-          name="validade"
-          type="date"
-          className="h-9"
-          value={linha.validade}
-          onChange={(evento) =>
-            aoAlterar(linha.chave, "validade", evento.target.value)
-          }
-        />
-      </div>
-
-      <Button
-        type="button"
-        variant="ghost"
-        size="sm"
-        className="sm:mb-0.5"
-        // A última linha não pode sair: a requisição precisa de pelo menos uma
-        // terapia, e um formulário sem nenhuma linha não teria como voltar.
-        disabled={!podeRemover}
-        onClick={() => aoRemover(linha.chave)}
-      >
-        Remover
-      </Button>
+      {referenciaDoPlano ? (
+        <p id={idReferencia} className="text-xs text-muted-foreground">
+          {referenciaDoPlano}
+        </p>
+      ) : null}
     </div>
   );
 }

@@ -481,7 +481,9 @@ teste passar hoje e mentir no mês que vem.
       (`plano_terapia`). O formulário recebe horas ("2", "2,5", "2.5", "0,25") e o domínio
       converte para minutos inteiros (`lib/domain/tempo-semanal.ts`): maior que zero, até
       168 h, passo de 15 min. **Sem cálculo**: nenhum campo derivado, nenhuma soma, e nada
-      no sistema lê o plano para decidir saldo, guia ou atendimento.
+      no sistema lê o plano para decidir saldo, guia ou atendimento. (Desde 30/10/2026
+      "Nova requisição" lê o plano para **sugerir** as linhas de terapia — regra 26. É
+      sugestão de tela e não decide nada.)
     - **Cadastro de paciente** (`cadastrarPaciente` em `lib/domain/plano-terapias.ts`):
       nome + convênio + ao menos uma terapia (sem repetir terapia na mesma entrada), numa
       transação. Paciente novo → nasce com o convênio e o plano. Existe com o **mesmo**
@@ -571,6 +573,38 @@ teste passar hoje e mentir no mês que vem.
       tem botão de exclusão** em lugar nenhum até ser cadastrado num convênio (antes, se
       tivesse encaminhamento, aparecia na lista de Encaminhamentos da Klini).
 
+26. **"Nova requisição" puxa o plano do paciente (30/10/2026).** Ao escolher/digitar um
+    nome que casa com um paciente **com encaminhamento**, o formulário preenche as linhas de
+    terapia com as terapias do plano dele (regra 23), para o usuário só **remover** as que
+    não foram autorizadas.
+    - **O plano só diz quais terapias.** Cada linha preenchida nasce com a terapia escolhida
+      e os **mesmos padrões de sempre**: quantidade `4` e validade hoje + 1 mês, editáveis.
+      Nada é calculado a partir do tempo semanal, e nada do plano é gravado na requisição.
+      A linha mostra, só como referência e só leitura, "Plano: 2 h 30 min por semana"
+      (`formatarMinutosSemanais`) quando a terapia dela está no plano. Sem total, sem
+      comparar com o autorizado.
+    - **Não sobrescreve trabalho do usuário.** O preenchimento automático só troca as linhas
+      se todas estiverem vazias ou forem as que ele mesmo criou e ninguém editou. Remover
+      linhas preenchidas **não** conta como edição. Com linha editada ou acrescentada à mão,
+      nada é apagado: aparece o aviso e o botão **"Carregar plano do paciente"**, que fica
+      sempre visível quando o paciente digitado tem plano. O botão substitui as linhas
+      atuais e só pede confirmação se houver linha editada à mão. Trocar de paciente depois
+      de um preenchimento intocado recarrega o plano do novo paciente. Se o novo paciente não
+      tiver plano, as linhas intocadas voltam a uma linha em branco.
+    - **Paciente sem plano**: nada é preenchido, aparece "Este paciente não tem plano de
+      terapias cadastrado." com o link "Cadastrar plano" (`/klini/pacientes`). **Nome de
+      ninguém ou paciente sem encaminhamento**: nada é preenchido, sem mensagem nova. A
+      recusa, se o usuário enviar, é a de sempre (regra 15).
+    - **Leitura**: `planoParaRequisicaoAction(pacienteNome)` em `requisicoes-actions.ts`,
+      **só leitura**, só admin (`autorizarRota(ROTA_NOVA_REQUISICAO)`, que passa por
+      `requireUsuario()` e lê o papel do banco). Devolve `{ encontrado: false }` (a mesma
+      resposta para nome de ninguém e para paciente sem encaminhamento) ou `{ encontrado:
+      true, terapias: [{ terapiaId, nome, minutosSemanais }] }`. **Nunca** carteirinha, CRM
+      ou nome do médico.
+    - **Servidor inalterado**: `criarRequisicao` continua validando tudo (terapia existente,
+      quantidade, validade, regra 15, regra 22). A caixinha "Substituir" e a prévia
+      funcionam igual com as linhas preenchidas.
+
 ## Decisões assumidas (perguntas em aberto no relatório de auditoria original)
 
 - `paciente.nome`: único case-insensitive no banco.
@@ -586,6 +620,70 @@ teste passar hoje e mentir no mês que vem.
 - Edição de atendimento para 0 créditos continua permitida.
 
 ## Decisões tomadas durante a implementação (não estavam no relatório original)
+
+- **Nova requisição puxa o plano (30/10/2026, branch `feat/requisicao-puxa-plano`, a partir
+  de `feat/excluir-paciente-no-cadastro` em `8ddd298`; sem commit, sem merge, sem push).**
+  Regra 26. Nenhuma migration. Nenhuma regra de criação de requisição mudou no servidor.
+  - **Domínio**: `planoParaRequisicao(nome)` / `planoParaRequisicaoComCliente` em
+    `plano-terapias.ts`. Reaproveita `buscarPacientePorNome` (a busca da própria
+    requisição: trim, `lower(nome)`, sem criar) e `planoDoPacienteComCliente`. Sem
+    transação: o `FOR KEY SHARE` da busca dura só o comando. Nenhuma função de escrita
+    nova. Exige encaminhamento (`encaminhamento.findFirst`), porque sem ele a criação
+    recusaria de qualquer jeito, e a resposta do paciente sem encaminhamento é igual à do
+    nome de ninguém, para a leitura não dizer se o nome existe.
+  - **Action**: `planoParaRequisicaoAction` remonta a resposta campo a campo (só
+    `terapiaId`, `nome`, `minutosSemanais`) e trata argumento que não é texto como nome
+    vazio.
+  - **Lógica pura** em `app/(app)/klini/requisicoes/nova/preenchimento-do-plano.ts`
+    (`linhaNova`, `QTD_AUTORIZADA_PADRAO` e o tipo da linha saíram do formulário para lá).
+    Cada linha guarda `doPlano`, os valores com que o preenchimento a criou (`null` à
+    mão). `situacaoDaLinha` diz `vazia` (sem terapia, padrões intactos), `do-plano` (igual
+    a `doPlano`) ou `editada`. `decidirPreenchimento` devolve `preencher` / `oferecer` /
+    `limpar` / `manter`, e `carregarPedeConfirmacao` = há linha editada.
+  - **Decisões próprias**: (1) remover linha preenchida **não** é edição: as que sobram
+    continuam intocadas e são trocadas se o paciente mudar. (2) Uma linha à mão igual a
+    uma do plano conta como editada. (3) Novo paciente **sem plano** depois de um
+    preenchimento intocado → as linhas voltam a uma em branco (`limpar`), para não sobrar
+    o plano de outra pessoa. Nome que não casa (ou paciente sem encaminhamento) **não**
+    mexe nas linhas: digitar "Ana B…" depois de "Ana" não pisca o formulário. (4) A
+    referência "Plano: …" é derivada da terapia **atual** da linha contra o plano do nome
+    **atual** do campo, então nunca mostra tempo de outra terapia ou de outro paciente, e
+    aparece também numa linha à mão cuja terapia está no plano. (5) O preenchimento
+    reaproveita as `chave`s das linhas que estavam na tela, para quem estava com foco num
+    campo de linha não perdê-lo. (6) Remover leva o foco ao "Remover" da linha que tomou
+    o lugar (ou da anterior). Com uma linha só, vai para "Adicionar outra terapia".
+    "Remover" ganhou `aria-label` "Remover terapia N (nome)" e 40px de altura abaixo de
+    `sm`. (7) Confirmação do "Carregar plano" num `AlertDialog` (botão neutro, sem
+    carmim: nada é gravado). (8) Terceiro anúncio, além dos dois pedidos: "Plano do
+    paciente disponível. Suas linhas foram mantidas…" quando só oferece.
+  - **Quando consulta**: a cada tecla, se o nome (trim + `toLowerCase()`) é um da lista do
+    `datalist`, depois de 350 ms sem digitar. Ao sair do campo, sempre, inclusive nome fora
+    da lista (a lista pode estar velha). Um nome é consultado uma vez enquanto ficar no
+    campo. Só a resposta da consulta mais recente vale, e trocar o nome descarta a que
+    está em curso. Falha (rede, ou recusa da action) → "Não foi possível carregar o plano
+    do paciente. Adicione as terapias à mão.", e sair do campo de novo tenta outra vez.
+  - **Acessibilidade**: região `aria-live="polite"` (`sr-only`, montada vazia) com "Plano
+    carregado: N terapias." / "Paciente sem plano cadastrado." / a falha. O foco não se
+    move quando o plano chega. "Buscando o plano do paciente…" é texto discreto
+    (`muted-foreground`), sem cor nova.
+  - **Testes** (775 em 48 arquivos; eram 739 em 46): `preenchimento-do-plano.test.ts`
+    (linhas vazias, intocadas, editadas à mão, troca de paciente, remover não é edição,
+    sem plano limpa/mantém, confirmação do botão, nada calculado do tempo, chaves
+    reaproveitadas, quando consultar, textos); `requisicao-puxa-plano.integration.test.ts`
+    (plano certo em ordem de nome com caixa/espaço diferentes; legado com encaminhamento e
+    sem plano → `[]`; nome de ninguém sem criar paciente, contagem em `RepeatableRead`, e
+    resposta idêntica à do paciente sem encaminhamento; carteirinha, CRM e nome do médico
+    gravados sem aparecer no resultado; fluxo Cadastro → Encaminhamento → plano → remover
+    TO → requisição só com Fono, qtd 4 e validade padrão; **plano Fono + TO, remover TO,
+    Substituir**: a prévia lista só Fono da 333, a gravação apaga só ela com os 2
+    atendimentos, a 333 fica com TO e os atendimentos dela, a 444 nasce com Fono); em
+    `acesso-por-papel.test.ts`: recepção recusada sem chegar ao domínio, admin recebe só os
+    três campos mesmo com o domínio devolvendo mais, nome de ninguém sem eco, argumento
+    não-texto. Mutação conferida: sem o `autorizarRota` na action, o teste da recepção cai.
+  - **Não testado**: navegador (debounce real, `datalist`, foco depois de remover, leitor de
+    tela, diálogo do "Carregar plano", diálogo da substituição com linhas preenchidas,
+    celular). O clique do diálogo de substituição é o de antes: o teste cobre prévia e
+    gravação com as linhas preenchidas, não o `AlertDialog`. Roteiro nas pendências.
 
 - **Plano semanal no painel da Klini (30/10/2026, branch `feat/painel-plano-semanal`, a
   partir de `feat/cadastro-plano-ui` em `2eccd38`; sem commit, sem merge, sem push).**
@@ -2317,6 +2415,16 @@ parecer íntegro na tela.
 - Não mandar carteirinha nem CRM para a tela Cadastro (`listarPacientesDoConvenio` traz só
   nome e plano).
 
+- Não calcular quantidade, validade nem nada a partir do tempo semanal do plano em "Nova
+  requisição": o plano só diz **quais** terapias (regra 26). Não gravar nada do plano na
+  requisição.
+- Não fazer o preenchimento automático apagar linha editada ou acrescentada à mão: com
+  trabalho do usuário, só o botão "Carregar plano do paciente" troca as linhas, e com
+  confirmação.
+- Não acrescentar a `planoParaRequisicaoAction` campo do paciente além de `terapiaId`,
+  `nome` e `minutosSemanais`, nem distinguir na resposta "nome de ninguém" de "paciente
+  sem encaminhamento". Não tirar o `autorizarRota` dela.
+
 ## Progresso
 
 - [x] Prompt 0 — Setup inicial do projeto
@@ -2806,6 +2914,13 @@ parecer íntegro na tela.
       antigo de `acoes-da-guia.tsx`, **739 testes em 46 arquivos**, `next build`
       concluído. **Interação manual no navegador pendente** — roteiro em pendências.
 
+- [x] **Nova requisição puxa o plano do paciente** (30/10/2026, branch
+      `feat/requisicao-puxa-plano`, a partir de `feat/excluir-paciente-no-cadastro` em
+      `8ddd298`; **sem commit, sem merge e sem push**). Regra 26. Nenhuma migration.
+      `tsc --noEmit` limpo, eslint limpo nos arquivos tocados, **775 testes em 48
+      arquivos**, `next build` concluído. **Interação manual no navegador pendente**:
+      roteiro em pendências.
+
 ### Plano de papéis e convênios — 4 fases
 
 Registrado aqui inteiro de propósito: a Fase A sozinha não explica por que existe, e as
@@ -2829,6 +2944,51 @@ sessões seguintes precisam do plano completo para não implementar a fase errad
       interativa do usuário antes de merge e publicação.
 
 ## Pendências conhecidas (não bloqueiam o próximo passo, mas não esquecer)
+
+- **Nova requisição puxa o plano: roteiro manual de navegador** (nada disto foi feito; sem
+  navegador nesta sessão). Pré-requisito: paciente A da Klini com encaminhamento e plano
+  Fono 2,5 h + TO 1 h, com uma requisição 333 (Fono + TO) e atendimentos nas duas;
+  paciente B com encaminhamento e plano só Psicologia 45 min; paciente C com encaminhamento
+  e sem plano (legado). Como admin, em `/klini/requisicoes/nova`:
+  1. **Escolher paciente com plano**: escolher A no `datalist` → "Buscando o plano do
+     paciente…" por um instante e duas linhas: Fono e TO, cada uma com qtd 4, validade
+     hoje + 1 mês e "Plano: 2 h 30 min por semana" / "Plano: 1 h por semana" embaixo. O
+     foco continua no campo do paciente (ou onde estava). Leitor de tela: "Plano
+     carregado: 2 terapias.". Digitar o nome letra a letra não deve consultar a cada
+     tecla (aba de rede: uma chamada quando o nome completo casa ou ao sair do campo).
+  2. **Remover uma**: "Remover" na TO → a linha some e o foco vai para o "Remover" da Fono
+     (agora desabilitado por ser a última → foco em "Adicionar outra terapia"). Com três
+     linhas, Enter repetido no "Remover" tira uma atrás da outra.
+  3. **Paciente sem plano**: trocar o nome para C → as linhas preenchidas (intocadas)
+     voltam a uma em branco, aparece "Este paciente não tem plano de terapias
+     cadastrado. Cadastrar plano" e o link leva a `/klini/pacientes`.
+  4. **Trocar de paciente**: com as linhas de A intocadas, trocar o nome para B → uma
+     linha só, Psicologia, "Plano: 45 min por semana".
+  5. **Editar à mão e trocar de paciente**: carregar A, mudar a qtd da Fono para 8, trocar
+     o nome para B → **nada some**; aparece o aviso "Você já editou as linhas…" e o botão
+     "Carregar plano do paciente". O mesmo com uma linha acrescentada à mão.
+  6. **Botão "Carregar plano"**: com linhas editadas, clicar → diálogo "Trocar as linhas
+     pelo plano do paciente?"; "Cancelar" (e Esc) não mexe em nada; "Carregar plano"
+     troca. Com linhas intocadas o botão troca direto, sem diálogo. Acrescentar à mão uma
+     terapia fora do plano continua possível ("Adicionar outra terapia").
+  7. **Substituir com linhas preenchidas**: carregar A, remover TO, número 444, marcar
+     "Substituir guias da mesma terapia", "Criar requisição" → "Verificando…" e o diálogo
+     lista só "Fono (requisição 333, N atendimentos)"; confirmar → toast "Requisição 444
+     lançada. Substituído: Fono…"; no painel, 333 só com TO (com os atendimentos) e 444 com
+     Fono, "Solicitada".
+  8. **Nome inexistente / sem encaminhamento**: nada é preenchido e nenhuma mensagem nova
+     aparece; ao enviar, as recusas de sempre junto ao campo.
+  9. **Celular (~360px)**: linhas empilhadas, "Remover" com 40px de altura, referência do
+     plano quebrando sem empurrar nada, os dois botões ("Adicionar outra terapia",
+     "Carregar plano do paciente") quebram de linha sem rolagem lateral; diálogo cabe.
+  10. **Recepção sem acesso**: logado como recepção, `/klini/requisicoes/nova` cai em
+      `/klini/dashboard` (a action do plano recusa com a mensagem de permissão).
+- **Paciente sem plano não recebe preenchimento** em "Nova requisição": preencher o plano
+  dos pacientes antigos (pendência acima, "Preencher o plano dos pacientes antigos") é o
+  que faz o preenchimento valer para eles.
+- **Anúncio repetido**: se dois preenchimentos seguidos tiverem a mesma frase ("Plano
+  carregado: 2 terapias."), alguns leitores de tela não repetem o anúncio, porque o texto
+  da região não mudou. Não corrigido; conferir no teste manual.
 
 - **Migration `20261029120000_convenio_e_plano_de_terapias` a aplicar no Supabase ANTES do
   deploy.** Aditiva (coluna NULL + CHECK que NULL passa + `UPDATE` de preenchimento +

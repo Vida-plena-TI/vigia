@@ -37,7 +37,7 @@ import { OPCOES_DE_TRANSACAO } from "@/lib/db/transacao";
 import type { Prisma } from "@/lib/generated/prisma/client";
 
 import { ehConvenioValido, type Convenio } from "./convenio";
-import { obterOuCriarPaciente } from "./pacientes";
+import { buscarPacientePorNome, obterOuCriarPaciente } from "./pacientes";
 import {
   ERRO_CONVENIO_INVALIDO,
   ERRO_OUTRO_CONVENIO,
@@ -430,4 +430,80 @@ export async function planosDosPacientes(
   pacienteIds: readonly number[],
 ): Promise<PlanosPorPaciente> {
   return planosDosPacientesComCliente(getPrismaClient(), pacienteIds);
+}
+
+/** Uma terapia do plano como "Nova requisição" a recebe: só o que preenche a linha. */
+export type TerapiaDoPlanoParaRequisicao = {
+  terapiaId: number;
+  nome: string;
+  minutosSemanais: number;
+};
+
+/**
+ * `encontrado: false` junta "nome de ninguém" e "paciente sem encaminhamento":
+ * a resposta é a mesma nos dois casos, para a leitura não dizer se o nome é de
+ * um paciente. Quem explica a recusa é a criação da requisição, como sempre.
+ */
+export type PlanoParaRequisicao =
+  | { encontrado: false }
+  | { encontrado: true; terapias: TerapiaDoPlanoParaRequisicao[] };
+
+/**
+ * {@link planoParaRequisicao} num cliente dado — o teste passa a transação.
+ *
+ * **Só leitura**. A busca é a da própria requisição (`buscarPacientePorNome`:
+ * nome trimado, `lower(nome) = lower($1)`, sem criar); fora de transação o
+ * `FOR KEY SHARE` dela dura só o comando. Só paciente **com encaminhamento**
+ * recebe o plano (regra 15): os demais seriam recusados na criação de
+ * qualquer jeito.
+ *
+ * O plano vem de {@link planoDoPacienteComCliente}, que lê só `plano_terapia`
+ * e `terapia` — carteirinha, CRM e nome do médico não entram no SELECT.
+ */
+export async function planoParaRequisicaoComCliente(
+  cliente: Prisma.TransactionClient,
+  pacienteNome: string,
+): Promise<PlanoParaRequisicao> {
+  const nome = pacienteNome.trim();
+
+  if (!nome) {
+    return { encontrado: false };
+  }
+
+  const paciente = await buscarPacientePorNome(cliente, nome);
+
+  if (!paciente) {
+    return { encontrado: false };
+  }
+
+  const encaminhamento = await cliente.encaminhamento.findFirst({
+    where: { pacienteId: paciente.id },
+    select: { id: true },
+  });
+
+  if (!encaminhamento) {
+    return { encontrado: false };
+  }
+
+  const plano = await planoDoPacienteComCliente(cliente, paciente.id);
+
+  return {
+    encontrado: true,
+    terapias: plano.map((terapia) => ({
+      terapiaId: terapia.terapiaId,
+      nome: terapia.terapiaNome,
+      minutosSemanais: terapia.minutosSemanais,
+    })),
+  };
+}
+
+/**
+ * As terapias do plano de quem está no campo de paciente de "Nova
+ * requisição", para o formulário preencher as linhas. O plano só diz **quais**
+ * terapias: quantidade e validade continuam as de sempre.
+ */
+export async function planoParaRequisicao(
+  pacienteNome: string,
+): Promise<PlanoParaRequisicao> {
+  return planoParaRequisicaoComCliente(getPrismaClient(), pacienteNome);
 }

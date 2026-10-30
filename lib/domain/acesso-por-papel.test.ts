@@ -30,6 +30,7 @@ const mocks = vi.hoisted(() => ({
   contarParaExclusao: vi.fn(),
   excluirPacientePeloId: vi.fn(),
   cadastrarPaciente: vi.fn(),
+  planoParaRequisicao: vi.fn(),
 }));
 
 vi.mock("@/lib/db", () => ({
@@ -59,6 +60,7 @@ vi.mock("./pacientes", () => ({
 
 vi.mock("./plano-terapias", () => ({
   cadastrarPaciente: mocks.cadastrarPaciente,
+  planoParaRequisicao: mocks.planoParaRequisicao,
 }));
 
 vi.mock("./autorizacoes-sulamerica", () => ({
@@ -78,6 +80,7 @@ import {
 import { cadastrarPacienteAction } from "./plano-terapias-actions";
 import {
   criarRequisicaoAction,
+  planoParaRequisicaoAction,
   previsaoDeSubstituicaoAction,
 } from "./requisicoes-actions";
 
@@ -411,5 +414,75 @@ describe("admin chamando as mesmas actions", () => {
 
     expect(resultado).toEqual({ ok: true, pacienteNome: "Fulano de Tal" });
     expect(mocks.removerEncaminhamento).toHaveBeenCalledWith(3);
+  });
+});
+
+describe("plano para a Nova requisição — só leitura, só admin", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("recepção (cookie dizendo admin) é recusada e o domínio nem é consultado", async () => {
+    mocks.getSession.mockResolvedValue({ usuarioId: 7, papel: "admin" });
+    mocks.findUnique.mockResolvedValue({
+      id: 7,
+      username: "quem-seja",
+      ativo: true,
+      papel: "recepcao",
+    });
+
+    const resultado = await planoParaRequisicaoAction("Fulano de Tal");
+
+    expect(resultado).toEqual({ ok: false, erro: MENSAGEM_SEM_PERMISSAO });
+    expect(mocks.planoParaRequisicao).not.toHaveBeenCalled();
+  });
+
+  it("admin recebe só terapiaId, nome e minutosSemanais, mesmo que o domínio devolva mais", async () => {
+    logadoComoPapelNoBanco("admin");
+    mocks.planoParaRequisicao.mockResolvedValue({
+      encontrado: true,
+      terapias: [
+        {
+          terapiaId: 1,
+          nome: "Fono",
+          minutosSemanais: 150,
+          numeroCarteirinha: "ZZ99887766",
+          crmMedico: "123456",
+          nomeMedico: "Dra. Teste",
+        },
+      ],
+      numeroCarteirinha: "ZZ99887766",
+    });
+
+    const resultado = await planoParaRequisicaoAction("Fulano de Tal");
+
+    expect(resultado).toEqual({
+      ok: true,
+      encontrado: true,
+      terapias: [{ terapiaId: 1, nome: "Fono", minutosSemanais: 150 }],
+    });
+    expect(JSON.stringify(resultado)).not.toMatch(
+      /ZZ99887766|123456|Dra\. Teste|carteirinha|crm|medico/i,
+    );
+    expect(mocks.planoParaRequisicao).toHaveBeenCalledWith("Fulano de Tal");
+  });
+
+  it("nome de ninguém volta só `encontrado: false`, sem eco do nome", async () => {
+    logadoComoPapelNoBanco("admin");
+    mocks.planoParaRequisicao.mockResolvedValue({ encontrado: false });
+
+    const resultado = await planoParaRequisicaoAction("Nome Secreto Qualquer");
+
+    expect(resultado).toEqual({ ok: true, encontrado: false });
+    expect(JSON.stringify(resultado)).not.toContain("Nome Secreto");
+  });
+
+  it("argumento que não é texto (POST montado à mão) vira nome vazio", async () => {
+    logadoComoPapelNoBanco("admin");
+    mocks.planoParaRequisicao.mockResolvedValue({ encontrado: false });
+
+    await planoParaRequisicaoAction({ nome: "x" } as unknown as string);
+
+    expect(mocks.planoParaRequisicao).toHaveBeenCalledWith("");
   });
 });
